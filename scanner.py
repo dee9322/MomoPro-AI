@@ -86,10 +86,14 @@ def run_scan():
     all_symbols = get_market_universe(limit=None)
     symbols = select_best_symbols(api_key, secret_key, all_symbols, limit=500)
 
-    for symbol in symbols:
+        chunk_size = 100
+
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i + chunk_size]
+
         try:
             request = StockBarsRequest(
-                symbol_or_symbols=symbol,
+                symbol_or_symbols=chunk,
                 timeframe=TimeFrame.Day,
                 start=start,
                 end=end,
@@ -101,38 +105,44 @@ def run_scan():
             if bars.empty:
                 continue
 
-            df = bars.reset_index()
-            df = df[df["symbol"] == symbol].copy()
+            all_bars = bars.reset_index()
 
-            if len(df) < 60:
-                continue
+            for symbol in chunk:
+                try:
+                    df = all_bars[all_bars["symbol"] == symbol].copy()
 
-            df = calculate_indicators(df)
+                    if len(df) < 60:
+                        continue
 
-            latest = df.iloc[-1]
-            previous = df.iloc[-2]
+                    df = calculate_indicators(df)
 
-            score, reasons = score_stock(latest, previous)
+                    latest = df.iloc[-1]
+                    previous = df.iloc[-2]
 
-            results.append({
-                "Symbol": symbol,
-                "Close": round(latest["close"], 2),
-                "Score": score,
-                "ATR %": round(latest["atr_pct"], 2),
-                "RVOL": round(latest["rvol"], 2),
-                "Distance EMA21 %": round(latest["distance_from_ema21"], 2),
-                "Reasons": reasons
-            })
+                    score, reasons = score_stock(latest, previous)
 
-        except Exception as e:
-            results.append({
-                "Symbol": symbol,
-                "Close": None,
-                "Score": 0,
-                "ATR %": None,
-                "RVOL": None,
-                "Distance EMA21 %": None,
-                "Reasons": f"Error: {e}"
-            })
+                    results.append({
+                        "Symbol": symbol,
+                        "Close": round(latest["close"], 2),
+                        "Score": score,
+                        "ATR %": round(latest["atr_pct"], 2),
+                        "RVOL": round(latest["rvol"], 2),
+                        "Distance EMA21 %": round(latest["distance_from_ema21"], 2),
+                        "Reasons": reasons
+                    })
+
+                except Exception as e:
+                    results.append({
+                        "Symbol": symbol,
+                        "Close": None,
+                        "Score": 0,
+                        "ATR %": None,
+                        "RVOL": None,
+                        "Distance EMA21 %": None,
+                        "Reasons": f"Error: {e}"
+                    })
+
+        except Exception:
+            continue
 
     return pd.DataFrame(results).sort_values("Score", ascending=False)
