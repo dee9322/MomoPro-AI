@@ -135,4 +135,4 @@ def run_scan():
                 "Reasons": f"Error: {e}"
             })
 
-    return pd.DataFrame(results).sort_values("Score", ascending=False)
+    return select_best_symbols_from_results(results, limit=500)
