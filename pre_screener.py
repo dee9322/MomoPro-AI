@@ -51,9 +51,13 @@ def select_best_symbols(api_key, secret_key, symbols, limit=500):
                 pct_change = ((latest["close"] - previous["close"]) / previous["close"]) * 100
                 dollar_volume = close * volume
 
-                if close < 2:
+                if close < 3 or close > 50:
                     continue
-
+                if avg_volume < 500_000:
+                    continue
+                if dollar_volume < 5_000_000:
+                    continue
+                    
                 activity_score = (
                     dollar_volume / 1_000_000
                     + abs(pct_change) * 5
