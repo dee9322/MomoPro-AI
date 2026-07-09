@@ -21,9 +21,59 @@ def score_stock(latest, previous):
     macd_improving = macd_hist > prev_macd_hist 
     macd_improving = macd_hist > prev_macd_hist
 
-    # Momo Engine module scores
-    trend_score = 0
-    ...
+# Momo Engine module scores
+trend_score = 0
+if above_ema21:
+    trend_score += 7
+if latest["ema21"] > latest["ema50"]:
+    trend_score += 8
+if above_ema200:
+    trend_score += 5
+if latest["ema21"] > previous["ema21"]:
+    trend_score += 5
+engine.set_module("trend", trend_score)
+
+location_score = 0
+if 0 <= distance <= 2:
+    location_score = 25
+elif 2 < distance <= 4:
+    location_score = 18
+elif 4 < distance <= 6:
+    location_score = 8
+elif distance < 0:
+    location_score = 4
+else:
+    location_score = 0
+engine.set_module("location", location_score)
+
+momentum_score = 0
+if 45 <= rsi <= 65:
+    momentum_score += 12
+elif 65 < rsi <= 70:
+    momentum_score += 5
+if macd_hist > prev_macd_hist:
+    momentum_score += 8
+if macd_hist > 0:
+    momentum_score += 5
+engine.set_module("momentum", momentum_score)
+
+volume_score = 0
+if rvol >= 2:
+    volume_score = 25
+elif rvol >= 1.5:
+    volume_score = 18
+elif rvol >= 1:
+    volume_score = 10
+engine.set_module("volume", volume_score)
+
+risk_score = 25
+if distance > 6:
+    risk_score -= 15
+if rsi > 70:
+    risk_score -= 10
+if atr_pct > 18:
+    risk_score -= 8
+engine.set_module("risk", risk_score)
 
     # Base technical score
     if 3 <= price <= 50:
