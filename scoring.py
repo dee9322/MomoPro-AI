@@ -1,9 +1,11 @@
+from momo_engine import MomoEngine
 def score_stock(latest, previous):
     score = 0
     dee_fit = 0
     reasons = []
     setup = "Watchlist"
-
+    engine = MomoEngine()
+    
     price = latest["close"]
     distance = latest["distance_from_ema21"]
     rvol = latest["rvol"]
