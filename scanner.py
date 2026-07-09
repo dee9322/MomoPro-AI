@@ -2,12 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from symbols import SYMBOLS
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
-
+from market_universe import get_market_universe
 
 
 def calculate_indicators(df):
@@ -84,7 +83,9 @@ def run_scan():
 
     results = []
 
-    for symbol in SYMBOLS:
+    symbols = get_market_universe(limit=500)
+
+for symbol in symbols:
         try:
             request = StockBarsRequest(
     symbol_or_symbols=symbol,
