@@ -92,7 +92,24 @@ def run_scan():
         except Exception:
             continue
 
-    return pd.DataFrame(results).sort_values(
+    df = pd.DataFrame(results)
+
+    df = df.sort_values(
         ["Dee Fit", "Score"],
         ascending=[False, False]
     )
+
+    preferred_columns = [
+        "Symbol",
+        "Grade",
+        "Dee Fit",
+        "Score",
+        "Setup",
+        "Close",
+        "ATR %",
+        "RVOL",
+        "Distance EMA21 %",
+        "Reasons"
+    ]
+
+    return df[preferred_columns]
