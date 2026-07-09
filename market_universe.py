@@ -18,8 +18,19 @@ def get_market_universe(limit=500):
             and asset.status == AssetStatus.ACTIVE
             and asset.tradable
             and asset.symbol.isalpha()
-        ):
-            symbols.append(asset.symbol)
+         ):
+
+         if len(asset.symbol) > 5:
+             continue
+
+         asset_name = asset.name.upper() if asset.name else ""
+
+         blocked_words = ["ETF", "FUND", "TRUST", "INDEX", "ETN"]
+
+         if any(word in asset_name for word in blocked_words):
+             continue
+
+        symbols.append(asset.symbol)
 
     symbols = sorted(list(set(symbols)))
 
