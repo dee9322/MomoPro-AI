@@ -7,7 +7,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 from market_universe import get_market_universe
-from pre_screener import select_best_symbols
+from pre_screener import select_best_symbols_from_results
 
 def calculate_indicators(df):
     df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
