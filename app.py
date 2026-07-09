@@ -1,6 +1,6 @@
 import streamlit as st
 from alpaca_test import test_alpaca_connection
-
+from scanner import run_scan
 st.set_page_config(
     page_title="MomoPro AI",
     page_icon="📈",
@@ -36,8 +36,18 @@ with tabs[0]:
 
 with tabs[1]:
     st.header("Scanner")
-    st.button("Run Market Scan")
-    st.write("Top swing candidates will appear here.")
+
+    if st.button("Run Market Scan"):
+        with st.spinner("Scanning market..."):
+            df = run_scan()
+
+        st.success(f"Scan complete! {len(df)} stocks analyzed.")
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
 
 with tabs[2]:
     st.header("AI Analysis")
