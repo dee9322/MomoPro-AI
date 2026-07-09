@@ -2,17 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-
+from symbols import SYMBOLS
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 
-STARTER_SYMBOLS = [
-    "AAPL", "AMD", "NVDA", "SOFI", "PLTR",
-    "MARA", "RIOT", "HOOD", "COIN", "TSLA",
-    "SOUN", "IONQ", "RGTI", "OPEN", "RKLB"
-]
 
 
 def calculate_indicators(df):
@@ -89,7 +84,7 @@ def run_scan():
 
     results = []
 
-    for symbol in STARTER_SYMBOLS:
+    for symbol in SYMBOLS:
         try:
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
