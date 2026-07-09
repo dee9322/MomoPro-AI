@@ -86,7 +86,7 @@ def run_scan():
     all_symbols = get_market_universe(limit=None)
     symbols = select_best_symbols(api_key, secret_key, all_symbols, limit=500)
 
-        chunk_size = 100
+    chunk_size = 100
 
     for i in range(0, len(symbols), chunk_size):
         chunk = symbols[i:i + chunk_size]
