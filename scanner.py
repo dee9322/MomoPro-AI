@@ -6,7 +6,7 @@ from symbols import SYMBOLS
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-
+from alpaca.data.enums import DataFeed
 
 
 
@@ -87,11 +87,12 @@ def run_scan():
     for symbol in SYMBOLS:
         try:
             request = StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Day,
-                start=start,
-                end=end
-            )
+    symbol_or_symbols=symbol,
+    timeframe=TimeFrame.Day,
+    start=start,
+    end=end,
+    feed=DataFeed.IEX
+)
 
             bars = client.get_stock_bars(request).df
 
