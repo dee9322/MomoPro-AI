@@ -7,7 +7,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 from market_universe import get_market_universe
-from pre_screener import select_best_symbols_from_results
+from pre_screener import select_best_symbols
 
 def calculate_indicators(df):
     df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
@@ -84,7 +84,7 @@ def run_scan():
     results = []
 
     all_symbols = get_market_universe(limit=None)
-    symbols = select_best_symbols(all_symbols, limit=500)
+    symbols = select_best_symbols(api_key, secret_key, all_symbols, limit=500)
 
     for symbol in symbols:
         try:
@@ -135,4 +135,4 @@ def run_scan():
                 "Reasons": f"Error: {e}"
             })
 
-    return select_best_symbols_from_results(results, limit=500)
+    return pd.DataFrame(results).sort_values("Score", ascending=False)
