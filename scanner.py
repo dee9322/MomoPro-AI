@@ -81,19 +81,19 @@ def run_scan():
     end = datetime.now()
     start = end - timedelta(days=120)
 
-    results = []
+        results = []
 
     symbols = get_market_universe(limit=500)
 
-for symbol in symbols:
+    for symbol in symbols:
         try:
             request = StockBarsRequest(
-    symbol_or_symbols=symbol,
-    timeframe=TimeFrame.Day,
-    start=start,
-    end=end,
-    feed=DataFeed.IEX
-)
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                feed=DataFeed.IEX
+            )
 
             bars = client.get_stock_bars(request).df
 
