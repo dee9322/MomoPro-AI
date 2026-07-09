@@ -1,4 +1,5 @@
 import streamlit as st
+from alpaca_test import test_alpaca_connection
 
 st.set_page_config(
     page_title="MomoPro AI",
@@ -21,7 +22,17 @@ tabs = st.tabs([
 
 with tabs[0]:
     st.header("Dashboard")
-    st.write("Market scan summary will appear here.")
+
+    if st.button("Test Alpaca Connection"):
+        success, status, buying_power = test_alpaca_connection()
+
+        if success:
+            st.success("✅ Alpaca connected successfully!")
+            st.write(f"Account status: {status}")
+            st.write(f"Buying power: ${buying_power}")
+        else:
+            st.error("❌ Alpaca connection failed.")
+            st.write(status)
 
 with tabs[1]:
     st.header("Scanner")
