@@ -18,7 +18,12 @@ def score_stock(latest, previous):
     above_ema21 = latest["close"] > latest["ema21"]
     above_ema50 = latest["close"] > latest["ema50"]
     above_ema200 = latest["close"] > latest["ema200"]
+    macd_improving = macd_hist > prev_macd_hist 
     macd_improving = macd_hist > prev_macd_hist
+
+    # Momo Engine module scores
+    trend_score = 0
+    ...
 
     # Base technical score
     if 3 <= price <= 50:
@@ -120,6 +125,7 @@ def score_stock(latest, previous):
 
     score = max(0, min(score, 100))
     dee_fit = max(0, min(dee_fit, 100))
+    momo_score = engine.momofit()
    
     if dee_fit >= 90:
         grade = "A+"
@@ -132,4 +138,4 @@ def score_stock(latest, previous):
     else:
        grade = "Pass"
     
-    return score, dee_fit, grade, setup, ", ".join(reasons)
+    return score, dee_fit, momo_score, grade, setup, ", ".join(reasons)
