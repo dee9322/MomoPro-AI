@@ -81,7 +81,7 @@ def run_scan():
     end = datetime.now()
     start = end - timedelta(days=120)
 
-        results = []
+    results = []
 
     symbols = get_market_universe(limit=500)
 
