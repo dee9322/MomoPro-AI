@@ -63,7 +63,7 @@ def run_scan():
                     latest = df.iloc[-1]
                     previous = df.iloc[-2]
 
-                    score, dee_fit, grade, setup, reasons = score_stock(latest, previous)
+                    score, dee_fit, momo_score, grade, setup, reasons = score_stock(latest, previous)
 
                     results.append({
                         "Symbol": symbol,
@@ -76,6 +76,7 @@ def run_scan():
                         "Distance EMA21 %": round(latest["distance_from_ema21"], 2),
                         "Reasons": reasons,
                         "Grade": grade,
+                        "Momo Score": momo_score,
                     })
 
                 except Exception as e:
@@ -102,6 +103,7 @@ def run_scan():
     preferred_columns = [
         "Symbol",
         "Grade",
+        "Momo Score",
         "Dee Fit",
         "Score",
         "Setup",
