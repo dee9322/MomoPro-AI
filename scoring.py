@@ -1,6 +1,8 @@
 def score_stock(latest, previous):
     score = 0
+    dee_fit = 0
     reasons = []
+    setup = "Watchlist"
 
     price = latest["close"]
     distance = latest["distance_from_ema21"]
@@ -10,97 +12,111 @@ def score_stock(latest, previous):
     macd_hist = latest["macd_hist"]
     prev_macd_hist = previous["macd_hist"]
 
-    # Price filter
-    if 3 <= price <= 50:
-        score += 8
-        reasons.append("Price in preferred range")
-    elif price < 3:
-        score -= 10
-        reasons.append("Under preferred price range")
+    fresh_reclaim = previous["close"] < previous["ema21"] and latest["close"] > latest["ema21"]
+    above_ema21 = latest["close"] > latest["ema21"]
+    above_ema50 = latest["close"] > latest["ema50"]
+    above_ema200 = latest["close"] > latest["ema200"]
+    macd_improving = macd_hist > prev_macd_hist
 
-    # Trend structure
-    if latest["close"] > latest["ema21"]:
+    # Base technical score
+    if 3 <= price <= 50:
         score += 10
+        dee_fit += 20
+        reasons.append("Price fits Dee range")
+    else:
+        dee_fit -= 30
+        reasons.append("Outside preferred price range")
+
+    if above_ema21:
+        score += 12
+        dee_fit += 15
         reasons.append("Above EMA21")
 
-    if latest["ema21"] > latest["ema50"]:
+    if above_ema50:
         score += 10
-        reasons.append("EMA21 above EMA50")
+        dee_fit += 10
+        reasons.append("Above EMA50")
 
-    if latest["close"] > latest["ema200"]:
+    if above_ema200:
         score += 8
+        dee_fit += 5
         reasons.append("Above EMA200")
 
-    # Fresh EMA21 reclaim
-    if previous["close"] < previous["ema21"] and latest["close"] > latest["ema21"]:
-        score += 22
+    if fresh_reclaim:
+        score += 20
+        dee_fit += 25
+        setup = "EMA21 Reclaim"
         reasons.append("Fresh EMA21 reclaim")
 
-    # Entry location - this is your biggest filter
-    if distance < 0:
-        score -= 15
-        reasons.append("Below EMA21")
-
-    elif 0 <= distance <= 2:
-        score += 25
+    # Entry location
+    if 0 <= distance <= 2:
+        score += 20
+        dee_fit += 25
         reasons.append("Ideal EMA21 entry location")
-
     elif 2 < distance <= 4:
-        score += 15
-        reasons.append("Acceptable EMA21 location")
-
+        score += 12
+        dee_fit += 15
+        reasons.append("Good EMA21 location")
     elif 4 < distance <= 6:
         score += 4
-        reasons.append("Getting extended from EMA21")
-
+        dee_fit += 3
+        reasons.append("Slightly extended")
     elif distance > 6:
-        score -= 20
-        reasons.append("Too extended for preferred entry")
+        score -= 15
+        dee_fit -= 25
+        reasons.append("Too extended for Dee entry")
+    elif distance < 0:
+        score -= 10
+        dee_fit -= 15
+        reasons.append("Below EMA21")
 
     # Volume
     if rvol >= 2:
-        score += 14
-        reasons.append("Strong relative volume")
-    elif rvol >= 1.5:
-        score += 10
-        reasons.append("Good relative volume")
+        score += 12
+        dee_fit += 10
+        reasons.append("Strong RVOL")
     elif rvol >= 1:
-        score += 4
-        reasons.append("Decent relative volume")
+        score += 5
+        dee_fit += 5
+        reasons.append("Acceptable RVOL")
     elif rvol < 0.7:
-        score -= 8
-        reasons.append("Weak relative volume")
+        dee_fit -= 10
+        reasons.append("Weak RVOL")
 
-    # ATR movement potential
+    # ATR
     if 4 <= atr_pct <= 12:
         score += 10
+        dee_fit += 8
         reasons.append("Good swing range")
     elif atr_pct > 18:
-        score -= 6
-        reasons.append("Very high volatility risk")
+        score -= 8
+        dee_fit -= 12
+        reasons.append("Volatility too wild")
 
     # RSI
-    if 45 <= rsi <= 62:
+    if 45 <= rsi <= 65:
         score += 10
-        reasons.append("Healthy RSI with room")
-    elif 62 < rsi <= 70:
-        score += 3
-        reasons.append("RSI strong but getting warm")
+        dee_fit += 12
+        reasons.append("RSI healthy")
     elif rsi > 70:
         score -= 10
-        reasons.append("RSI overextended")
+        dee_fit -= 15
+        reasons.append("RSI too hot")
 
     # MACD
-    if macd_hist > prev_macd_hist and macd_hist > 0:
-        score += 10
-        reasons.append("MACD bullish and improving")
-    elif macd_hist > prev_macd_hist:
-        score += 5
+    if macd_improving and macd_hist > 0:
+        score += 8
+        dee_fit += 8
+        reasons.append("MACD bullish")
+    elif macd_improving:
+        score += 4
+        dee_fit += 5
         reasons.append("MACD improving early")
-    elif macd_hist < prev_macd_hist:
-        score -= 5
-        reasons.append("MACD losing momentum")
+
+    if setup == "Watchlist" and above_ema21 and above_ema50 and 0 <= distance <= 4:
+        setup = "Clean Pullback"
 
     score = max(0, min(score, 100))
+    dee_fit = max(0, min(dee_fit, 100))
 
-    return score, ", ".join(reasons)
+    return score, dee_fit, setup, ", ".join(reasons)
