@@ -9,49 +9,11 @@ from alpaca.data.enums import DataFeed
 from market_universe import get_market_universe
 from pre_screener import select_best_symbols
 from indicators import calculate_indicators
+from scoring import score_stock
 
 
 
 
-def score_stock(latest, previous):
-    score = 0
-    reasons = []
-
-    price = latest["close"]
-
-    if 3 <= price <= 50:
-        score += 10
-        reasons.append("Price in preferred range")
-
-    if latest["volume"] >= 1_000_000:
-        score += 10
-        reasons.append("Strong liquidity")
-
-    if latest["close"] > latest["ema21"]:
-        score += 20
-        reasons.append("Above EMA21")
-
-    if previous["close"] < previous["ema21"] and latest["close"] > latest["ema21"]:
-        score += 20
-        reasons.append("Fresh EMA21 reclaim")
-
-    if latest["close"] > latest["ema50"]:
-        score += 15
-        reasons.append("Above EMA50")
-
-    if latest["atr_pct"] >= 4:
-        score += 10
-        reasons.append("Good ATR movement potential")
-
-    if latest["rvol"] >= 1.5:
-        score += 10
-        reasons.append("Relative volume elevated")
-
-    if 0 <= latest["distance_from_ema21"] <= 6:
-        score += 15
-        reasons.append("Not too extended from EMA21")
-
-    return min(score, 100), ", ".join(reasons)
 
 
 def run_scan():
