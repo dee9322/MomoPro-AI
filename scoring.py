@@ -118,5 +118,16 @@ def score_stock(latest, previous):
 
     score = max(0, min(score, 100))
     dee_fit = max(0, min(dee_fit, 100))
-
-    return score, dee_fit, setup, ", ".join(reasons)
+   
+    if dee_fit >= 90:
+        grade = "A+"
+    elif dee_fit >= 80:
+       grade = "A"
+    elif dee_fit >= 70:
+       grade = "B"
+    elif dee_fit >= 60:
+       grade = "C"
+    else:
+       grade = "Pass"
+    
+    return score, dee_fit, grade, setup, ", ".join(reasons)
