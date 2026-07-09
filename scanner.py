@@ -91,4 +91,7 @@ def run_scan():
         except Exception:
             continue
 
-    return pd.DataFrame(results).sort_values("Score", ascending=False)
+    return pd.DataFrame(results).sort_values(
+        ["Dee Fit", "Score"],
+        ascending=[False, False]
+    )
