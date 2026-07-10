@@ -39,7 +39,9 @@ def run_scan():
 
     results = []
 
-    all_symbols = get_market_universe(limit=None)
+    all_symbols = get_market_universe(
+        limit=None
+    )
 
     symbols = select_best_symbols(
         api_key,
@@ -54,7 +56,8 @@ def run_scan():
         CHUNK_SIZE,
     ):
         chunk = symbols[
-            batch_start : batch_start + CHUNK_SIZE
+            batch_start:
+            batch_start + CHUNK_SIZE
         ]
 
         request = None
@@ -70,7 +73,9 @@ def run_scan():
                 feed=DataFeed.IEX,
             )
 
-            bars = client.get_stock_bars(request).df
+            bars = client.get_stock_bars(
+                request
+            ).df
 
             if bars.empty:
                 continue
@@ -82,7 +87,8 @@ def run_scan():
 
                 try:
                     symbol_df = all_bars[
-                        all_bars["symbol"] == symbol
+                        all_bars["symbol"]
+                        == symbol
                     ].copy()
 
                     if (
@@ -91,8 +97,10 @@ def run_scan():
                     ):
                         continue
 
-                    symbol_df = calculate_indicators(
-                        symbol_df
+                    symbol_df = (
+                        calculate_indicators(
+                            symbol_df
+                        )
                     )
 
                     latest = symbol_df.iloc[-1]
@@ -111,11 +119,16 @@ def run_scan():
 
                     if any(
                         pd.isna(value)
-                        for value in required_values
+                        for value
+                        in required_values
                     ):
                         continue
 
-                    levels = calculate_levels(latest)
+                    # Support & Resistance Engine v2
+                    # uses the full stock history.
+                    levels = calculate_levels(
+                        symbol_df
+                    )
 
                     risk_reward = (
                         calculate_risk_reward(
@@ -128,9 +141,11 @@ def run_scan():
                         entry=risk_reward[
                             "Reference Entry"
                         ],
-                        risk_per_share=risk_reward[
-                            "Risk Per Share"
-                        ],
+                        risk_per_share=(
+                            risk_reward[
+                                "Risk Per Share"
+                            ]
+                        ),
                         levels=levels,
                     )
 
@@ -151,7 +166,9 @@ def run_scan():
                             "Symbol": symbol,
                             "Close": round(
                                 float(
-                                    latest["close"]
+                                    latest[
+                                        "close"
+                                    ]
                                 ),
                                 2,
                             ),
@@ -160,7 +177,9 @@ def run_scan():
                             "Setup": setup,
                             "ATR %": round(
                                 float(
-                                    latest["atr_pct"]
+                                    latest[
+                                        "atr_pct"
+                                    ]
                                 ),
                                 2,
                             ),
@@ -170,17 +189,20 @@ def run_scan():
                                 ),
                                 2,
                             ),
-                            "Distance EMA21 %": round(
-                                float(
-                                    latest[
-                                        "distance_from_ema21"
-                                    ]
-                                ),
-                                2,
+                            "Distance EMA21 %": (
+                                round(
+                                    float(
+                                        latest[
+                                            "distance_from_ema21"
+                                        ]
+                                    ),
+                                    2,
+                                )
                             ),
                             "Reasons": reasons,
                             "Grade": grade,
                             "Momo Score": momo_score,
+
                             "Support 1": levels[
                                 "Support 1"
                             ],
@@ -190,6 +212,7 @@ def run_scan():
                             "Support 3": levels[
                                 "Support 3"
                             ],
+
                             "Resistance 1": levels[
                                 "Resistance 1"
                             ],
@@ -199,6 +222,71 @@ def run_scan():
                             "Resistance 3": levels[
                                 "Resistance 3"
                             ],
+
+                            "Support 1 Quality": (
+                                levels[
+                                    "Support 1 Quality"
+                                ]
+                            ),
+                            "Support 2 Quality": (
+                                levels[
+                                    "Support 2 Quality"
+                                ]
+                            ),
+                            "Support 3 Quality": (
+                                levels[
+                                    "Support 3 Quality"
+                                ]
+                            ),
+
+                            "Resistance 1 Quality": (
+                                levels[
+                                    "Resistance 1 Quality"
+                                ]
+                            ),
+                            "Resistance 2 Quality": (
+                                levels[
+                                    "Resistance 2 Quality"
+                                ]
+                            ),
+                            "Resistance 3 Quality": (
+                                levels[
+                                    "Resistance 3 Quality"
+                                ]
+                            ),
+
+                            "Support 1 Touches": (
+                                levels[
+                                    "Support 1 Touches"
+                                ]
+                            ),
+                            "Support 2 Touches": (
+                                levels[
+                                    "Support 2 Touches"
+                                ]
+                            ),
+                            "Support 3 Touches": (
+                                levels[
+                                    "Support 3 Touches"
+                                ]
+                            ),
+
+                            "Resistance 1 Touches": (
+                                levels[
+                                    "Resistance 1 Touches"
+                                ]
+                            ),
+                            "Resistance 2 Touches": (
+                                levels[
+                                    "Resistance 2 Touches"
+                                ]
+                            ),
+                            "Resistance 3 Touches": (
+                                levels[
+                                    "Resistance 3 Touches"
+                                ]
+                            ),
+
                             "Reference Entry": (
                                 risk_reward[
                                     "Reference Entry"
@@ -234,16 +322,19 @@ def run_scan():
                                     "Risk Reward Status"
                                 ]
                             ),
+
                             "T1": targets["T1"],
                             "T1 Upside %": targets[
                                 "T1 Upside %"
                             ],
                             "T1 R": targets["T1 R"],
+
                             "T2": targets["T2"],
                             "T2 Upside %": targets[
                                 "T2 Upside %"
                             ],
                             "T2 R": targets["T2 R"],
+
                             "T3": targets["T3"],
                             "T3 Upside %": targets[
                                 "T3 Upside %"
@@ -292,9 +383,27 @@ def run_scan():
         "Support 1",
         "Support 2",
         "Support 3",
+
         "Resistance 1",
         "Resistance 2",
         "Resistance 3",
+
+        "Support 1 Quality",
+        "Support 2 Quality",
+        "Support 3 Quality",
+
+        "Resistance 1 Quality",
+        "Resistance 2 Quality",
+        "Resistance 3 Quality",
+
+        "Support 1 Touches",
+        "Support 2 Touches",
+        "Support 3 Touches",
+
+        "Resistance 1 Touches",
+        "Resistance 2 Touches",
+        "Resistance 3 Touches",
+
         "Reference Entry",
         "Risk Reference",
         "Reward Reference",
@@ -302,12 +411,15 @@ def run_scan():
         "Reward Per Share",
         "Risk Reward",
         "Risk Reward Status",
+
         "T1",
         "T1 Upside %",
         "T1 R",
+
         "T2",
         "T2 Upside %",
         "T2 R",
+
         "T3",
         "T3 Upside %",
         "T3 R",
