@@ -175,6 +175,16 @@ with tabs[1]:
         )
 
         hidden_columns = {
+            "Momo Confidence": None,
+            "Confidence Rating": None,
+            "Trend Confidence": None,
+            "Location Confidence": None,
+            "Momentum Confidence": None,
+            "Volume Confidence": None,
+            "Opportunity Confidence": None,
+            "Risk Confidence": None,
+            "Structure Confidence": None,
+
             "Support 1": None,
             "Support 2": None,
             "Support 3": None,
@@ -290,7 +300,7 @@ with tabs[1]:
 
                     st.rerun()
 
-            metric_columns = st.columns(5)
+            metric_columns = st.columns(6)
 
             metric_columns[0].metric(
                 "Grade",
@@ -325,6 +335,19 @@ with tabs[1]:
             )
 
             metric_columns[4].metric(
+                "Momo Confidence",
+                percent_text(
+                    selected_stock.get(
+                        "Momo Confidence"
+                    )
+                ),
+                selected_stock.get(
+                    "Confidence Rating",
+                    "—",
+                ),
+            )
+
+            metric_columns[5].metric(
                 "Close",
                 money_text(
                     selected_stock.get(
@@ -379,6 +402,93 @@ with tabs[1]:
                     )
                 ),
             )
+
+            # -------------------------
+            # Momo Engine Confidence
+            # -------------------------
+            st.divider()
+
+            st.subheader(
+                "Momo Engine Confidence"
+            )
+
+            confidence_columns = st.columns(2)
+
+            confidence_columns[0].metric(
+                "Confidence",
+                percent_text(
+                    selected_stock.get(
+                        "Momo Confidence"
+                    )
+                ),
+            )
+
+            confidence_columns[1].metric(
+                "Rating",
+                selected_stock.get(
+                    "Confidence Rating",
+                    "—",
+                ),
+            )
+
+            st.caption(
+                "This is the rule-based Momo Engine confidence, "
+                "separate from the independent AI Confidence that "
+                "will be added later."
+            )
+
+            with st.expander(
+                "See confidence breakdown"
+            ):
+                confidence_breakdown = [
+                    (
+                        "Trend",
+                        "Trend Confidence",
+                    ),
+                    (
+                        "Location",
+                        "Location Confidence",
+                    ),
+                    (
+                        "Momentum",
+                        "Momentum Confidence",
+                    ),
+                    (
+                        "Volume",
+                        "Volume Confidence",
+                    ),
+                    (
+                        "Opportunity",
+                        "Opportunity Confidence",
+                    ),
+                    (
+                        "Risk",
+                        "Risk Confidence",
+                    ),
+                    (
+                        "Structure",
+                        "Structure Confidence",
+                    ),
+                ]
+
+                first_row = st.columns(4)
+                second_row = st.columns(3)
+
+                for index, (label, key) in enumerate(
+                    confidence_breakdown
+                ):
+                    column = (
+                        first_row[index]
+                        if index < 4
+                        else second_row[index - 4]
+                    )
+
+                    column.metric(
+                        label,
+                        percent_text(
+                            selected_stock.get(key)
+                        ),
+                    )
 
             # -------------------------
             # Support / Resistance v2
@@ -709,11 +819,8 @@ with tabs[1]:
             )
 
             st.info(
-                "Current validation step: "
-                "confirm upgraded support, "
-                "resistance, risk/reward, "
-                "and targets against the "
-                "visible charts."
+                "Momo Engine Confidence is now active. "
+                "The next roadmap item is AI Commentary."
             )
 
     elif df is not None:
