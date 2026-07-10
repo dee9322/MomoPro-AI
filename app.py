@@ -80,6 +80,14 @@ with tabs[1]:
             on_select="rerun",
             selection_mode="single-row",
             key="scanner_table",
+            column_config={
+                "Support 1": None,
+                "Support 2": None,
+                "Support 3": None,
+                "Resistance 1": None,
+                "Resistance 2": None,
+                "Resistance 3": None,
+            },
         )
 
         selected_rows = table_event.selection.rows
@@ -158,6 +166,42 @@ with tabs[1]:
                 "Distance From EMA21",
                 f"{selected_stock.get('Distance EMA21 %', 0):.2f}%",
             )
+
+            st.divider()
+            st.subheader("Support and Resistance")
+
+            support_col, resistance_col = st.columns(2)
+
+            with support_col:
+                st.markdown("#### Support")
+
+                for label in ["Support 1", "Support 2", "Support 3"]:
+                    value = selected_stock.get(label)
+
+                    if value is not None:
+                        st.metric(label, f"${value:.2f}")
+                    else:
+                        st.write(f"{label}: Not available")
+
+            with resistance_col:
+                st.markdown("#### Resistance")
+
+                for label in ["Resistance 1", "Resistance 2", "Resistance 3"]:
+                    value = selected_stock.get(label)
+
+                    if value is not None:
+                        upside = (
+                            (value - selected_stock["Close"])
+                            / selected_stock["Close"]
+                        ) * 100
+
+                        st.metric(
+                            label,
+                            f"${value:.2f}",
+                            f"{upside:.1f}% upside",
+                        )
+                    else:
+                        st.write(f"{label}: Not available")
 
             st.info(
                 "Next: this report will receive support, resistance, "
