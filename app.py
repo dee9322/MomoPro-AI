@@ -157,7 +157,7 @@ with tabs[0]:
     st.subheader("Market Snapshot")
     dashboard_market = st.session_state.market_context
     if dashboard_market:
-        snap = st.columns(5)
+        snap = st.columns(6)
         snap[0].metric("Market Score", dashboard_market.get("market_score", "—"))
         snap[1].metric("Trend", dashboard_market.get("market_trend", "—"))
         snap[2].metric("Risk Environment", dashboard_market.get("risk_environment", "—"))
@@ -178,6 +178,17 @@ with tabs[0]:
             (
                 f'{dash_sentiment.get("fear_greed_score")}/100'
                 if dash_sentiment.get("fear_greed_score") is not None
+                else None
+            ),
+        )
+        dash_sectors = dashboard_market.get("sectors", {})
+        top_sector = (dash_sectors.get("leaders") or [{}])[0]
+        snap[5].metric(
+            "Top Sector",
+            top_sector.get("sector", "—"),
+            (
+                f'{top_sector.get("score")}/100'
+                if top_sector.get("score") is not None
                 else None
             ),
         )
@@ -325,6 +336,69 @@ with tabs[1]:
             )
         else:
             st.warning(sentiment.get("summary", "Sentiment is unavailable."))
+
+        st.divider()
+        st.subheader("Sector Strength & Rotation")
+        sectors = market.get("sectors", {})
+
+        if sectors.get("status") == "Available":
+            sec_top = st.columns(4)
+            sec_top[0].metric("Sector Score", sectors.get("sector_score", "—"))
+            sec_top[1].metric("Rotation", sectors.get("rotation_regime", "—"))
+            sec_top[2].metric(
+                "Risk-On Average",
+                sectors.get("risk_on_average", "—"),
+            )
+            sec_top[3].metric(
+                "Defensive Average",
+                sectors.get("defensive_average", "—"),
+            )
+
+            st.write(sectors.get("summary", ""))
+
+            sector_rows = []
+            for item in sectors.get("rankings", []):
+                sector_rows.append(
+                    {
+                        "Rank": len(sector_rows) + 1,
+                        "Sector": item.get("sector"),
+                        "ETF": item.get("symbol"),
+                        "Score": item.get("score"),
+                        "Trend": item.get("trend"),
+                        "Rotation": item.get("rotation"),
+                        "5D %": item.get("return_5d_pct"),
+                        "20D %": item.get("return_20d_pct"),
+                        "60D %": item.get("return_60d_pct"),
+                        "20D vs SPY": item.get("relative_20d_vs_spy"),
+                        "RSI": item.get("rsi14"),
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(sector_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            leader_col, laggard_col = st.columns(2)
+
+            with leader_col:
+                st.markdown("#### Leading Sectors")
+                for item in sectors.get("leaders", []):
+                    st.write(
+                        f'• {item.get("sector")} ({item.get("symbol")}) — '
+                        f'{item.get("score")}/100 · {item.get("rotation")}'
+                    )
+
+            with laggard_col:
+                st.markdown("#### Lagging Sectors")
+                for item in sectors.get("laggards", []):
+                    st.write(
+                        f'• {item.get("sector")} ({item.get("symbol")}) — '
+                        f'{item.get("score")}/100 · {item.get("rotation")}'
+                    )
+        else:
+            st.warning(sectors.get("summary", "Sector strength is unavailable."))
     else:
         st.info("Load Market Context to see the complete market assessment.")
 
@@ -601,16 +675,27 @@ with tabs[2]:
             if report_market:
                 report_breadth = report_market.get("breadth", {})
                 report_sentiment = report_market.get("sentiment", {})
-                mc = st.columns(5)
+                report_sectors = report_market.get("sectors", {})
+                top_sector = (report_sectors.get("leaders") or [{}])[0]
+                mc = st.columns(6)
                 mc[0].metric("Market", report_market.get("market_trend", "—"))
                 mc[1].metric("Risk", report_market.get("risk_environment", "—"))
                 mc[2].metric("Market Score", report_market.get("market_score", "—"))
                 mc[3].metric("Breadth", report_breadth.get("breadth_status", "—"))
                 mc[4].metric("Sentiment", report_sentiment.get("fear_greed_label", "—"))
+                mc[5].metric(
+                    "Leading Sector",
+                    top_sector.get("sector", "—"),
+                    (
+                        f'{top_sector.get("score")}/100'
+                        if top_sector.get("score") is not None
+                        else None
+                    ),
+                )
                 st.caption(report_market.get("summary", ""))
                 st.info(
                     "Open the Market Context tab for the full index, breadth, "
-                    "and sentiment breakdown."
+                    "sentiment, and sector-rotation breakdown."
                 )
             else:
                 st.caption("Market Context has not been loaded for this session.")
