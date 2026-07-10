@@ -10,6 +10,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from market_breadth import get_market_breadth
+from market_sentiment import get_market_sentiment
 
 
 MARKET_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "VIXY"]
@@ -237,6 +238,12 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
 
         market_score = round(max(0, min(base_score + vix_modifier, 100)))
 
+        sentiment = get_market_sentiment(
+            market_score=market_score,
+            breadth=breadth,
+            indexes=indexes,
+        )
+
         if market_score >= 75:
             market_trend = "Bullish"
             risk_environment = "Risk On"
@@ -261,6 +268,7 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
             "indexes": indexes,
             "vix_source": "VIXY volatility proxy",
             "breadth": breadth,
+            "sentiment": sentiment,
             "status": "Available",
         }
 
@@ -278,5 +286,17 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
             "indexes": indexes,
             "vix_source": "VIXY volatility proxy",
             "breadth": breadth,
+            "sentiment": {
+                "status": "Unavailable",
+                "fear_greed_score": None,
+                "fear_greed_label": "Unavailable",
+                "risk_appetite": "Unavailable",
+                "total_put_call_ratio": None,
+                "equity_put_call_ratio": None,
+                "put_call_signal": "Unavailable",
+                "summary": "Market sentiment could not be calculated.",
+                "warning": None,
+                "source": "Cboe Daily Market Statistics + Momo composite",
+            },
             "status": f"Unavailable: {error}",
         }
