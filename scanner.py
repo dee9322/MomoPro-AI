@@ -8,6 +8,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from confidence import calculate_confidence
 from indicators import calculate_indicators
 from levels import calculate_levels
 from market_universe import get_market_universe
@@ -153,12 +154,19 @@ def run_scan():
                         score,
                         dee_fit,
                         momo_score,
+                        modules,
                         grade,
                         setup,
                         reasons,
                     ) = score_stock(
                         latest,
                         previous,
+                    )
+
+                    confidence = calculate_confidence(
+                        modules=modules,
+                        risk_reward_data=risk_reward,
+                        levels=levels,
                     )
 
                     results.append(
@@ -202,6 +210,33 @@ def run_scan():
                             "Reasons": reasons,
                             "Grade": grade,
                             "Momo Score": momo_score,
+                            "Momo Confidence": confidence[
+                                "Momo Confidence"
+                            ],
+                            "Confidence Rating": confidence[
+                                "Confidence Rating"
+                            ],
+                            "Trend Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Trend"],
+                            "Location Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Location"],
+                            "Momentum Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Momentum"],
+                            "Volume Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Volume"],
+                            "Opportunity Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Opportunity"],
+                            "Risk Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Risk"],
+                            "Structure Confidence": confidence[
+                                "Confidence Breakdown"
+                            ]["Structure"],
 
                             "Support 1": levels[
                                 "Support 1"
@@ -380,6 +415,16 @@ def run_scan():
     ]
 
     hidden_report_columns = [
+        "Momo Confidence",
+        "Confidence Rating",
+        "Trend Confidence",
+        "Location Confidence",
+        "Momentum Confidence",
+        "Volume Confidence",
+        "Opportunity Confidence",
+        "Risk Confidence",
+        "Structure Confidence",
+
         "Support 1",
         "Support 2",
         "Support 3",
