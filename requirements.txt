@@ -7,3 +7,4 @@ alpaca-py==0.43.5
 openai==2.45.0
 supabase==2.31.0
 plotly==6.9.0
+requests==2.34.2
