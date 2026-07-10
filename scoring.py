@@ -12,6 +12,7 @@ def score_stock(latest, previous):
     distance = latest["distance_from_ema21"]
     rvol = latest["rvol"]
     atr_pct = latest["atr_pct"]
+    room_to_high = latest["room_to_high_pct"]
     rsi = latest["rsi14"]
     macd_hist = latest["macd_hist"]
     prev_macd_hist = previous["macd_hist"]
@@ -73,6 +74,25 @@ def score_stock(latest, previous):
     if atr_pct > 18:
         risk_score -= 8
     engine.set_module("risk", risk_score)
+
+    opportunity_score = 0
+    if room_to_high >= 25:
+        opportunity_score = 25
+        reasons.append("Excellent room to prior high")
+    elif room_to_high >= 15:
+        opportunity_score = 20
+        reasons.append("Strong room to prior high")
+    elif room_to_high >= 8:
+        opportunity_score = 12
+        reasons.append("Decent room to prior high")
+    elif room_to_high >= 4:
+        opportunity_score = 5
+        reasons.append("Limited room to prior high")
+    else:
+        opportunity_score = 0
+        reasons.append("Too close to prior high")
+
+    engine.set_module("opportunity", opportunity_score)
 
     # Base technical score
     if 3 <= price <= 50:
@@ -171,6 +191,13 @@ def score_stock(latest, previous):
 
     if setup == "Watchlist" and above_ema21 and above_ema50 and 0 <= distance <= 4:
         setup = "Clean Pullback"
+
+    if room_to_high >= 15:
+        score += 5
+        dee_fit += 10
+    elif room_to_high < 5:
+        score -= 5
+        dee_fit -= 10
 
     score = max(0, min(score, 100))
     dee_fit = max(0, min(dee_fit, 100))
