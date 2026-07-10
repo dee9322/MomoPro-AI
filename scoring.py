@@ -202,6 +202,7 @@ def score_stock(latest, previous):
     score = max(0, min(score, 100))
     dee_fit = max(0, min(dee_fit, 100))
     momo_score = engine.momofit()
+    modules = engine.summary().copy()
 
     if dee_fit >= 90:
         grade = "A+"
@@ -214,4 +215,12 @@ def score_stock(latest, previous):
     else:
         grade = "Pass"
 
-    return score, dee_fit, momo_score, grade, setup, ", ".join(reasons)
+    return (
+        score,
+        dee_fit,
+        momo_score,
+        modules,
+        grade,
+        setup,
+        ", ".join(reasons),
+    )
