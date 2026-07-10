@@ -46,4 +46,16 @@ def calculate_indicators(df):
     df["prior_60_high"] = df["high"].rolling(60).max().shift(1)
     df["room_to_high_pct"] = ((df["prior_60_high"] - df["close"]) / df["close"]) * 100
 
+    # Structural support and resistance reference levels
+    df["prior_20_high"] = df["high"].rolling(20).max().shift(1)
+    df["prior_60_high"] = df["high"].rolling(60).max().shift(1)
+    df["prior_120_high"] = df["high"].rolling(120).max().shift(1)
+
+    df["prior_20_low"] = df["low"].rolling(20).min().shift(1)
+    df["prior_60_low"] = df["low"].rolling(60).min().shift(1)
+
+    df["room_to_high_pct"] = (
+        (df["prior_60_high"] - df["close"]) / df["close"]
+    ) * 100
+
     return df
