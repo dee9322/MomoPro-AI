@@ -1,5 +1,6 @@
 import math
 import re
+from typing import Any
 
 
 MODULE_WEIGHTS = {
@@ -12,8 +13,15 @@ MODULE_WEIGHTS = {
     "structure": 0.10,
 }
 
+INTEGRATED_WEIGHTS = {
+    "technical": 0.70,
+    "market": 0.12,
+    "sector": 0.08,
+    "relative_strength": 0.10,
+}
 
-def _valid_number(value):
+
+def _valid_number(value: Any) -> bool:
     try:
         return value is not None and math.isfinite(float(value))
     except (TypeError, ValueError):
@@ -84,14 +92,24 @@ def _structure_score(risk_reward_data, levels):
     return round((ratio_score * 0.60) + (zone_score * 0.40))
 
 
+def _rating(score: float | int) -> str:
+    if score >= 90:
+        return "Very High"
+    if score >= 80:
+        return "High"
+    if score >= 70:
+        return "Good"
+    if score >= 60:
+        return "Moderate"
+    return "Low"
+
+
 def calculate_confidence(modules, risk_reward_data, levels):
     """
-    Calculate transparent Momo Engine Confidence.
+    Calculate transparent technical Momo Engine Confidence.
 
-    The confidence percentage uses the active technical modules plus a
-    structural score derived from risk/reward and the quality of the nearest
-    support and resistance zones. Future market, sector, news, and AI inputs
-    will remain separate and can be added without changing this interface.
+    This score intentionally excludes market, sector, news, and AI inputs.
+    Those are layered in separately by calculate_integrated_confidence().
     """
     breakdown = {
         "Trend": _normalize_module(modules.get("trend")),
@@ -115,19 +133,118 @@ def calculate_confidence(modules, risk_reward_data, levels):
 
     confidence = round(max(0, min(weighted_total, 100)))
 
-    if confidence >= 90:
-        rating = "Very High"
-    elif confidence >= 80:
-        rating = "High"
-    elif confidence >= 70:
-        rating = "Good"
-    elif confidence >= 60:
-        rating = "Moderate"
-    else:
-        rating = "Low"
-
     return {
         "Momo Confidence": confidence,
-        "Confidence Rating": rating,
+        "Confidence Rating": _rating(confidence),
         "Confidence Breakdown": breakdown,
+    }
+
+
+def _sector_score_from_context(
+    market_context: dict[str, Any] | None,
+    relative_strength: dict[str, Any] | None,
+) -> float | None:
+    market_context = market_context or {}
+    relative_strength = relative_strength or {}
+
+    sector_name = relative_strength.get("sector_name")
+    sector_etf = relative_strength.get("sector_etf")
+    rankings = market_context.get("sectors", {}).get("rankings", [])
+
+    for item in rankings:
+        if (
+            sector_etf
+            and item.get("symbol") == sector_etf
+        ) or (
+            sector_name
+            and item.get("sector") == sector_name
+        ):
+            return float(item["score"]) if _valid_number(item.get("score")) else None
+
+    leaders = market_context.get("sectors", {}).get("leaders", [])
+    if leaders and _valid_number(leaders[0].get("score")):
+        return float(leaders[0]["score"])
+
+    return None
+
+
+def calculate_integrated_confidence(
+    technical_confidence: float | int | None,
+    market_context: dict[str, Any] | None,
+    relative_strength: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Blend the stock's technical confidence with live market context.
+
+    The technical engine remains the largest component. Missing market inputs
+    are reweighted out rather than treated as zero, so unavailable data does
+    not unfairly punish a setup.
+    """
+    market_context = market_context or {}
+    relative_strength = relative_strength or {}
+
+    breakdown: dict[str, float | None] = {
+        "Technical": (
+            float(technical_confidence)
+            if _valid_number(technical_confidence)
+            else None
+        ),
+        "Market": (
+            float(market_context.get("market_score"))
+            if _valid_number(market_context.get("market_score"))
+            else None
+        ),
+        "Sector": _sector_score_from_context(
+            market_context,
+            relative_strength,
+        ),
+        "Relative Strength": (
+            float(relative_strength.get("score"))
+            if _valid_number(relative_strength.get("score"))
+            else None
+        ),
+    }
+
+    components = [
+        (breakdown["Technical"], INTEGRATED_WEIGHTS["technical"]),
+        (breakdown["Market"], INTEGRATED_WEIGHTS["market"]),
+        (breakdown["Sector"], INTEGRATED_WEIGHTS["sector"]),
+        (
+            breakdown["Relative Strength"],
+            INTEGRATED_WEIGHTS["relative_strength"],
+        ),
+    ]
+
+    available = [
+        (value, weight)
+        for value, weight in components
+        if value is not None
+    ]
+
+    if not available:
+        return {
+            "Integrated Confidence": None,
+            "Integrated Rating": "Unavailable",
+            "Integrated Breakdown": breakdown,
+            "Adjustment": None,
+        }
+
+    total_weight = sum(weight for _, weight in available)
+    integrated = round(
+        sum(value * weight for value, weight in available) / total_weight
+    )
+    integrated = max(0, min(integrated, 100))
+
+    technical = breakdown["Technical"]
+    adjustment = (
+        round(integrated - technical)
+        if technical is not None
+        else None
+    )
+
+    return {
+        "Integrated Confidence": integrated,
+        "Integrated Rating": _rating(integrated),
+        "Integrated Breakdown": breakdown,
+        "Adjustment": adjustment,
     }
