@@ -3,7 +3,9 @@ import math
 import pandas as pd
 import streamlit as st
 
-from alpaca_test import test_alpaca_connection
+from alpaca_test import (
+    test_alpaca_connection,
+)
 from scanner import run_scan
 
 
@@ -14,7 +16,9 @@ st.set_page_config(
 )
 
 st.title("📈 MomoPro AI")
-st.subheader("Your AI Swing Trading Partner")
+st.subheader(
+    "Your AI Swing Trading Partner"
+)
 
 
 def valid_value(value):
@@ -49,6 +53,34 @@ def r_text(value):
     return f"{float(value):.2f}R"
 
 
+def reaction_text(
+    quality,
+    touches,
+):
+    if not valid_value(touches):
+        return None
+
+    quality_text = (
+        str(quality)
+        if valid_value(quality)
+        else "Unrated"
+    )
+
+    touch_count = int(float(touches))
+
+    reaction_word = (
+        "reaction"
+        if touch_count == 1
+        else "reactions"
+    )
+
+    return (
+        f"{quality_text} · "
+        f"{touch_count} confirmed "
+        f"{reaction_word}"
+    )
+
+
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 
@@ -69,6 +101,9 @@ tabs = st.tabs(
 )
 
 
+# -----------------------------
+# Dashboard
+# -----------------------------
 with tabs[0]:
     st.header("Dashboard")
 
@@ -84,21 +119,30 @@ with tabs[0]:
 
         if success:
             st.success(
-                "✅ Alpaca connected successfully!"
+                "✅ Alpaca connected "
+                "successfully!"
             )
+
             st.write(
                 f"Account status: {status}"
             )
+
             st.write(
-                f"Buying power: ${buying_power}"
+                f"Buying power: "
+                f"${buying_power}"
             )
+
         else:
             st.error(
                 "❌ Alpaca connection failed."
             )
+
             st.write(status)
 
 
+# -----------------------------
+# Scanner
+# -----------------------------
 with tabs[1]:
     st.header("Scanner")
 
@@ -113,7 +157,9 @@ with tabs[1]:
                 run_scan()
             )
 
-        st.session_state.selected_symbol = None
+        st.session_state.selected_symbol = (
+            None
+        )
 
     df = st.session_state.scan_results
 
@@ -132,9 +178,27 @@ with tabs[1]:
             "Support 1": None,
             "Support 2": None,
             "Support 3": None,
+
             "Resistance 1": None,
             "Resistance 2": None,
             "Resistance 3": None,
+
+            "Support 1 Quality": None,
+            "Support 2 Quality": None,
+            "Support 3 Quality": None,
+
+            "Resistance 1 Quality": None,
+            "Resistance 2 Quality": None,
+            "Resistance 3 Quality": None,
+
+            "Support 1 Touches": None,
+            "Support 2 Touches": None,
+            "Support 3 Touches": None,
+
+            "Resistance 1 Touches": None,
+            "Resistance 2 Touches": None,
+            "Resistance 3 Touches": None,
+
             "Reference Entry": None,
             "Risk Reference": None,
             "Reward Reference": None,
@@ -142,12 +206,15 @@ with tabs[1]:
             "Reward Per Share": None,
             "Risk Reward": None,
             "Risk Reward Status": None,
+
             "T1": None,
             "T1 Upside %": None,
             "T1 R": None,
+
             "T2": None,
             "T2 Upside %": None,
             "T2 R": None,
+
             "T3": None,
             "T3 Upside %": None,
             "T3 R": None,
@@ -168,7 +235,10 @@ with tabs[1]:
         )
 
         if selected_rows:
-            selected_index = selected_rows[0]
+            selected_index = (
+                selected_rows[0]
+            )
+
             selected_row = df.iloc[
                 selected_index
             ]
@@ -178,7 +248,8 @@ with tabs[1]:
             )
 
         selected_symbol = (
-            st.session_state.selected_symbol
+            st.session_state
+            .selected_symbol
         )
 
         if selected_symbol:
@@ -199,6 +270,7 @@ with tabs[1]:
                     f"{selected_symbol} "
                     "Stock Report"
                 )
+
                 st.caption(
                     "MomoPro AI structural "
                     "swing-trade analysis."
@@ -207,7 +279,9 @@ with tabs[1]:
             with header_right:
                 if st.button(
                     "Close Report",
-                    key="close_stock_report",
+                    key=(
+                        "close_stock_report"
+                    ),
                 ):
                     (
                         st.session_state
@@ -260,6 +334,7 @@ with tabs[1]:
             )
 
             st.subheader("Setup")
+
             st.write(
                 selected_stock.get(
                     "Setup",
@@ -270,6 +345,7 @@ with tabs[1]:
             st.subheader(
                 "Current Scanner Read"
             )
+
             st.write(
                 selected_stock.get(
                     "Reasons",
@@ -304,9 +380,20 @@ with tabs[1]:
                 ),
             )
 
+            # -------------------------
+            # Support / Resistance v2
+            # -------------------------
             st.divider()
+
             st.subheader(
                 "Support and Resistance"
+            )
+
+            st.caption(
+                "Zones are based on "
+                "historical swing reactions, "
+                "touch count, candle rejection, "
+                "volume interaction, and recency."
             )
 
             (
@@ -315,7 +402,9 @@ with tabs[1]:
             ) = st.columns(2)
 
             with support_col:
-                st.markdown("#### Support")
+                st.markdown(
+                    "#### Support"
+                )
 
                 for label in [
                     "Support 1",
@@ -328,11 +417,36 @@ with tabs[1]:
                         )
                     )
 
+                    quality = (
+                        selected_stock.get(
+                            f"{label} Quality"
+                        )
+                    )
+
+                    touches = (
+                        selected_stock.get(
+                            f"{label} Touches"
+                        )
+                    )
+
                     if valid_value(value):
                         st.metric(
                             label,
                             money_text(value),
                         )
+
+                        reaction = (
+                            reaction_text(
+                                quality,
+                                touches,
+                            )
+                        )
+
+                        if reaction:
+                            st.caption(
+                                reaction
+                            )
+
                     else:
                         st.write(
                             f"{label}: "
@@ -352,6 +466,18 @@ with tabs[1]:
                     value = (
                         selected_stock.get(
                             label
+                        )
+                    )
+
+                    quality = (
+                        selected_stock.get(
+                            f"{label} Quality"
+                        )
+                    )
+
+                    touches = (
+                        selected_stock.get(
+                            f"{label} Touches"
                         )
                     )
 
@@ -380,13 +506,30 @@ with tabs[1]:
                                 "upside"
                             ),
                         )
+
+                        reaction = (
+                            reaction_text(
+                                quality,
+                                touches,
+                            )
+                        )
+
+                        if reaction:
+                            st.caption(
+                                reaction
+                            )
+
                     else:
                         st.write(
                             f"{label}: "
                             "Not available"
                         )
 
+            # -------------------------
+            # Risk / Reward
+            # -------------------------
             st.divider()
+
             st.subheader(
                 "Structural Risk / Reward"
             )
@@ -398,16 +541,19 @@ with tabs[1]:
                     "Reference Entry"
                 )
             )
+
             risk_reference = (
                 selected_stock.get(
                     "Risk Reference"
                 )
             )
+
             reward_reference = (
                 selected_stock.get(
                     "Reward Reference"
                 )
             )
+
             risk_reward = (
                 selected_stock.get(
                     "Risk Reward"
@@ -437,7 +583,9 @@ with tabs[1]:
 
             rr_columns[3].metric(
                 "Risk / Reward",
-                r_text(risk_reward),
+                r_text(
+                    risk_reward
+                ),
             )
 
             risk_detail_columns = (
@@ -449,11 +597,13 @@ with tabs[1]:
                     "Risk Per Share"
                 )
             )
+
             reward_per_share = (
                 selected_stock.get(
                     "Reward Per Share"
                 )
             )
+
             rr_status = (
                 selected_stock.get(
                     "Risk Reward Status",
@@ -483,11 +633,16 @@ with tabs[1]:
             st.caption(
                 "This is a structural "
                 "reference using the current "
-                "close, nearest support, and "
-                "nearest resistance."
+                "close, nearest confirmed "
+                "support zone, and nearest "
+                "confirmed resistance zone."
             )
 
+            # -------------------------
+            # T1 / T2 / T3
+            # -------------------------
             st.divider()
+
             st.subheader(
                 "Structural Targets"
             )
@@ -505,12 +660,14 @@ with tabs[1]:
                         target_name
                     )
                 )
+
                 target_upside = (
                     selected_stock.get(
                         f"{target_name} "
                         "Upside %"
                     )
                 )
+
                 target_r = (
                     selected_stock.get(
                         f"{target_name} R"
@@ -538,20 +695,25 @@ with tabs[1]:
 
                     st.metric(
                         "Reward / Risk",
-                        r_text(target_r),
+                        r_text(
+                            target_r
+                        ),
                     )
 
             st.caption(
-                "Targets use the three "
-                "structural resistance levels. "
-                "No artificial target is "
-                "created when a valid "
-                "resistance level is missing."
+                "T1, T2, and T3 use the "
+                "three upgraded structural "
+                "resistance zones. No target "
+                "is invented when a valid "
+                "zone is unavailable."
             )
 
             st.info(
-                "Next roadmap item: "
-                "Confidence %."
+                "Current validation step: "
+                "confirm upgraded support, "
+                "resistance, risk/reward, "
+                "and targets against the "
+                "visible charts."
             )
 
     elif df is not None:
@@ -561,36 +723,56 @@ with tabs[1]:
         )
 
 
+# -----------------------------
+# AI Analysis
+# -----------------------------
 with tabs[2]:
     st.header("AI Analysis")
+
     st.write(
         "AI breakdowns will appear here."
     )
 
 
+# -----------------------------
+# Watchlist
+# -----------------------------
 with tabs[3]:
     st.header("Watchlist")
+
     st.write(
         "Saved stocks will appear here."
     )
 
 
+# -----------------------------
+# Journal
+# -----------------------------
 with tabs[4]:
     st.header("Journal")
+
     st.write(
         "Trade journal will appear here."
     )
 
 
+# -----------------------------
+# Performance
+# -----------------------------
 with tabs[5]:
     st.header("Performance")
+
     st.write(
         "Your stats will appear here."
     )
 
 
+# -----------------------------
+# Settings
+# -----------------------------
 with tabs[6]:
     st.header("Settings")
+
     st.write(
         "Strategy settings will appear here."
     )
