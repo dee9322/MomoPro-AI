@@ -14,6 +14,7 @@ from market_universe import get_market_universe
 from pre_screener import select_best_symbols
 from risk_reward import calculate_risk_reward
 from scoring import score_stock
+from targets import calculate_targets
 
 
 HISTORY_CALENDAR_DAYS = 350
@@ -26,10 +27,15 @@ def run_scan():
     api_key = st.secrets["ALPACA_API_KEY"]
     secret_key = st.secrets["ALPACA_SECRET_KEY"]
 
-    client = StockHistoricalDataClient(api_key, secret_key)
+    client = StockHistoricalDataClient(
+        api_key,
+        secret_key,
+    )
 
     end = datetime.now()
-    start = end - timedelta(days=HISTORY_CALENDAR_DAYS)
+    start = end - timedelta(
+        days=HISTORY_CALENDAR_DAYS
+    )
 
     results = []
 
@@ -42,8 +48,14 @@ def run_scan():
         limit=SCAN_LIMIT,
     )
 
-    for batch_start in range(0, len(symbols), CHUNK_SIZE):
-        chunk = symbols[batch_start : batch_start + CHUNK_SIZE]
+    for batch_start in range(
+        0,
+        len(symbols),
+        CHUNK_SIZE,
+    ):
+        chunk = symbols[
+            batch_start : batch_start + CHUNK_SIZE
+        ]
 
         request = None
         bars = None
@@ -73,10 +85,15 @@ def run_scan():
                         all_bars["symbol"] == symbol
                     ].copy()
 
-                    if len(symbol_df) < MINIMUM_DAILY_BARS:
+                    if (
+                        len(symbol_df)
+                        < MINIMUM_DAILY_BARS
+                    ):
                         continue
 
-                    symbol_df = calculate_indicators(symbol_df)
+                    symbol_df = calculate_indicators(
+                        symbol_df
+                    )
 
                     latest = symbol_df.iloc[-1]
                     previous = symbol_df.iloc[-2]
@@ -87,17 +104,34 @@ def run_scan():
                         latest.get("macd_hist"),
                         latest.get("atr_pct"),
                         latest.get("rvol"),
-                        latest.get("prior_120_high"),
+                        latest.get(
+                            "prior_120_high"
+                        ),
                     ]
 
-                    if any(pd.isna(value) for value in required_values):
+                    if any(
+                        pd.isna(value)
+                        for value in required_values
+                    ):
                         continue
 
                     levels = calculate_levels(latest)
 
-                    risk_reward = calculate_risk_reward(
-                        latest["close"],
-                        levels,
+                    risk_reward = (
+                        calculate_risk_reward(
+                            latest["close"],
+                            levels,
+                        )
+                    )
+
+                    targets = calculate_targets(
+                        entry=risk_reward[
+                            "Reference Entry"
+                        ],
+                        risk_per_share=risk_reward[
+                            "Risk Per Share"
+                        ],
+                        levels=levels,
                     )
 
                     (
@@ -107,51 +141,114 @@ def run_scan():
                         grade,
                         setup,
                         reasons,
-                    ) = score_stock(latest, previous)
+                    ) = score_stock(
+                        latest,
+                        previous,
+                    )
 
                     results.append(
                         {
                             "Symbol": symbol,
-                            "Close": round(float(latest["close"]), 2),
+                            "Close": round(
+                                float(
+                                    latest["close"]
+                                ),
+                                2,
+                            ),
                             "Score": score,
                             "Dee Fit": dee_fit,
                             "Setup": setup,
-                            "ATR %": round(float(latest["atr_pct"]), 2),
-                            "RVOL": round(float(latest["rvol"]), 2),
+                            "ATR %": round(
+                                float(
+                                    latest["atr_pct"]
+                                ),
+                                2,
+                            ),
+                            "RVOL": round(
+                                float(
+                                    latest["rvol"]
+                                ),
+                                2,
+                            ),
                             "Distance EMA21 %": round(
                                 float(
-                                    latest["distance_from_ema21"]
+                                    latest[
+                                        "distance_from_ema21"
+                                    ]
                                 ),
                                 2,
                             ),
                             "Reasons": reasons,
                             "Grade": grade,
                             "Momo Score": momo_score,
-                            "Support 1": levels["Support 1"],
-                            "Support 2": levels["Support 2"],
-                            "Support 3": levels["Support 3"],
-                            "Resistance 1": levels["Resistance 1"],
-                            "Resistance 2": levels["Resistance 2"],
-                            "Resistance 3": levels["Resistance 3"],
-                            "Reference Entry": risk_reward[
-                                "Reference Entry"
+                            "Support 1": levels[
+                                "Support 1"
                             ],
-                            "Risk Reference": risk_reward[
-                                "Risk Reference"
+                            "Support 2": levels[
+                                "Support 2"
                             ],
-                            "Reward Reference": risk_reward[
-                                "Reward Reference"
+                            "Support 3": levels[
+                                "Support 3"
                             ],
-                            "Risk Per Share": risk_reward[
-                                "Risk Per Share"
+                            "Resistance 1": levels[
+                                "Resistance 1"
                             ],
-                            "Reward Per Share": risk_reward[
-                                "Reward Per Share"
+                            "Resistance 2": levels[
+                                "Resistance 2"
                             ],
-                            "Risk Reward": risk_reward["Risk Reward"],
-                            "Risk Reward Status": risk_reward[
-                                "Risk Reward Status"
+                            "Resistance 3": levels[
+                                "Resistance 3"
                             ],
+                            "Reference Entry": (
+                                risk_reward[
+                                    "Reference Entry"
+                                ]
+                            ),
+                            "Risk Reference": (
+                                risk_reward[
+                                    "Risk Reference"
+                                ]
+                            ),
+                            "Reward Reference": (
+                                risk_reward[
+                                    "Reward Reference"
+                                ]
+                            ),
+                            "Risk Per Share": (
+                                risk_reward[
+                                    "Risk Per Share"
+                                ]
+                            ),
+                            "Reward Per Share": (
+                                risk_reward[
+                                    "Reward Per Share"
+                                ]
+                            ),
+                            "Risk Reward": (
+                                risk_reward[
+                                    "Risk Reward"
+                                ]
+                            ),
+                            "Risk Reward Status": (
+                                risk_reward[
+                                    "Risk Reward Status"
+                                ]
+                            ),
+                            "T1": targets["T1"],
+                            "T1 Upside %": targets[
+                                "T1 Upside %"
+                            ],
+                            "T1 R": targets["T1 R"],
+                            "T2": targets["T2"],
+                            "T2 Upside %": targets[
+                                "T2 Upside %"
+                            ],
+                            "T2 R": targets["T2 R"],
+                            "T3": targets["T3"],
+                            "T3 Upside %": targets[
+                                "T3 Upside %"
+                            ],
+                            "T3 R": targets["T3 R"],
                         }
                     )
 
@@ -205,12 +302,26 @@ def run_scan():
         "Reward Per Share",
         "Risk Reward",
         "Risk Reward Status",
+        "T1",
+        "T1 Upside %",
+        "T1 R",
+        "T2",
+        "T2 Upside %",
+        "T2 R",
+        "T3",
+        "T3 Upside %",
+        "T3 R",
     ]
 
-    all_columns = preferred_columns + hidden_report_columns
+    all_columns = (
+        preferred_columns
+        + hidden_report_columns
+    )
 
     if not results:
-        return pd.DataFrame(columns=all_columns)
+        return pd.DataFrame(
+            columns=all_columns
+        )
 
     result_df = pd.DataFrame(results)
 
