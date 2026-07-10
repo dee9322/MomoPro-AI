@@ -1,8 +1,15 @@
+
+
+
 import math
 
 import pandas as pd
 import streamlit as st
 
+from ai_commentary import (
+    build_momo_engine_decision,
+    generate_ai_decision,
+)
 from alpaca_test import (
     test_alpaca_connection,
 )
@@ -86,6 +93,9 @@ if "scan_results" not in st.session_state:
 
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = None
+
+if "ai_commentary_cache" not in st.session_state:
+    st.session_state.ai_commentary_cache = {}
 
 
 tabs = st.tabs(
@@ -488,6 +498,131 @@ with tabs[1]:
                         percent_text(
                             selected_stock.get(key)
                         ),
+                    )
+
+            # -------------------------
+            # Engine and AI Decisions
+            # -------------------------
+            st.divider()
+
+            st.subheader("Decision Center")
+
+            engine_decision = build_momo_engine_decision(
+                selected_stock
+            )
+
+            engine_col, ai_col = st.columns(2)
+
+            with engine_col:
+                st.markdown("### Momo Engine Decision")
+                st.metric(
+                    "Rule-Based Decision",
+                    engine_decision["decision"],
+                )
+                st.write(engine_decision["summary"])
+
+                if engine_decision["strengths"]:
+                    st.markdown("**What the engine likes**")
+                    for item in engine_decision["strengths"]:
+                        st.write(f"• {item}")
+
+                if engine_decision["concerns"]:
+                    st.markdown("**Main concerns**")
+                    for item in engine_decision["concerns"]:
+                        st.write(f"• {item}")
+
+                with st.expander("Engine confirmation and invalidation"):
+                    st.markdown("**What would strengthen it**")
+                    for item in engine_decision["confirmation"]:
+                        st.write(f"• {item}")
+
+                    st.markdown("**What would invalidate it**")
+                    for item in engine_decision["invalidation"]:
+                        st.write(f"• {item}")
+
+            with ai_col:
+                st.markdown("### Independent AI Decision")
+                st.caption(
+                    "For now, the AI uses the technical and structural "
+                    "data already in this report. News, filings, options, "
+                    "sector, and market feeds will be added in their "
+                    "scheduled roadmap steps."
+                )
+
+                cached_ai = st.session_state.ai_commentary_cache.get(
+                    selected_symbol
+                )
+
+                button_label = (
+                    "Refresh AI Decision"
+                    if cached_ai
+                    else "Generate AI Decision"
+                )
+
+                if st.button(
+                    button_label,
+                    key=f"generate_ai_{selected_symbol}",
+                    use_container_width=True,
+                ):
+                    try:
+                        api_key = st.secrets["OPENAI_API_KEY"]
+
+                        with st.spinner(
+                            f"AI is analyzing {selected_symbol}..."
+                        ):
+                            cached_ai = generate_ai_decision(
+                                api_key=api_key,
+                                stock=selected_stock,
+                            )
+
+                        st.session_state.ai_commentary_cache[
+                            selected_symbol
+                        ] = cached_ai
+
+                    except KeyError:
+                        st.error(
+                            "OPENAI_API_KEY is missing from Streamlit "
+                            "secrets."
+                        )
+                    except Exception as error:
+                        st.error(
+                            "The AI decision could not be generated. "
+                            f"Details: {error}"
+                        )
+
+                if cached_ai:
+                    st.metric(
+                        "AI Decision",
+                        cached_ai["decision"],
+                        f'{cached_ai["confidence"]}% AI confidence',
+                    )
+
+                    st.write(cached_ai["summary"])
+
+                    if cached_ai["strengths"]:
+                        st.markdown("**AI strengths**")
+                        for item in cached_ai["strengths"]:
+                            st.write(f"• {item}")
+
+                    if cached_ai["concerns"]:
+                        st.markdown("**AI concerns**")
+                        for item in cached_ai["concerns"]:
+                            st.write(f"• {item}")
+
+                    with st.expander("AI improvement and invalidation"):
+                        st.markdown("**What would improve the setup**")
+                        for item in cached_ai["what_improves_setup"]:
+                            st.write(f"• {item}")
+
+                        st.markdown("**What would invalidate it**")
+                        for item in cached_ai["invalidation"]:
+                            st.write(f"• {item}")
+                else:
+                    st.info(
+                        "Generate the AI Decision when you want an "
+                        "independent second opinion. It runs only on "
+                        "demand, so scanning the market does not create "
+                        "an API charge for every stock."
                     )
 
             # -------------------------
