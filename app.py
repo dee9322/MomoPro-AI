@@ -157,7 +157,7 @@ with tabs[0]:
     st.subheader("Market Snapshot")
     dashboard_market = st.session_state.market_context
     if dashboard_market:
-        snap = st.columns(4)
+        snap = st.columns(5)
         snap[0].metric("Market Score", dashboard_market.get("market_score", "—"))
         snap[1].metric("Trend", dashboard_market.get("market_trend", "—"))
         snap[2].metric("Risk Environment", dashboard_market.get("risk_environment", "—"))
@@ -168,6 +168,16 @@ with tabs[0]:
             (
                 f'{dash_breadth.get("breadth_score")}/100'
                 if dash_breadth.get("breadth_score") is not None
+                else None
+            ),
+        )
+        dash_sentiment = dashboard_market.get("sentiment", {})
+        snap[4].metric(
+            "Sentiment",
+            dash_sentiment.get("fear_greed_label", "—"),
+            (
+                f'{dash_sentiment.get("fear_greed_score")}/100'
+                if dash_sentiment.get("fear_greed_score") is not None
                 else None
             ),
         )
@@ -202,7 +212,7 @@ with tabs[1]:
     market = st.session_state.market_context
 
     if market:
-        top = st.columns(4)
+        top = st.columns(5)
         top[0].metric("Market Score", market.get("market_score", "—"))
         top[1].metric("Market Trend", market.get("market_trend", "—"))
         top[2].metric("Risk Environment", market.get("risk_environment", "—"))
@@ -213,6 +223,16 @@ with tabs[1]:
             (
                 f'{breadth.get("breadth_score")}/100'
                 if breadth.get("breadth_score") is not None
+                else None
+            ),
+        )
+        sentiment = market.get("sentiment", {})
+        top[4].metric(
+            "Sentiment",
+            sentiment.get("fear_greed_label", "—"),
+            (
+                f'{sentiment.get("fear_greed_score")}/100'
+                if sentiment.get("fear_greed_score") is not None
                 else None
             ),
         )
@@ -264,6 +284,47 @@ with tabs[1]:
             st.caption(breadth.get("universe_label", ""))
         else:
             st.warning(breadth.get("summary", "Breadth is unavailable."))
+
+        st.divider()
+        st.subheader("Market Sentiment")
+        sentiment = market.get("sentiment", {})
+
+        if sentiment.get("status") == "Available":
+            s1 = st.columns(4)
+            s1[0].metric(
+                "Momo Fear & Greed",
+                sentiment.get("fear_greed_label", "—"),
+                (
+                    f'{sentiment.get("fear_greed_score")}/100'
+                    if sentiment.get("fear_greed_score") is not None
+                    else None
+                ),
+            )
+            s1[1].metric(
+                "Total Put / Call",
+                sentiment.get("total_put_call_ratio", "—"),
+            )
+            s1[2].metric(
+                "Equity Put / Call",
+                sentiment.get("equity_put_call_ratio", "—"),
+            )
+            s1[3].metric(
+                "Risk Appetite",
+                sentiment.get("risk_appetite", "—"),
+            )
+
+            st.write(sentiment.get("summary", ""))
+
+            if sentiment.get("warning"):
+                st.warning(sentiment.get("warning"))
+
+            st.caption(
+                "Fear & Greed is MomoPro's transparent composite using broad "
+                "trend, breadth, volatility, and official Cboe put/call data. "
+                f'Source: {sentiment.get("source", "Unavailable")}.'
+            )
+        else:
+            st.warning(sentiment.get("summary", "Sentiment is unavailable."))
     else:
         st.info("Load Market Context to see the complete market assessment.")
 
@@ -539,13 +600,18 @@ with tabs[2]:
             report_market = st.session_state.market_context
             if report_market:
                 report_breadth = report_market.get("breadth", {})
-                mc = st.columns(4)
+                report_sentiment = report_market.get("sentiment", {})
+                mc = st.columns(5)
                 mc[0].metric("Market", report_market.get("market_trend", "—"))
                 mc[1].metric("Risk", report_market.get("risk_environment", "—"))
                 mc[2].metric("Market Score", report_market.get("market_score", "—"))
                 mc[3].metric("Breadth", report_breadth.get("breadth_status", "—"))
+                mc[4].metric("Sentiment", report_sentiment.get("fear_greed_label", "—"))
                 st.caption(report_market.get("summary", ""))
-                st.info("Open the Market Context tab for the full index and breadth breakdown.")
+                st.info(
+                    "Open the Market Context tab for the full index, breadth, "
+                    "and sentiment breakdown."
+                )
             else:
                 st.caption("Market Context has not been loaded for this session.")
 
