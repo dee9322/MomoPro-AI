@@ -10,7 +10,7 @@ from market_universe import get_market_universe
 from pre_screener import select_best_symbols
 from indicators import calculate_indicators
 from scoring import score_stock
-
+from levels import calculate_levels
 
 
 
@@ -62,7 +62,8 @@ def run_scan():
 
                     latest = df.iloc[-1]
                     previous = df.iloc[-2]
-
+                    levels = calculate_levels(latest)
+                    
                     score, dee_fit, momo_score, grade, setup, reasons = score_stock(latest, previous)
 
                     results.append({
@@ -77,6 +78,12 @@ def run_scan():
                         "Reasons": reasons,
                         "Grade": grade,
                         "Momo Score": momo_score,
+                        "Support 1": levels["Support 1"],
+                        "Support 2": levels["Support 2"],
+                        "Support 3": levels["Support 3"],
+                        "Resistance 1": levels["Resistance 1"],
+                        "Resistance 2": levels["Resistance 2"],
+                        "Resistance 3": levels["Resistance 3"],
                     })
 
                 except Exception as e:
@@ -114,4 +121,13 @@ def run_scan():
         "Reasons"
     ]
 
-    return df[preferred_columns]
+    hidden_report_columns = [
+        "Support 1",
+        "Support 2",
+        "Support 3",
+        "Resistance 1",
+        "Resistance 2",
+        "Resistance 3",
+    ]
+
+    return df[preferred_columns + hidden_report_columns]
