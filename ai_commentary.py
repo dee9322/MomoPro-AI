@@ -54,8 +54,16 @@ def _quality_number(value: Any) -> int | None:
     return int(digits) if digits else None
 
 
-def build_momo_engine_decision(stock: Any) -> dict[str, Any]:
-    """Create a transparent rule-based decision from existing report data."""
+def build_momo_engine_decision(
+    stock: Any,
+    market_context: dict[str, Any] | None = None,
+    relative_strength: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create a transparent rule-based decision from stock and market data."""
+
+    market_context = market_context or {}
+    relative_strength = relative_strength or {}
+
     confidence = _number(stock.get("Momo Confidence")) or 0
     dee_fit = _number(stock.get("Dee Fit")) or 0
     score = _number(stock.get("Score")) or 0
@@ -115,6 +123,47 @@ def build_momo_engine_decision(stock: Any) -> dict[str, Any]:
     if resistance_quality is not None and resistance_quality >= 60:
         strengths.append(f"Nearest resistance is clearly established ({resistance_quality}/100)")
 
+    market_score = _number(market_context.get("market_score"))
+    breadth = market_context.get("breadth", {})
+    sentiment = market_context.get("sentiment", {})
+    sectors = market_context.get("sectors", {})
+    rs_score = _number(relative_strength.get("score"))
+
+    if market_score is not None:
+        if market_score >= 70:
+            strengths.append(f"Broad market backdrop is supportive ({market_score:.0f}/100)")
+        elif market_score < 45:
+            concerns.append(f"Broad market backdrop is weak ({market_score:.0f}/100)")
+
+    breadth_score = _number(breadth.get("breadth_score"))
+    if breadth_score is not None:
+        if breadth_score >= 60:
+            strengths.append(f"Market breadth is {breadth.get('breadth_status', 'supportive').lower()}")
+        elif breadth_score < 40:
+            concerns.append(f"Market breadth is {breadth.get('breadth_status', 'weak').lower()}")
+
+    if sentiment.get("fear_greed_label") == "Extreme Greed":
+        concerns.append("Market sentiment is at extreme greed, increasing chase risk")
+    elif sentiment.get("fear_greed_label") in {"Fear", "Extreme Fear"}:
+        concerns.append("Market sentiment remains defensive")
+
+    if rs_score is not None:
+        if rs_score >= 70:
+            strengths.append(f"Stock relative strength is strong ({rs_score:.0f}/100)")
+        elif rs_score < 45:
+            concerns.append(f"Stock relative strength is weak ({rs_score:.0f}/100)")
+
+    sector_name = relative_strength.get("sector_name")
+    sector_etf = relative_strength.get("sector_etf")
+    for item in sectors.get("rankings", []):
+        if item.get("symbol") == sector_etf or item.get("sector") == sector_name:
+            sector_score = _number(item.get("score"))
+            if sector_score is not None and sector_score >= 70:
+                strengths.append(f"Its sector is strong ({item.get('sector')} {sector_score:.0f}/100)")
+            elif sector_score is not None and sector_score < 40:
+                concerns.append(f"Its sector is weak ({item.get('sector')} {sector_score:.0f}/100)")
+            break
+
     if confidence >= 82 and dee_fit >= 80 and (risk_reward or 0) >= 1.5:
         decision = "Entry Ready"
     elif confidence >= 72 and dee_fit >= 70:
@@ -153,7 +202,11 @@ def build_momo_engine_decision(stock: Any) -> dict[str, Any]:
     }
 
 
-def _stock_payload(stock: Any) -> dict[str, Any]:
+def _stock_payload(
+    stock: Any,
+    market_context: dict[str, Any] | None = None,
+    relative_strength: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     keys = [
         "Symbol",
         "Grade",
@@ -217,22 +270,30 @@ def _stock_payload(stock: Any) -> dict[str, Any]:
         else:
             payload[key] = str(value)
 
+    payload["Market Context"] = market_context or None
+    payload["Relative Strength"] = relative_strength or None
+
     return payload
 
 
-def generate_ai_decision(api_key: str, stock: Any) -> dict[str, Any]:
+def generate_ai_decision(
+    api_key: str,
+    stock: Any,
+    market_context: dict[str, Any] | None = None,
+    relative_strength: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Generate an independent technical AI decision on demand."""
     if not api_key:
         raise ValueError("OPENAI_API_KEY is missing from Streamlit secrets.")
 
     client = OpenAI(api_key=api_key)
-    payload = _stock_payload(stock)
+    payload = _stock_payload(stock, market_context, relative_strength)
 
     system_prompt = """
 You are the independent AI analyst inside MomoPro AI, a swing-trading decision-support application.
-Analyze only the supplied technical and structural data. Do not claim to know current news, filings,
-earnings details, options activity, sector strength, or market conditions because those feeds are not
-connected yet. You may disagree with the rule-based Momo Engine. Be practical, cautious, and specific.
+Analyze the supplied technical, structural, market, breadth, sentiment, sector, and relative-strength data.
+Do not claim to know current news, filings, earnings details, options activity, or catalysts because those
+feeds are not connected yet. You may disagree with the rule-based Momo Engine. Be practical, cautious, and specific.
 Do not promise outcomes or describe a trade as guaranteed. Use concise language suitable for a stock report.
 The decision must be exactly one of: Entry Ready, Bullish Watch, Wait for Confirmation, Neutral, Avoid.
 """.strip()
