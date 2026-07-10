@@ -11,6 +11,7 @@ from alpaca_test import (
     test_alpaca_connection,
 )
 from scanner import run_scan
+from market_context import get_market_context
 
 
 st.set_page_config(
@@ -94,13 +95,18 @@ if "selected_symbol" not in st.session_state:
 if "ai_commentary_cache" not in st.session_state:
     st.session_state.ai_commentary_cache = {}
 
+if "market_context" not in st.session_state:
+    st.session_state.market_context = None
+
 
 tabs = st.tabs(
     [
         "Dashboard",
+        "Market Context",
         "Scanner",
         "AI Analysis",
         "Watchlist",
+        "Trade Planner",
         "Journal",
         "Performance",
         "Settings",
@@ -147,10 +153,125 @@ with tabs[0]:
             st.write(status)
 
 
+    st.divider()
+    st.subheader("Market Snapshot")
+    dashboard_market = st.session_state.market_context
+    if dashboard_market:
+        snap = st.columns(4)
+        snap[0].metric("Market Score", dashboard_market.get("market_score", "—"))
+        snap[1].metric("Trend", dashboard_market.get("market_trend", "—"))
+        snap[2].metric("Risk Environment", dashboard_market.get("risk_environment", "—"))
+        dash_breadth = dashboard_market.get("breadth", {})
+        snap[3].metric(
+            "Breadth",
+            dash_breadth.get("breadth_status", "—"),
+            (
+                f'{dash_breadth.get("breadth_score")}/100'
+                if dash_breadth.get("breadth_score") is not None
+                else None
+            ),
+        )
+        st.caption(dashboard_market.get("summary", ""))
+    else:
+        st.caption("Open Market Context and refresh it to populate today’s snapshot.")
+
+
+# -----------------------------
+# Market Context
+# -----------------------------
+with tabs[1]:
+    st.header("Market Context")
+    st.caption(
+        "Full broad-market assessment. Refresh this before scanning "
+        "when you want the latest market backdrop."
+    )
+
+    if st.button(
+        "Load / Refresh Market Context",
+        key="refresh_market_context",
+    ):
+        try:
+            with st.spinner("Analyzing the broad market and breadth..."):
+                st.session_state.market_context = get_market_context(
+                    st.secrets["ALPACA_API_KEY"],
+                    st.secrets["ALPACA_SECRET_KEY"],
+                )
+        except Exception as error:
+            st.error(f"Market context could not be loaded: {error}")
+
+    market = st.session_state.market_context
+
+    if market:
+        top = st.columns(4)
+        top[0].metric("Market Score", market.get("market_score", "—"))
+        top[1].metric("Market Trend", market.get("market_trend", "—"))
+        top[2].metric("Risk Environment", market.get("risk_environment", "—"))
+        breadth = market.get("breadth", {})
+        top[3].metric(
+            "Breadth",
+            breadth.get("breadth_status", "—"),
+            (
+                f'{breadth.get("breadth_score")}/100'
+                if breadth.get("breadth_score") is not None
+                else None
+            ),
+        )
+
+        st.info(market.get("summary", "No market summary available."))
+
+        st.subheader("Major Indexes")
+        rows = []
+        for symbol in ("SPY", "QQQ", "IWM", "DIA", "VIXY"):
+            item = market.get("indexes", {}).get(symbol, {})
+            rows.append(
+                {
+                    "Symbol": symbol,
+                    "Name": item.get("label"),
+                    "Trend": item.get("trend"),
+                    "Score": item.get("score"),
+                    "Close": item.get("close"),
+                    "RSI": item.get("rsi14"),
+                    "Above EMA21": item.get("above_ema21"),
+                    "Above EMA50": item.get("above_ema50"),
+                    "Above EMA200": item.get("above_ema200"),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.caption(f'Volatility source: {market.get("vix_source", "Unavailable")}')
+
+        st.divider()
+        st.subheader("Market Breadth")
+        if breadth.get("status") == "Available":
+            b1 = st.columns(4)
+            b1[0].metric("Advancing", breadth.get("advancing", 0))
+            b1[1].metric("Declining", breadth.get("declining", 0))
+            b1[2].metric(
+                "Advance / Decline",
+                breadth.get("advance_decline_ratio", "—"),
+            )
+            b1[3].metric("Stocks Analyzed", breadth.get("stocks_analyzed", 0))
+
+            b2 = st.columns(3)
+            b2[0].metric("Above EMA21", percent_text(breadth.get("above_ema21_pct")))
+            b2[1].metric("Above EMA50", percent_text(breadth.get("above_ema50_pct")))
+            b2[2].metric("Above EMA200", percent_text(breadth.get("above_ema200_pct")))
+
+            b3 = st.columns(3)
+            b3[0].metric("New 20-Day Highs", breadth.get("new_20_day_highs", 0))
+            b3[1].metric("New 20-Day Lows", breadth.get("new_20_day_lows", 0))
+            b3[2].metric("High / Low Ratio", breadth.get("high_low_ratio", "—"))
+            st.write(breadth.get("summary", ""))
+            st.caption(breadth.get("universe_label", ""))
+        else:
+            st.warning(breadth.get("summary", "Breadth is unavailable."))
+    else:
+        st.info("Load Market Context to see the complete market assessment.")
+
+
 # -----------------------------
 # Scanner
 # -----------------------------
-with tabs[1]:
+with tabs[2]:
     st.header("Scanner")
 
     if st.button(
@@ -409,6 +530,24 @@ with tabs[1]:
                     )
                 ),
             )
+
+            # -------------------------
+            # Market Backdrop
+            # -------------------------
+            st.divider()
+            st.subheader("Market Backdrop")
+            report_market = st.session_state.market_context
+            if report_market:
+                report_breadth = report_market.get("breadth", {})
+                mc = st.columns(4)
+                mc[0].metric("Market", report_market.get("market_trend", "—"))
+                mc[1].metric("Risk", report_market.get("risk_environment", "—"))
+                mc[2].metric("Market Score", report_market.get("market_score", "—"))
+                mc[3].metric("Breadth", report_breadth.get("breadth_status", "—"))
+                st.caption(report_market.get("summary", ""))
+                st.info("Open the Market Context tab for the full index and breadth breakdown.")
+            else:
+                st.caption("Market Context has not been loaded for this session.")
 
             # -------------------------
             # Momo Engine Confidence
@@ -965,7 +1104,7 @@ with tabs[1]:
 # -----------------------------
 # AI Analysis
 # -----------------------------
-with tabs[2]:
+with tabs[3]:
     st.header("AI Analysis")
 
     st.write(
@@ -976,7 +1115,7 @@ with tabs[2]:
 # -----------------------------
 # Watchlist
 # -----------------------------
-with tabs[3]:
+with tabs[4]:
     st.header("Watchlist")
 
     st.write(
@@ -985,9 +1124,17 @@ with tabs[3]:
 
 
 # -----------------------------
+# Trade Planner
+# -----------------------------
+with tabs[5]:
+    st.header("Trade Planner")
+    st.write("Interactive trade planning will be built in its scheduled roadmap phase.")
+
+
+# -----------------------------
 # Journal
 # -----------------------------
-with tabs[4]:
+with tabs[6]:
     st.header("Journal")
 
     st.write(
@@ -998,7 +1145,7 @@ with tabs[4]:
 # -----------------------------
 # Performance
 # -----------------------------
-with tabs[5]:
+with tabs[7]:
     st.header("Performance")
 
     st.write(
@@ -1009,7 +1156,7 @@ with tabs[5]:
 # -----------------------------
 # Settings
 # -----------------------------
-with tabs[6]:
+with tabs[8]:
     st.header("Settings")
 
     st.write(
