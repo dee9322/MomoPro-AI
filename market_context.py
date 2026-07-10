@@ -11,6 +11,7 @@ from alpaca.data.timeframe import TimeFrame
 
 from market_breadth import get_market_breadth
 from market_sentiment import get_market_sentiment
+from sector_strength import get_sector_strength
 
 
 MARKET_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "VIXY"]
@@ -180,6 +181,7 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
     }
 
     breadth = get_market_breadth(api_key, secret_key)
+    sectors = get_sector_strength(api_key, secret_key)
 
     try:
         client = StockHistoricalDataClient(api_key, secret_key)
@@ -269,6 +271,7 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
             "vix_source": "VIXY volatility proxy",
             "breadth": breadth,
             "sentiment": sentiment,
+            "sectors": sectors,
             "status": "Available",
         }
 
@@ -298,5 +301,6 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
                 "warning": None,
                 "source": "Cboe Daily Market Statistics + Momo composite",
             },
+            "sectors": sectors,
             "status": f"Unavailable: {error}",
         }
