@@ -11,6 +11,7 @@ from alpaca_test import (
     test_alpaca_connection,
 )
 from scanner import run_scan
+from confidence import calculate_integrated_confidence
 from market_context import get_market_context
 from relative_strength import get_relative_strength
 
@@ -203,6 +204,12 @@ with tabs[0]:
             ),
         )
         st.caption(dashboard_market.get("summary", ""))
+        rotation = dashboard_market.get("sectors", {}).get("rotation_regime")
+        sentiment_warning = dashboard_market.get("sentiment", {}).get("warning")
+        if rotation:
+            st.write(f"**Sector rotation:** {rotation}")
+        if sentiment_warning:
+            st.warning(sentiment_warning)
     else:
         st.caption("Open Market Context and refresh it to populate today’s snapshot.")
 
@@ -863,34 +870,52 @@ with tabs[2]:
             # -------------------------
             st.divider()
 
-            st.subheader(
-                "Momo Engine Confidence"
+            st.subheader("Momo Engine Confidence")
+
+            integrated_confidence = calculate_integrated_confidence(
+                technical_confidence=selected_stock.get("Momo Confidence"),
+                market_context=report_market,
+                relative_strength=relative_strength,
             )
 
-            confidence_columns = st.columns(2)
-
+            confidence_columns = st.columns(4)
             confidence_columns[0].metric(
-                "Confidence",
+                "Technical Confidence",
+                percent_text(selected_stock.get("Momo Confidence")),
+                selected_stock.get("Confidence Rating", "—"),
+            )
+            confidence_columns[1].metric(
+                "Market-Adjusted",
+                percent_text(integrated_confidence.get("Integrated Confidence")),
+                integrated_confidence.get("Integrated Rating", "—"),
+            )
+            confidence_columns[2].metric(
+                "Market Component",
                 percent_text(
-                    selected_stock.get(
-                        "Momo Confidence"
+                    integrated_confidence.get("Integrated Breakdown", {}).get("Market")
+                ),
+            )
+            confidence_columns[3].metric(
+                "Relative Strength",
+                percent_text(
+                    integrated_confidence.get("Integrated Breakdown", {}).get(
+                        "Relative Strength"
                     )
                 ),
             )
 
-            confidence_columns[1].metric(
-                "Rating",
-                selected_stock.get(
-                    "Confidence Rating",
-                    "—",
-                ),
-            )
-
-            st.caption(
-                "This is the rule-based Momo Engine confidence, "
-                "separate from the independent AI Confidence that "
-                "will be added later."
-            )
+            adjustment = integrated_confidence.get("Adjustment")
+            if adjustment is not None:
+                direction = "raised" if adjustment > 0 else "lowered" if adjustment < 0 else "left unchanged"
+                st.caption(
+                    f"Market, sector, and relative-strength context {direction} "
+                    f"the technical confidence by {abs(adjustment):.0f} point(s)."
+                )
+            else:
+                st.caption(
+                    "Market-adjusted confidence will populate after Market Context "
+                    "and Relative Strength are available."
+                )
 
             with st.expander(
                 "See confidence breakdown"
@@ -926,6 +951,25 @@ with tabs[2]:
                     ),
                 ]
 
+                context_breakdown = integrated_confidence.get(
+                    "Integrated Breakdown", {}
+                )
+                context_row = st.columns(4)
+                context_row[0].metric(
+                    "Technical", percent_text(context_breakdown.get("Technical"))
+                )
+                context_row[1].metric(
+                    "Market", percent_text(context_breakdown.get("Market"))
+                )
+                context_row[2].metric(
+                    "Sector", percent_text(context_breakdown.get("Sector"))
+                )
+                context_row[3].metric(
+                    "Relative Strength",
+                    percent_text(context_breakdown.get("Relative Strength")),
+                )
+                st.markdown("**Technical module breakdown**")
+
                 first_row = st.columns(4)
                 second_row = st.columns(3)
 
@@ -953,7 +997,9 @@ with tabs[2]:
             st.subheader("Decision Center")
 
             engine_decision = build_momo_engine_decision(
-                selected_stock
+                selected_stock,
+                market_context=report_market,
+                relative_strength=relative_strength,
             )
 
             engine_col, ai_col = st.columns(2)
@@ -1018,6 +1064,8 @@ with tabs[2]:
                             cached_ai = generate_ai_decision(
                                 api_key=api_key,
                                 stock=selected_stock,
+                                market_context=report_market,
+                                relative_strength=relative_strength,
                             )
 
                         st.session_state.ai_commentary_cache[
@@ -1399,8 +1447,8 @@ with tabs[2]:
             )
 
             st.info(
-                "Momo Engine Confidence is now active. "
-                "The next roadmap item is AI Commentary."
+                "Market Context integration is active. Technical, market, "
+                "sector, and relative-strength inputs now work together."
             )
 
     elif df is not None:
@@ -1415,10 +1463,84 @@ with tabs[2]:
 # -----------------------------
 with tabs[3]:
     st.header("AI Analysis")
-
-    st.write(
-        "AI breakdowns will appear here."
+    st.caption(
+        "Deep analysis workspace using the selected scanner stock and the "
+        "same market-context data used by the Stock Report."
     )
+
+    analysis_symbol = st.session_state.selected_symbol
+    analysis_df = st.session_state.scan_results
+
+    if analysis_symbol and analysis_df is not None and not analysis_df.empty:
+        analysis_stock = analysis_df[
+            analysis_df["Symbol"] == analysis_symbol
+        ].iloc[0]
+        analysis_market = st.session_state.market_context
+
+        with st.spinner("Loading relative strength for AI Analysis..."):
+            analysis_rs = load_relative_strength(analysis_symbol)
+
+        analysis_integrated = calculate_integrated_confidence(
+            technical_confidence=analysis_stock.get("Momo Confidence"),
+            market_context=analysis_market,
+            relative_strength=analysis_rs,
+        )
+
+        st.subheader(f"{analysis_symbol} Research Snapshot")
+        analysis_metrics = st.columns(5)
+        analysis_metrics[0].metric("Grade", analysis_stock.get("Grade", "—"))
+        analysis_metrics[1].metric(
+            "Technical Confidence",
+            percent_text(analysis_stock.get("Momo Confidence")),
+        )
+        analysis_metrics[2].metric(
+            "Market-Adjusted",
+            percent_text(analysis_integrated.get("Integrated Confidence")),
+        )
+        analysis_metrics[3].metric(
+            "Market",
+            (analysis_market or {}).get("market_trend", "—"),
+        )
+        analysis_metrics[4].metric(
+            "Relative Strength",
+            analysis_rs.get("verdict", "—"),
+            analysis_rs.get("score"),
+        )
+
+        engine_view = build_momo_engine_decision(
+            analysis_stock,
+            market_context=analysis_market,
+            relative_strength=analysis_rs,
+        )
+        st.markdown("### Momo Engine View")
+        st.write(engine_view.get("summary", ""))
+
+        cached_analysis = st.session_state.ai_commentary_cache.get(analysis_symbol)
+        if cached_analysis:
+            st.markdown("### Independent AI View")
+            st.metric(
+                "AI Decision",
+                cached_analysis.get("decision", "—"),
+                f'{cached_analysis.get("confidence", 0)}% AI confidence',
+            )
+            st.write(cached_analysis.get("summary", ""))
+        else:
+            st.info(
+                "Generate the independent AI Decision from the Stock Report. "
+                "It will then appear here using the same selected ticker."
+            )
+
+        with st.expander("Market data supplied to analysis"):
+            if analysis_market:
+                st.write(analysis_market.get("summary", ""))
+                st.write(analysis_market.get("breadth", {}).get("summary", ""))
+                st.write(analysis_market.get("sentiment", {}).get("summary", ""))
+                st.write(analysis_market.get("sectors", {}).get("summary", ""))
+            st.write(analysis_rs.get("summary", ""))
+    else:
+        st.info(
+            "Run the scanner and select a ticker to load its AI Analysis workspace."
+        )
 
 
 # -----------------------------
