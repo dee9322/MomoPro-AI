@@ -41,6 +41,12 @@ def _empty_index(symbol: str, label: str) -> dict[str, Any]:
         "above_ema50": None,
         "above_ema200": None,
         "ema_stack_bullish": None,
+        "return_5d_pct": None,
+        "return_20d_pct": None,
+        "return_60d_pct": None,
+        "relative_5d_vs_spy": None,
+        "relative_20d_vs_spy": None,
+        "relative_60d_vs_spy": None,
     }
 
 
@@ -52,6 +58,19 @@ def _calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss.replace(0, pd.NA)
     return 100 - (100 / (1 + rs))
+
+
+def _pct_change(close: pd.Series, periods: int) -> float | None:
+    if close is None or len(close) <= periods:
+        return None
+
+    earlier = float(close.iloc[-(periods + 1)])
+    latest = float(close.iloc[-1])
+
+    if earlier == 0:
+        return None
+
+    return round(((latest / earlier) - 1) * 100, 2)
 
 
 def _analyze_symbol(df: pd.DataFrame, symbol: str, label: str) -> dict[str, Any]:
@@ -132,6 +151,12 @@ def _analyze_symbol(df: pd.DataFrame, symbol: str, label: str) -> dict[str, Any]
         "above_ema50": above_ema50,
         "above_ema200": above_ema200,
         "ema_stack_bullish": ema_stack_bullish,
+        "return_5d_pct": _pct_change(data["close"], 5),
+        "return_20d_pct": _pct_change(data["close"], 20),
+        "return_60d_pct": _pct_change(data["close"], 60),
+        "relative_5d_vs_spy": None,
+        "relative_20d_vs_spy": None,
+        "relative_60d_vs_spy": None,
     }
 
 
@@ -211,6 +236,18 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
                 symbol,
                 labels[symbol],
             )
+
+        spy = indexes.get("SPY", {})
+        for symbol in ("SPY", "QQQ", "IWM", "DIA"):
+            item = indexes.get(symbol, {})
+            for period in ("5d", "20d", "60d"):
+                item_return = item.get(f"return_{period}_pct")
+                spy_return = spy.get(f"return_{period}_pct")
+                item[f"relative_{period}_vs_spy"] = (
+                    round(item_return - spy_return, 2)
+                    if item_return is not None and spy_return is not None
+                    else None
+                )
 
         available_scores = [
             indexes[symbol]["score"] * MARKET_WEIGHTS[symbol]
