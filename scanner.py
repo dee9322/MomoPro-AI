@@ -1,3 +1,4 @@
+import gc
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -14,10 +15,15 @@ from pre_screener import select_best_symbols
 from scoring import score_stock
 
 
-HISTORY_CALENDAR_DAYS = 420
+# Enough history for EMA200 and 120-session levels,
+# without downloading more data than Streamlit Cloud needs.
+HISTORY_CALENDAR_DAYS = 350
 MINIMUM_DAILY_BARS = 220
+
 SCAN_LIMIT = 500
-CHUNK_SIZE = 100
+
+# Smaller batches reduce peak memory usage.
+CHUNK_SIZE = 25
 
 
 def run_scan():
@@ -32,6 +38,7 @@ def run_scan():
     results = []
 
     all_symbols = get_market_universe(limit=None)
+
     symbols = select_best_symbols(
         api_key,
         secret_key,
@@ -39,8 +46,12 @@ def run_scan():
         limit=SCAN_LIMIT,
     )
 
-    for i in range(0, len(symbols), CHUNK_SIZE):
-        chunk = symbols[i : i + CHUNK_SIZE]
+    for batch_start in range(0, len(symbols), CHUNK_SIZE):
+        chunk = symbols[batch_start : batch_start + CHUNK_SIZE]
+
+        request = None
+        bars = None
+        all_bars = None
 
         try:
             request = StockBarsRequest(
@@ -59,16 +70,20 @@ def run_scan():
             all_bars = bars.reset_index()
 
             for symbol in chunk:
-                try:
-                    df = all_bars[all_bars["symbol"] == symbol].copy()
+                symbol_df = None
 
-                    if len(df) < MINIMUM_DAILY_BARS:
+                try:
+                    symbol_df = all_bars[
+                        all_bars["symbol"] == symbol
+                    ].copy()
+
+                    if len(symbol_df) < MINIMUM_DAILY_BARS:
                         continue
 
-                    df = calculate_indicators(df)
+                    symbol_df = calculate_indicators(symbol_df)
 
-                    latest = df.iloc[-1]
-                    previous = df.iloc[-2]
+                    latest = symbol_df.iloc[-1]
+                    previous = symbol_df.iloc[-2]
 
                     required_values = [
                         latest.get("ema200"),
@@ -103,7 +118,9 @@ def run_scan():
                             "ATR %": round(float(latest["atr_pct"]), 2),
                             "RVOL": round(float(latest["rvol"]), 2),
                             "Distance EMA21 %": round(
-                                float(latest["distance_from_ema21"]),
+                                float(
+                                    latest["distance_from_ema21"]
+                                ),
                                 2,
                             ),
                             "Reasons": reasons,
@@ -119,10 +136,28 @@ def run_scan():
                     )
 
                 except Exception:
+                    # Skip one bad symbol without killing the scan.
                     continue
 
+                finally:
+                    if symbol_df is not None:
+                        del symbol_df
+
         except Exception:
+            # Skip one failed batch without killing the full scan.
             continue
+
+        finally:
+            if all_bars is not None:
+                del all_bars
+
+            if bars is not None:
+                del bars
+
+            if request is not None:
+                del request
+
+            gc.collect()
 
     preferred_columns = [
         "Symbol",
@@ -147,16 +182,16 @@ def run_scan():
         "Resistance 3",
     ]
 
+    all_columns = preferred_columns + hidden_report_columns
+
     if not results:
-        return pd.DataFrame(
-            columns=preferred_columns + hidden_report_columns
-        )
+        return pd.DataFrame(columns=all_columns)
 
-    df = pd.DataFrame(results)
+    result_df = pd.DataFrame(results)
 
-    df = df.sort_values(
+    result_df = result_df.sort_values(
         ["Dee Fit", "Score"],
         ascending=[False, False],
     )
 
-    return df[preferred_columns + hidden_report_columns]
+    return result_df[all_columns]
