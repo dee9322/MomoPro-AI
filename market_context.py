@@ -9,6 +9,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from market_breadth import get_market_breadth
+
 
 MARKET_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "VIXY"]
 MARKET_WEIGHTS = {
@@ -176,6 +178,8 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
         "VIXY": "VIX proxy",
     }
 
+    breadth = get_market_breadth(api_key, secret_key)
+
     try:
         client = StockHistoricalDataClient(api_key, secret_key)
         end = datetime.now()
@@ -256,6 +260,7 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
             "summary": _build_summary(indexes, vix_proxy),
             "indexes": indexes,
             "vix_source": "VIXY volatility proxy",
+            "breadth": breadth,
             "status": "Available",
         }
 
@@ -272,5 +277,6 @@ def get_market_context(api_key: str, secret_key: str) -> dict[str, Any]:
             "summary": "Market context could not be calculated for this scan.",
             "indexes": indexes,
             "vix_source": "VIXY volatility proxy",
+            "breadth": breadth,
             "status": f"Unavailable: {error}",
         }
