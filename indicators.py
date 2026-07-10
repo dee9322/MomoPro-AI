@@ -43,5 +43,7 @@ def calculate_indicators(df):
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
+    df["prior_60_high"] = df["high"].rolling(60).max().shift(1)
+    df["room_to_high_pct"] = ((df["prior_60_high"] - df["close"]) / df["close"]) * 100
 
     return df
