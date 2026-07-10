@@ -11,6 +11,7 @@ from alpaca.data.timeframe import TimeFrame
 from confidence import calculate_confidence
 from indicators import calculate_indicators
 from levels import calculate_levels
+from market_context import get_market_context
 from market_universe import get_market_universe
 from pre_screener import select_best_symbols
 from risk_reward import calculate_risk_reward
@@ -39,6 +40,11 @@ def run_scan():
     )
 
     results = []
+
+    market_context = get_market_context(
+        api_key,
+        secret_key,
+    )
 
     all_symbols = get_market_universe(
         limit=None
@@ -237,6 +243,44 @@ def run_scan():
                             "Structure Confidence": confidence[
                                 "Confidence Breakdown"
                             ]["Structure"],
+                            "Market Score": market_context[
+                                "market_score"
+                            ],
+                            "Market Trend": market_context[
+                                "market_trend"
+                            ],
+                            "Risk Environment": market_context[
+                                "risk_environment"
+                            ],
+                            "Market Summary": market_context[
+                                "summary"
+                            ],
+                            "Market Context Status": market_context[
+                                "status"
+                            ],
+                            "VIX Source": market_context[
+                                "vix_source"
+                            ],
+                            "SPY Trend": market_context["indexes"]["SPY"]["trend"],
+                            "SPY Score": market_context["indexes"]["SPY"]["score"],
+                            "SPY Close": market_context["indexes"]["SPY"]["close"],
+                            "SPY RSI": market_context["indexes"]["SPY"]["rsi14"],
+                            "QQQ Trend": market_context["indexes"]["QQQ"]["trend"],
+                            "QQQ Score": market_context["indexes"]["QQQ"]["score"],
+                            "QQQ Close": market_context["indexes"]["QQQ"]["close"],
+                            "QQQ RSI": market_context["indexes"]["QQQ"]["rsi14"],
+                            "IWM Trend": market_context["indexes"]["IWM"]["trend"],
+                            "IWM Score": market_context["indexes"]["IWM"]["score"],
+                            "IWM Close": market_context["indexes"]["IWM"]["close"],
+                            "IWM RSI": market_context["indexes"]["IWM"]["rsi14"],
+                            "DIA Trend": market_context["indexes"]["DIA"]["trend"],
+                            "DIA Score": market_context["indexes"]["DIA"]["score"],
+                            "DIA Close": market_context["indexes"]["DIA"]["close"],
+                            "DIA RSI": market_context["indexes"]["DIA"]["rsi14"],
+                            "VIX Proxy Trend": market_context["indexes"]["VIXY"]["trend"],
+                            "VIX Proxy Score": market_context["indexes"]["VIXY"]["score"],
+                            "VIX Proxy Close": market_context["indexes"]["VIXY"]["close"],
+                            "VIX Proxy RSI": market_context["indexes"]["VIXY"]["rsi14"],
 
                             "Support 1": levels[
                                 "Support 1"
@@ -424,6 +468,33 @@ def run_scan():
         "Opportunity Confidence",
         "Risk Confidence",
         "Structure Confidence",
+
+        "Market Score",
+        "Market Trend",
+        "Risk Environment",
+        "Market Summary",
+        "Market Context Status",
+        "VIX Source",
+        "SPY Trend",
+        "SPY Score",
+        "SPY Close",
+        "SPY RSI",
+        "QQQ Trend",
+        "QQQ Score",
+        "QQQ Close",
+        "QQQ RSI",
+        "IWM Trend",
+        "IWM Score",
+        "IWM Close",
+        "IWM RSI",
+        "DIA Trend",
+        "DIA Score",
+        "DIA Close",
+        "DIA RSI",
+        "VIX Proxy Trend",
+        "VIX Proxy Score",
+        "VIX Proxy Close",
+        "VIX Proxy RSI",
 
         "Support 1",
         "Support 2",
