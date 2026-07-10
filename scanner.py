@@ -12,17 +12,13 @@ from indicators import calculate_indicators
 from levels import calculate_levels
 from market_universe import get_market_universe
 from pre_screener import select_best_symbols
+from risk_reward import calculate_risk_reward
 from scoring import score_stock
 
 
-# Enough history for EMA200 and 120-session levels,
-# without downloading more data than Streamlit Cloud needs.
 HISTORY_CALENDAR_DAYS = 350
 MINIMUM_DAILY_BARS = 220
-
 SCAN_LIMIT = 500
-
-# Smaller batches reduce peak memory usage.
 CHUNK_SIZE = 25
 
 
@@ -99,6 +95,11 @@ def run_scan():
 
                     levels = calculate_levels(latest)
 
+                    risk_reward = calculate_risk_reward(
+                        latest["close"],
+                        levels,
+                    )
+
                     (
                         score,
                         dee_fit,
@@ -132,11 +133,29 @@ def run_scan():
                             "Resistance 1": levels["Resistance 1"],
                             "Resistance 2": levels["Resistance 2"],
                             "Resistance 3": levels["Resistance 3"],
+                            "Reference Entry": risk_reward[
+                                "Reference Entry"
+                            ],
+                            "Risk Reference": risk_reward[
+                                "Risk Reference"
+                            ],
+                            "Reward Reference": risk_reward[
+                                "Reward Reference"
+                            ],
+                            "Risk Per Share": risk_reward[
+                                "Risk Per Share"
+                            ],
+                            "Reward Per Share": risk_reward[
+                                "Reward Per Share"
+                            ],
+                            "Risk Reward": risk_reward["Risk Reward"],
+                            "Risk Reward Status": risk_reward[
+                                "Risk Reward Status"
+                            ],
                         }
                     )
 
                 except Exception:
-                    # Skip one bad symbol without killing the scan.
                     continue
 
                 finally:
@@ -144,7 +163,6 @@ def run_scan():
                         del symbol_df
 
         except Exception:
-            # Skip one failed batch without killing the full scan.
             continue
 
         finally:
@@ -180,6 +198,13 @@ def run_scan():
         "Resistance 1",
         "Resistance 2",
         "Resistance 3",
+        "Reference Entry",
+        "Risk Reference",
+        "Reward Reference",
+        "Risk Per Share",
+        "Reward Per Share",
+        "Risk Reward",
+        "Risk Reward Status",
     ]
 
     all_columns = preferred_columns + hidden_report_columns
