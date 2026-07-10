@@ -1,11 +1,13 @@
 from momo_engine import MomoEngine
+
+
 def score_stock(latest, previous):
     score = 0
     dee_fit = 0
     reasons = []
     setup = "Watchlist"
     engine = MomoEngine()
-    
+
     price = latest["close"]
     distance = latest["distance_from_ema21"]
     rvol = latest["rvol"]
@@ -18,62 +20,59 @@ def score_stock(latest, previous):
     above_ema21 = latest["close"] > latest["ema21"]
     above_ema50 = latest["close"] > latest["ema50"]
     above_ema200 = latest["close"] > latest["ema200"]
-    macd_improving = macd_hist > prev_macd_hist 
     macd_improving = macd_hist > prev_macd_hist
 
-# Momo Engine module scores
-trend_score = 0
-if above_ema21:
-    trend_score += 7
-if latest["ema21"] > latest["ema50"]:
-    trend_score += 8
-if above_ema200:
-    trend_score += 5
-if latest["ema21"] > previous["ema21"]:
-    trend_score += 5
-engine.set_module("trend", trend_score)
+    # Momo Engine module scores
+    trend_score = 0
+    if above_ema21:
+        trend_score += 7
+    if latest["ema21"] > latest["ema50"]:
+        trend_score += 8
+    if above_ema200:
+        trend_score += 5
+    if latest["ema21"] > previous["ema21"]:
+        trend_score += 5
+    engine.set_module("trend", trend_score)
 
-location_score = 0
-if 0 <= distance <= 2:
-    location_score = 25
-elif 2 < distance <= 4:
-    location_score = 18
-elif 4 < distance <= 6:
-    location_score = 8
-elif distance < 0:
-    location_score = 4
-else:
     location_score = 0
-engine.set_module("location", location_score)
+    if 0 <= distance <= 2:
+        location_score = 25
+    elif 2 < distance <= 4:
+        location_score = 18
+    elif 4 < distance <= 6:
+        location_score = 8
+    elif distance < 0:
+        location_score = 4
+    engine.set_module("location", location_score)
 
-momentum_score = 0
-if 45 <= rsi <= 65:
-    momentum_score += 12
-elif 65 < rsi <= 70:
-    momentum_score += 5
-if macd_hist > prev_macd_hist:
-    momentum_score += 8
-if macd_hist > 0:
-    momentum_score += 5
-engine.set_module("momentum", momentum_score)
+    momentum_score = 0
+    if 45 <= rsi <= 65:
+        momentum_score += 12
+    elif 65 < rsi <= 70:
+        momentum_score += 5
+    if macd_hist > prev_macd_hist:
+        momentum_score += 8
+    if macd_hist > 0:
+        momentum_score += 5
+    engine.set_module("momentum", momentum_score)
 
-volume_score = 0
-if rvol >= 2:
-    volume_score = 25
-elif rvol >= 1.5:
-    volume_score = 18
-elif rvol >= 1:
-    volume_score = 10
-engine.set_module("volume", volume_score)
+    volume_score = 0
+    if rvol >= 2:
+        volume_score = 25
+    elif rvol >= 1.5:
+        volume_score = 18
+    elif rvol >= 1:
+        volume_score = 10
+    engine.set_module("volume", volume_score)
 
-risk_score = 25
-if distance > 6:
-    risk_score -= 15
-if rsi > 70:
-    risk_score -= 10
-if atr_pct > 18:
-    risk_score -= 8
-engine.set_module("risk", risk_score)
+    risk_score = 25
+    if distance > 6:
+        risk_score -= 15
+    if rsi > 70:
+        risk_score -= 10
+    if atr_pct > 18:
+        risk_score -= 8
+    engine.set_module("risk", risk_score)
 
     # Base technical score
     if 3 <= price <= 50:
@@ -176,16 +175,16 @@ engine.set_module("risk", risk_score)
     score = max(0, min(score, 100))
     dee_fit = max(0, min(dee_fit, 100))
     momo_score = engine.momofit()
-   
+
     if dee_fit >= 90:
         grade = "A+"
     elif dee_fit >= 80:
-       grade = "A"
+        grade = "A"
     elif dee_fit >= 70:
-       grade = "B"
+        grade = "B"
     elif dee_fit >= 60:
-       grade = "C"
+        grade = "C"
     else:
-       grade = "Pass"
-    
+        grade = "Pass"
+
     return score, dee_fit, momo_score, grade, setup, ", ".join(reasons)
