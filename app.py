@@ -12,6 +12,7 @@ from alpaca_test import (
 )
 from scanner import run_scan
 from market_context import get_market_context
+from relative_strength import get_relative_strength
 
 
 st.set_page_config(
@@ -83,6 +84,15 @@ def reaction_text(
         f"{quality_text} · "
         f"{touch_count} confirmed "
         f"{reaction_word}"
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_relative_strength(symbol):
+    return get_relative_strength(
+        st.secrets["ALPACA_API_KEY"],
+        st.secrets["ALPACA_SECRET_KEY"],
+        symbol,
     )
 
 
@@ -265,6 +275,10 @@ with tabs[1]:
                     "Above EMA21": item.get("above_ema21"),
                     "Above EMA50": item.get("above_ema50"),
                     "Above EMA200": item.get("above_ema200"),
+                    "5D %": item.get("return_5d_pct"),
+                    "20D %": item.get("return_20d_pct"),
+                    "60D %": item.get("return_60d_pct"),
+                    "20D vs SPY": item.get("relative_20d_vs_spy"),
                 }
             )
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -399,6 +413,65 @@ with tabs[1]:
                     )
         else:
             st.warning(sectors.get("summary", "Sector strength is unavailable."))
+
+        st.divider()
+        st.subheader("Market Relative Strength")
+        st.caption(
+            "This section compares major indexes and sectors against SPY. "
+            "Stock-specific relative strength remains inside each Stock Report."
+        )
+
+        index_rs_rows = []
+        for symbol in ("SPY", "QQQ", "IWM", "DIA"):
+            item = market.get("indexes", {}).get(symbol, {})
+            index_rs_rows.append(
+                {
+                    "Index": item.get("label", symbol),
+                    "ETF": symbol,
+                    "Trend": item.get("trend"),
+                    "5D %": item.get("return_5d_pct"),
+                    "20D %": item.get("return_20d_pct"),
+                    "60D %": item.get("return_60d_pct"),
+                    "5D vs SPY": item.get("relative_5d_vs_spy"),
+                    "20D vs SPY": item.get("relative_20d_vs_spy"),
+                    "60D vs SPY": item.get("relative_60d_vs_spy"),
+                }
+            )
+
+        st.markdown("#### Index Leadership")
+        st.dataframe(
+            pd.DataFrame(index_rs_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if sectors.get("status") == "Available":
+            st.markdown("#### Sector Leadership vs SPY")
+            rs_rows = []
+            for item in sectors.get("rankings", []):
+                rs_rows.append(
+                    {
+                        "Rank": len(rs_rows) + 1,
+                        "Sector": item.get("sector"),
+                        "ETF": item.get("symbol"),
+                        "5D vs SPY": item.get("relative_5d_vs_spy"),
+                        "20D vs SPY": item.get("relative_20d_vs_spy"),
+                        "60D vs SPY": item.get("relative_60d_vs_spy"),
+                        "Rotation": item.get("rotation"),
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(rs_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                "Positive values indicate outperformance versus SPY; negative "
+                "values indicate lagging performance over the same period."
+            )
+        else:
+            st.caption("Sector relative-strength leadership is unavailable.")
     else:
         st.info("Load Market Context to see the complete market assessment.")
 
@@ -699,6 +772,91 @@ with tabs[2]:
                 )
             else:
                 st.caption("Market Context has not been loaded for this session.")
+
+            # -------------------------
+            # Relative Strength
+            # -------------------------
+            st.divider()
+            st.subheader("Relative Strength")
+            st.caption(
+                "Compares this stock with SPY, QQQ, and an approximate "
+                "sector ETF derived from the company’s SEC SIC classification."
+            )
+
+            rs_refresh = st.button(
+                "Load / Refresh Relative Strength",
+                key=f"relative_strength_{selected_symbol}",
+            )
+
+            if rs_refresh:
+                load_relative_strength.clear()
+
+            with st.spinner("Comparing the stock with market benchmarks..."):
+                relative_strength = load_relative_strength(selected_symbol)
+
+            if relative_strength.get("status") == "Available":
+                rs_top = st.columns(4)
+                rs_top[0].metric(
+                    "RS Score",
+                    relative_strength.get("score", "—"),
+                )
+                rs_top[1].metric(
+                    "Verdict",
+                    relative_strength.get("verdict", "—"),
+                )
+                rs_top[2].metric(
+                    "RS Trend",
+                    relative_strength.get("trend", "—"),
+                )
+                rs_top[3].metric(
+                    "Sector",
+                    relative_strength.get("sector_name", "—"),
+                    relative_strength.get("sector_etf"),
+                )
+
+                st.write(relative_strength.get("summary", ""))
+
+                rs_table = pd.DataFrame(
+                    [
+                        {
+                            "Period": "5 Days",
+                            "Stock Return %": relative_strength.get("stock_return_5d"),
+                            "vs SPY %": relative_strength.get("vs_spy_5d"),
+                            "vs QQQ %": relative_strength.get("vs_qqq_5d"),
+                            "vs Sector %": relative_strength.get("vs_sector_5d"),
+                        },
+                        {
+                            "Period": "20 Days",
+                            "Stock Return %": relative_strength.get("stock_return_20d"),
+                            "vs SPY %": relative_strength.get("vs_spy_20d"),
+                            "vs QQQ %": relative_strength.get("vs_qqq_20d"),
+                            "vs Sector %": relative_strength.get("vs_sector_20d"),
+                        },
+                        {
+                            "Period": "60 Days",
+                            "Stock Return %": relative_strength.get("stock_return_60d"),
+                            "vs SPY %": relative_strength.get("vs_spy_60d"),
+                            "vs QQQ %": relative_strength.get("vs_qqq_60d"),
+                            "vs Sector %": relative_strength.get("vs_sector_60d"),
+                        },
+                    ]
+                )
+                st.dataframe(
+                    rs_table,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                sic_description = relative_strength.get("sic_description")
+                if sic_description:
+                    st.caption(
+                        f"Sector mapping source: SEC SIC "
+                        f"{relative_strength.get('sic')} — {sic_description}. "
+                        "Sector ETF classification is approximate and is used "
+                        "as a comparison benchmark, not as a company profile."
+                    )
+            else:
+                st.warning(relative_strength.get("summary", "Relative strength is unavailable."))
 
             # -------------------------
             # Momo Engine Confidence
