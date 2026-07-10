@@ -10,7 +10,6 @@ from ai_commentary import (
 from alpaca_test import (
     test_alpaca_connection,
 )
-from market_context import get_market_context
 from scanner import run_scan
 
 
@@ -86,56 +85,6 @@ def reaction_text(
     )
 
 
-def load_market_context():
-    api_key = st.secrets["ALPACA_API_KEY"]
-    secret_key = st.secrets["ALPACA_SECRET_KEY"]
-    return get_market_context(api_key, secret_key)
-
-
-def render_market_snapshot(context):
-    if not context:
-        st.info("Load Market Context to see the current market backdrop.")
-        return
-
-    cols = st.columns(3)
-    cols[0].metric("Market Score", context.get("market_score", "—"))
-    cols[1].metric("Market Trend", context.get("market_trend", "Unavailable"))
-    cols[2].metric("Risk Environment", context.get("risk_environment", "Unavailable"))
-    st.caption(context.get("summary", "Market summary unavailable."))
-
-
-def render_full_market_context(context):
-    if not context:
-        st.info("Click Load / Refresh Market Context to calculate the current market state.")
-        return
-
-    render_market_snapshot(context)
-    st.divider()
-    st.subheader("Major Index Breakdown")
-
-    rows = []
-    for symbol in ["SPY", "QQQ", "IWM", "DIA", "VIXY"]:
-        data = context.get("indexes", {}).get(symbol, {})
-        rows.append({
-            "Symbol": symbol,
-            "Market": data.get("label", symbol),
-            "Close": data.get("close"),
-            "Trend": data.get("trend", "Unavailable"),
-            "Score": data.get("score"),
-            "RSI": data.get("rsi14"),
-            "Above EMA21": data.get("above_ema21"),
-            "Above EMA50": data.get("above_ema50"),
-            "Above EMA200": data.get("above_ema200"),
-            "Bullish EMA Stack": data.get("ema_stack_bullish"),
-        })
-
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption(f"Volatility source: {context.get('vix_source', 'Unavailable')}")
-    status = context.get("status", "Unavailable")
-    if status != "Available":
-        st.warning(status)
-
-
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 
@@ -146,21 +95,12 @@ if "ai_commentary_cache" not in st.session_state:
     st.session_state.ai_commentary_cache = {}
 
 
-if "market_context" not in st.session_state:
-    st.session_state.market_context = None
-
-if "market_context_notice" not in st.session_state:
-    st.session_state.market_context_notice = False
-
-
 tabs = st.tabs(
     [
         "Dashboard",
-        "Market Context",
         "Scanner",
         "AI Analysis",
         "Watchlist",
-        "Trade Planner",
         "Journal",
         "Performance",
         "Settings",
@@ -207,29 +147,10 @@ with tabs[0]:
             st.write(status)
 
 
-    st.divider()
-    st.subheader("Market Snapshot")
-    render_market_snapshot(st.session_state.market_context)
-
-
-# -----------------------------
-# Market Context
-# -----------------------------
-with tabs[1]:
-    st.header("Market Context")
-    st.caption("Review the broad market before running the stock scanner.")
-
-    if st.button("Load / Refresh Market Context", key="refresh_market_context"):
-        with st.spinner("Analyzing SPY, QQQ, IWM, DIA, and volatility..."):
-            st.session_state.market_context = load_market_context()
-
-    render_full_market_context(st.session_state.market_context)
-
-
 # -----------------------------
 # Scanner
 # -----------------------------
-with tabs[2]:
+with tabs[1]:
     st.header("Scanner")
 
     if st.button(
@@ -960,28 +881,6 @@ with tabs[2]:
             )
 
             # -------------------------
-            # Market Backdrop
-            # -------------------------
-            st.divider()
-            st.subheader("Market Backdrop")
-
-            context = st.session_state.market_context
-            if context:
-                backdrop_cols = st.columns(3)
-                backdrop_cols[0].metric("Market Score", context.get("market_score", "—"))
-                backdrop_cols[1].metric("Trend", context.get("market_trend", "Unavailable"))
-                backdrop_cols[2].metric("Risk", context.get("risk_environment", "Unavailable"))
-                st.caption(context.get("summary", "Market summary unavailable."))
-
-                if st.button("View Full Market Context", key=f"market_context_{selected_symbol}"):
-                    st.session_state.market_context_notice = True
-
-                if st.session_state.market_context_notice:
-                    st.info("Open the Market Context tab above for the full market assessment and visuals.")
-            else:
-                st.info("Load the Market Context tab to add the current market backdrop to this report.")
-
-            # -------------------------
             # T1 / T2 / T3
             # -------------------------
             st.divider()
@@ -1066,7 +965,7 @@ with tabs[2]:
 # -----------------------------
 # AI Analysis
 # -----------------------------
-with tabs[3]:
+with tabs[2]:
     st.header("AI Analysis")
 
     st.write(
@@ -1077,7 +976,7 @@ with tabs[3]:
 # -----------------------------
 # Watchlist
 # -----------------------------
-with tabs[4]:
+with tabs[3]:
     st.header("Watchlist")
 
     st.write(
@@ -1086,17 +985,9 @@ with tabs[4]:
 
 
 # -----------------------------
-# Trade Planner
-# -----------------------------
-with tabs[5]:
-    st.header("Trade Planner")
-    st.write("Interactive trade planning will be built in its locked roadmap phase.")
-
-
-# -----------------------------
 # Journal
 # -----------------------------
-with tabs[6]:
+with tabs[4]:
     st.header("Journal")
 
     st.write(
@@ -1107,7 +998,7 @@ with tabs[6]:
 # -----------------------------
 # Performance
 # -----------------------------
-with tabs[7]:
+with tabs[5]:
     st.header("Performance")
 
     st.write(
@@ -1118,7 +1009,7 @@ with tabs[7]:
 # -----------------------------
 # Settings
 # -----------------------------
-with tabs[8]:
+with tabs[6]:
     st.header("Settings")
 
     st.write(
