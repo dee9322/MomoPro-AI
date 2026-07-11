@@ -14,6 +14,15 @@ from scanner import run_scan
 from confidence import calculate_integrated_confidence
 from market_context import get_market_context
 from relative_strength import get_relative_strength
+from news_intelligence import (
+    get_market_news,
+    get_ticker_news,
+    rank_news,
+    summarize_news,
+)
+from sec_intelligence import get_recent_filings
+from fda_intelligence import get_fda_enforcement
+from news_ai import analyze_news
 
 
 st.set_page_config(
@@ -97,6 +106,33 @@ def load_relative_strength(symbol):
     )
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_market_news():
+    return get_market_news(
+        st.secrets["ALPACA_API_KEY"],
+        st.secrets["ALPACA_SECRET_KEY"],
+    )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_ticker_news(symbol):
+    return get_ticker_news(
+        st.secrets["ALPACA_API_KEY"],
+        st.secrets["ALPACA_SECRET_KEY"],
+        symbol,
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sec_filings(symbol):
+    return get_recent_filings(symbol)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_fda_records(company_name):
+    return get_fda_enforcement(company_name)
+
+
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 
@@ -109,12 +145,19 @@ if "ai_commentary_cache" not in st.session_state:
 if "market_context" not in st.session_state:
     st.session_state.market_context = None
 
+if "news_ai_cache" not in st.session_state:
+    st.session_state.news_ai_cache = {}
+
+if "news_search_symbol" not in st.session_state:
+    st.session_state.news_search_symbol = ""
+
 
 tabs = st.tabs(
     [
         "Dashboard",
         "Market Context",
         "Scanner",
+        "News",
         "AI Analysis",
         "Watchlist",
         "Trade Planner",
@@ -212,6 +255,24 @@ with tabs[0]:
             st.warning(sentiment_warning)
     else:
         st.caption("Open Market Context and refresh it to populate today’s snapshot.")
+
+
+    st.divider()
+    st.subheader("Top Market Headlines")
+    try:
+        dashboard_news = rank_news(load_market_news())[:5]
+        if dashboard_news:
+            for item in dashboard_news:
+                label = f'{item.get("impact", "—")} impact · {item.get("sentiment", "Neutral")}'
+                if item.get("url"):
+                    st.markdown(f'**[{item.get("headline")}]({item.get("url")})**')
+                else:
+                    st.markdown(f'**{item.get("headline")}**')
+                st.caption(label)
+        else:
+            st.caption("No recent market headlines were returned.")
+    except Exception as error:
+        st.caption(f"Market headlines are temporarily unavailable: {error}")
 
 
 # -----------------------------
@@ -990,6 +1051,34 @@ with tabs[2]:
                     )
 
             # -------------------------
+            # Latest News
+            # -------------------------
+            st.divider()
+            st.subheader("Latest News")
+            st.caption("Top recent headlines for this stock. Open the News tab for full research.")
+            try:
+                selected_news = rank_news(load_ticker_news(selected_symbol))
+                selected_news_summary = summarize_news(selected_news)
+                news_metrics = st.columns(3)
+                news_metrics[0].metric("News Sentiment", selected_news_summary.get("overall_sentiment", "—"))
+                news_metrics[1].metric("High Impact", selected_news_summary.get("high_impact", 0))
+                news_metrics[2].metric("Recent Headlines", len(selected_news))
+
+                for item in selected_news[:5]:
+                    if item.get("url"):
+                        st.markdown(f'**[{item.get("headline")}]({item.get("url")})**')
+                    else:
+                        st.markdown(f'**{item.get("headline")}**')
+                    st.caption(
+                        f'{item.get("category")} · {item.get("impact")} impact · '
+                        f'{item.get("sentiment")} · {item.get("source")}'
+                    )
+                    st.write(item.get("why_it_matters", ""))
+            except Exception as error:
+                selected_news = []
+                st.warning(f"Stock news could not be loaded: {error}")
+
+            # -------------------------
             # Engine and AI Decisions
             # -------------------------
             st.divider()
@@ -1066,6 +1155,10 @@ with tabs[2]:
                                 stock=selected_stock,
                                 market_context=report_market,
                                 relative_strength=relative_strength,
+                                news_context={
+                                    "summary": summarize_news(selected_news),
+                                    "headlines": selected_news[:10],
+                                },
                             )
 
                         st.session_state.ai_commentary_cache[
@@ -1459,9 +1552,182 @@ with tabs[2]:
 
 
 # -----------------------------
-# AI Analysis
+# News
 # -----------------------------
 with tabs[3]:
+    st.header("News")
+    st.caption(
+        "Centralized market and stock-specific news intelligence. Search any ticker, "
+        "even if it did not appear in the scanner."
+    )
+
+    news_mode = st.radio(
+        "News view",
+        ["Market News", "Ticker Research"],
+        horizontal=True,
+        key="news_mode",
+    )
+
+    if news_mode == "Market News":
+        if st.button("Refresh Market News", key="refresh_market_news"):
+            load_market_news.clear()
+
+        try:
+            market_news = rank_news(load_market_news())
+            market_summary = summarize_news(market_news)
+            summary_cols = st.columns(5)
+            summary_cols[0].metric("Overall", market_summary.get("overall_sentiment", "—"))
+            summary_cols[1].metric("Bullish", market_summary.get("bullish", 0))
+            summary_cols[2].metric("Bearish", market_summary.get("bearish", 0))
+            summary_cols[3].metric("Mixed", market_summary.get("mixed", 0))
+            summary_cols[4].metric("High Impact", market_summary.get("high_impact", 0))
+
+            filter_cols = st.columns(3)
+            sentiment_filter = filter_cols[0].selectbox(
+                "Sentiment", ["All", "Bullish", "Bearish", "Mixed", "Neutral"]
+            )
+            impact_filter = filter_cols[1].selectbox(
+                "Impact", ["All", "High", "Medium", "Low"]
+            )
+            category_options = ["All"] + sorted({item.get("category", "General") for item in market_news})
+            category_filter = filter_cols[2].selectbox("Category", category_options)
+
+            filtered_news = [
+                item for item in market_news
+                if (sentiment_filter == "All" or item.get("sentiment") == sentiment_filter)
+                and (impact_filter == "All" or item.get("impact") == impact_filter)
+                and (category_filter == "All" or item.get("category") == category_filter)
+            ]
+
+            for item in filtered_news[:40]:
+                if item.get("url"):
+                    st.markdown(f'### [{item.get("headline")}]({item.get("url")})')
+                else:
+                    st.markdown(f'### {item.get("headline")}')
+                st.caption(
+                    f'{item.get("category")} · {item.get("impact")} impact · '
+                    f'{item.get("sentiment")} · {item.get("source")} · '
+                    f'Symbols: {", ".join(item.get("symbols") or []) or "Market-wide"}'
+                )
+                st.write(item.get("why_it_matters", ""))
+                st.divider()
+        except Exception as error:
+            st.error(f"Market news could not be loaded: {error}")
+
+    else:
+        default_symbol = st.session_state.selected_symbol or st.session_state.news_search_symbol
+        searched_symbol = st.text_input(
+            "Ticker",
+            value=default_symbol,
+            placeholder="AAPL",
+            key="news_ticker_input",
+        ).strip().upper()
+
+        if searched_symbol:
+            st.session_state.news_search_symbol = searched_symbol
+            refresh_cols = st.columns(2)
+            if refresh_cols[0].button("Refresh Ticker News", key=f"refresh_news_{searched_symbol}"):
+                load_ticker_news.clear()
+                load_sec_filings.clear()
+
+            try:
+                ticker_news = rank_news(load_ticker_news(searched_symbol))
+                ticker_summary = summarize_news(ticker_news)
+                sec_data = load_sec_filings(searched_symbol)
+                company_name = sec_data.get("company")
+                fda_data = load_fda_records(company_name) if company_name else {"status": "Unavailable", "records": []}
+
+                head = st.columns(5)
+                head[0].metric("Ticker", searched_symbol)
+                head[1].metric("Overall Sentiment", ticker_summary.get("overall_sentiment", "—"))
+                head[2].metric("Bullish", ticker_summary.get("bullish", 0))
+                head[3].metric("Bearish", ticker_summary.get("bearish", 0))
+                head[4].metric("High Impact", ticker_summary.get("high_impact", 0))
+
+                if st.button(
+                    "Generate AI Catalyst Analysis",
+                    key=f"news_ai_{searched_symbol}",
+                    use_container_width=True,
+                ):
+                    try:
+                        with st.spinner(f"AI is analyzing news and catalysts for {searched_symbol}..."):
+                            st.session_state.news_ai_cache[searched_symbol] = analyze_news(
+                                st.secrets["OPENAI_API_KEY"],
+                                searched_symbol,
+                                ticker_news,
+                                sec_data.get("filings", []),
+                                fda_data.get("records", []),
+                            )
+                    except Exception as error:
+                        st.error(f"AI catalyst analysis failed: {error}")
+
+                cached_news_ai = st.session_state.news_ai_cache.get(searched_symbol)
+                if cached_news_ai:
+                    st.subheader("AI Catalyst Summary")
+                    ai_cols = st.columns(3)
+                    ai_cols[0].metric("Sentiment", cached_news_ai.get("overall_sentiment", "—"))
+                    ai_cols[1].metric("Impact", cached_news_ai.get("impact", "—"))
+                    ai_cols[2].metric("Confidence", f'{cached_news_ai.get("confidence", 0)}%')
+                    st.write(cached_news_ai.get("catalyst_summary", ""))
+                    bull_col, bear_col = st.columns(2)
+                    with bull_col:
+                        st.markdown("**Bullish factors**")
+                        for item in cached_news_ai.get("bullish_factors", []):
+                            st.write(f"• {item}")
+                    with bear_col:
+                        st.markdown("**Bearish factors**")
+                        for item in cached_news_ai.get("bearish_factors", []):
+                            st.write(f"• {item}")
+
+                st.subheader("Recent Headlines")
+                for item in ticker_news[:30]:
+                    if item.get("url"):
+                        st.markdown(f'**[{item.get("headline")}]({item.get("url")})**')
+                    else:
+                        st.markdown(f'**{item.get("headline")}**')
+                    st.caption(
+                        f'{item.get("category")} · {item.get("impact")} impact · '
+                        f'{item.get("sentiment")} · {item.get("source")}'
+                    )
+                    st.write(item.get("why_it_matters", ""))
+
+                st.divider()
+                st.subheader("SEC Filings")
+                if sec_data.get("filings"):
+                    for filing in sec_data.get("filings", []):
+                        st.markdown(
+                            f'**[{filing.get("form")} — {filing.get("date")}]({filing.get("url")})**'
+                        )
+                        st.caption(filing.get("description", ""))
+                else:
+                    st.caption("No recent priority SEC filings were returned.")
+
+                st.divider()
+                st.subheader("FDA Enforcement / Recall Records")
+                if fda_data.get("records"):
+                    for record in fda_data.get("records", []):
+                        st.markdown(
+                            f'**{record.get("classification", "FDA record")} — '
+                            f'{record.get("report_date", "")}**'
+                        )
+                        st.write(record.get("reason", ""))
+                        st.caption(record.get("product", ""))
+                else:
+                    st.caption(
+                        "No matching openFDA drug-enforcement records were found for the SEC company name. "
+                        "This does not mean there are no FDA developments; clinical and approval headlines "
+                        "are also classified from the news feed above."
+                    )
+            except Exception as error:
+                st.error(f"Ticker research could not be loaded: {error}")
+        else:
+            st.info("Enter a ticker to load stock-specific news, SEC filings, FDA records, and AI catalyst analysis.")
+
+
+# -----------------------------
+# AI Analysis
+# -----------------------------
+with tabs[4]:
     st.header("AI Analysis")
     st.caption(
         "Deep analysis workspace using the selected scanner stock and the "
@@ -1546,7 +1812,7 @@ with tabs[3]:
 # -----------------------------
 # Watchlist
 # -----------------------------
-with tabs[4]:
+with tabs[5]:
     st.header("Watchlist")
 
     st.write(
@@ -1557,7 +1823,7 @@ with tabs[4]:
 # -----------------------------
 # Trade Planner
 # -----------------------------
-with tabs[5]:
+with tabs[6]:
     st.header("Trade Planner")
     st.write("Interactive trade planning will be built in its scheduled roadmap phase.")
 
@@ -1565,7 +1831,7 @@ with tabs[5]:
 # -----------------------------
 # Journal
 # -----------------------------
-with tabs[6]:
+with tabs[7]:
     st.header("Journal")
 
     st.write(
@@ -1576,7 +1842,7 @@ with tabs[6]:
 # -----------------------------
 # Performance
 # -----------------------------
-with tabs[7]:
+with tabs[8]:
     st.header("Performance")
 
     st.write(
@@ -1587,7 +1853,7 @@ with tabs[7]:
 # -----------------------------
 # Settings
 # -----------------------------
-with tabs[8]:
+with tabs[9]:
     st.header("Settings")
 
     st.write(
