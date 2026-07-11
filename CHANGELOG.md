@@ -98,3 +98,26 @@
 - Smart Money data loads on demand to conserve free API limits.
 - OHLCV accumulation signals are inferred behavior, not proof of a specific institution's trades.
 - Options, ownership, insider, and short-interest availability depends on connected provider entitlements and may be delayed.
+
+## v0.5.0 — Trading Intelligence
+
+### Added
+- Deterministic pattern recognition for EMA21 reclaims/retests, higher-low continuations, tight consolidations, ascending triangles, cup-like bases, and above-average-volume breakouts.
+- Overall trend-health scoring from EMA alignment, slope, price location, and higher-low structure.
+- On-demand Daily, 4H, 1H, and 15-minute confirmation with alignment scoring.
+- Entry-quality grading using EMA21 location, volume, risk/reward, target quality, pattern quality, trend health, and timeframe alignment.
+- Aggressive, standard, and conservative adaptive stop references.
+- Intelligent target table combining structural resistance with ATR fallback and measured-move context.
+- Exit and management warnings for extension, weak volume, limited target room, trend weakness, and timeframe conflict.
+- Same-symbol historical setup analogue framework with sample size, win rate, average return, and average drawdown.
+- Functional Trade Planner with manual entry/stop/T1-T3 overrides, position sizing, risk budget, live R multiples, and session saving.
+- Send-to-Trade-Planner handoff from each Stock Report.
+
+### Integrated
+- Trading Intelligence becomes an optional integrated-confidence component.
+- Momo Engine Decision and Independent AI Decision can consume Trading Intelligence context.
+- Existing v0.1-v0.4 functionality and tab order are preserved.
+
+### Notes
+- Historical setup statistics are descriptive same-symbol analogues, not predictive guarantees or a full portfolio backtest.
+- Multi-timeframe and Trading Intelligence data load on demand to protect API limits and scan speed.
