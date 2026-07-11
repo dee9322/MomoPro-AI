@@ -6,11 +6,11 @@ from typing import Any
 import requests
 
 
-def _number(value: Any) -> float:
+def _number(value: Any) -> float | None:
     try:
-        return float(value or 0)
+        return float(value) if value not in (None, "", "None") else None
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _safe_get(url: str, params: dict[str, Any]) -> Any:
@@ -99,17 +99,16 @@ def get_insider_activity(
 
         transaction_type = _normalized_type(row)
         transaction_lower = transaction_type.lower()
-        shares = abs(
-            _number(
-                row.get("securitiesTransacted")
-                or row.get("share")
-                or row.get("shares")
-                or row.get("shares_traded")
-                or row.get("change")
-            )
+        shares_value = _number(
+            row.get("securitiesTransacted")
+            or row.get("share")
+            or row.get("shares")
+            or row.get("shares_traded")
+            or row.get("change")
         )
+        shares = abs(shares_value) if shares_value is not None else None
         price = _number(row.get("price") or row.get("transaction_price"))
-        value = shares * price
+        value = shares * price if shares is not None and price is not None else None
 
         code = transaction_type.upper()
         is_buy = (
@@ -121,9 +120,9 @@ def get_insider_activity(
             or code in {"S", "D"}
         )
 
-        if is_buy:
+        if is_buy and value is not None:
             purchase_value += value
-        elif is_sell:
+        elif is_sell and value is not None:
             sale_value += value
 
         transactions.append(
@@ -132,9 +131,9 @@ def get_insider_activity(
                 "name": row.get("reportingName") or row.get("name") or row.get("insider_name") or "—",
                 "role": row.get("typeOfOwner") or row.get("title") or row.get("executive_title") or "—",
                 "transaction": transaction_type or "—",
-                "shares": round(shares) if shares else None,
-                "price": round(price, 2) if price else None,
-                "estimated_value": round(value, 2) if value else None,
+                "shares": round(shares) if shares is not None else None,
+                "price": round(price, 2) if price is not None else None,
+                "estimated_value": round(value, 2) if value is not None else None,
                 "source": source,
             }
         )
@@ -170,6 +169,7 @@ def get_insider_activity(
         "transaction_count": len(transactions),
         "transactions": transactions,
         "source": source,
+        "data_quality": "Reported / Delayed",
         "summary": f"Recent reported insider activity is {verdict.lower()} based on available transactions.",
         "disclaimer": "Insider sales can be routine or plan-based; review the original filing before drawing conclusions.",
     }
