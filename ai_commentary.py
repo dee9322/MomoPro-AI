@@ -60,6 +60,7 @@ def build_momo_engine_decision(
     relative_strength: dict[str, Any] | None = None,
     news_context: dict[str, Any] | None = None,
     smart_money_context: dict[str, Any] | None = None,
+    trade_intelligence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a transparent rule-based decision from stock and market data."""
 
@@ -67,6 +68,7 @@ def build_momo_engine_decision(
     relative_strength = relative_strength or {}
     news_context = news_context or {}
     smart_money_context = smart_money_context or {}
+    trade_intelligence_context = trade_intelligence_context or {}
 
     confidence = _number(stock.get("Momo Confidence")) or 0
     dee_fit = _number(stock.get("Dee Fit")) or 0
@@ -247,6 +249,7 @@ def _stock_payload(
     relative_strength: dict[str, Any] | None = None,
     news_context: dict[str, Any] | None = None,
     smart_money_context: dict[str, Any] | None = None,
+    trade_intelligence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     keys = [
         "Symbol",
@@ -315,6 +318,7 @@ def _stock_payload(
     payload["Relative Strength"] = relative_strength or None
     payload["News Context"] = news_context or None
     payload["Smart Money Context"] = smart_money_context or None
+    payload["Trading Intelligence Context"] = trade_intelligence_context or None
 
     return payload
 
@@ -326,17 +330,18 @@ def generate_ai_decision(
     relative_strength: dict[str, Any] | None = None,
     news_context: dict[str, Any] | None = None,
     smart_money_context: dict[str, Any] | None = None,
+    trade_intelligence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate an independent AI decision on demand."""
     if not api_key:
         raise ValueError("OPENAI_API_KEY is missing from Streamlit secrets.")
 
     client = OpenAI(api_key=api_key)
-    payload = _stock_payload(stock, market_context, relative_strength, news_context, smart_money_context)
+    payload = _stock_payload(stock, market_context, relative_strength, news_context, smart_money_context, trade_intelligence_context)
 
     system_prompt = """
 You are the independent AI analyst inside MomoPro AI, a swing-trading decision-support application.
-Analyze the supplied technical, structural, market, breadth, sentiment, sector, relative-strength, verified news, and Smart Money data.
+Analyze the supplied technical, structural, market, breadth, sentiment, sector, relative-strength, verified news, Smart Money, and Trading Intelligence data.
 Use only supplied datasets. Distinguish inferred accumulation behavior from verified reported ownership, insider, float, short-interest, and options data. Do not overstate delayed or unavailable fields. You may disagree with the rule-based Momo Engine. Be practical, cautious, and specific.
 Do not promise outcomes or describe a trade as guaranteed. Use concise language suitable for a stock report.
 The decision must be exactly one of: Entry Ready, Bullish Watch, Wait for Confirmation, Neutral, Avoid.
