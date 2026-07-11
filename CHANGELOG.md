@@ -57,3 +57,23 @@
 - Added duplicate removal across providers.
 - Added provider-aware ranking and source coverage counts.
 - Added graceful fallback when a provider is unavailable or rate-limited.
+
+## v0.4.0 — Smart Money Intelligence
+
+### Added
+- Stock Report Smart Money section with on-demand loading.
+- Institutional-style accumulation/distribution detection from OHLCV.
+- Options flow screening with call/put bias and unusual volume/open-interest candidates when provider access permits.
+- Reported insider transaction summaries and net-buying/net-selling assessment.
+- Institutional ownership trend and reported ownership percentages when available.
+- Float, shares outstanding, short-interest, days-to-cover, and squeeze-risk context.
+- Combined Smart Money score and verdict.
+
+### Integrated
+- Smart Money becomes an optional component of market-adjusted confidence.
+- Momo Engine Decision and Independent AI Decision can use available Smart Money context.
+
+### Notes
+- Smart Money data loads on demand to conserve free API limits.
+- OHLCV accumulation signals are inferred behavior, not proof of a specific institution's trades.
+- Options, ownership, insider, and short-interest availability depends on connected provider entitlements and may be delayed.
