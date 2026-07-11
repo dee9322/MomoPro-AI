@@ -106,11 +106,21 @@ def load_relative_strength(symbol):
     )
 
 
+def _secret(name):
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_market_news():
     return get_market_news(
         st.secrets["ALPACA_API_KEY"],
         st.secrets["ALPACA_SECRET_KEY"],
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
     )
 
 
@@ -120,6 +130,9 @@ def load_ticker_news(symbol):
         st.secrets["ALPACA_API_KEY"],
         st.secrets["ALPACA_SECRET_KEY"],
         symbol,
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
     )
 
 
@@ -1063,6 +1076,19 @@ with tabs[2]:
                 news_metrics[0].metric("News Sentiment", selected_news_summary.get("overall_sentiment", "—"))
                 news_metrics[1].metric("High Impact", selected_news_summary.get("high_impact", 0))
                 news_metrics[2].metric("Recent Headlines", len(selected_news))
+                source_counts = selected_news_summary.get("source_counts", {})
+                if source_counts:
+                    st.caption(
+                        "Coverage: "
+                        + " · ".join(
+                            f"{source}: {count}"
+                            for source, count in sorted(
+                                source_counts.items(),
+                                key=lambda pair: pair[1],
+                                reverse=True,
+                            )
+                        )
+                    )
 
                 for item in selected_news[:5]:
                     if item.get("url"):
@@ -1581,6 +1607,19 @@ with tabs[3]:
             summary_cols[2].metric("Bearish", market_summary.get("bearish", 0))
             summary_cols[3].metric("Mixed", market_summary.get("mixed", 0))
             summary_cols[4].metric("High Impact", market_summary.get("high_impact", 0))
+            source_counts = market_summary.get("source_counts", {})
+            if source_counts:
+                st.caption(
+                    "Combined provider coverage: "
+                    + " · ".join(
+                        f"{source}: {count}"
+                        for source, count in sorted(
+                            source_counts.items(),
+                            key=lambda pair: pair[1],
+                            reverse=True,
+                        )
+                    )
+                )
 
             filter_cols = st.columns(3)
             sentiment_filter = filter_cols[0].selectbox(
@@ -1643,6 +1682,19 @@ with tabs[3]:
                 head[2].metric("Bullish", ticker_summary.get("bullish", 0))
                 head[3].metric("Bearish", ticker_summary.get("bearish", 0))
                 head[4].metric("High Impact", ticker_summary.get("high_impact", 0))
+                source_counts = ticker_summary.get("source_counts", {})
+                if source_counts:
+                    st.caption(
+                        "Combined provider coverage: "
+                        + " · ".join(
+                            f"{source}: {count}"
+                            for source, count in sorted(
+                                source_counts.items(),
+                                key=lambda pair: pair[1],
+                                reverse=True,
+                            )
+                        )
+                    )
 
                 if st.button(
                     "Generate AI Catalyst Analysis",
