@@ -198,10 +198,10 @@ def build_momo_engine_decision(
     elif insider_verdict == "Net Selling":
         concerns.append("Recent reported insider activity shows net selling")
     options_bias = smart_money_context.get("options_activity", {}).get("bias")
-    if options_bias == "Bullish":
-        strengths.append("Available options flow is call-biased")
-    elif options_bias == "Bearish":
-        concerns.append("Available options flow is put-biased")
+    if options_bias in {"Bullish", "Bullish Lean"}:
+        strengths.append("Available options activity is call-biased")
+    elif options_bias in {"Bearish", "Bearish Lean"}:
+        concerns.append("Available options activity is put-biased")
 
     if confidence >= 82 and dee_fit >= 80 and (risk_reward or 0) >= 1.5:
         decision = "Entry Ready"
