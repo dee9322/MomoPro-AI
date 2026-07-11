@@ -14,10 +14,11 @@ MODULE_WEIGHTS = {
 }
 
 INTEGRATED_WEIGHTS = {
-    "technical": 0.70,
-    "market": 0.12,
-    "sector": 0.08,
-    "relative_strength": 0.10,
+    "technical": 0.62,
+    "market": 0.10,
+    "sector": 0.07,
+    "relative_strength": 0.08,
+    "smart_money": 0.13,
 }
 
 
@@ -172,6 +173,7 @@ def calculate_integrated_confidence(
     technical_confidence: float | int | None,
     market_context: dict[str, Any] | None,
     relative_strength: dict[str, Any] | None,
+    smart_money_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Blend the stock's technical confidence with live market context.
@@ -182,6 +184,7 @@ def calculate_integrated_confidence(
     """
     market_context = market_context or {}
     relative_strength = relative_strength or {}
+    smart_money_context = smart_money_context or {}
 
     breakdown: dict[str, float | None] = {
         "Technical": (
@@ -203,6 +206,11 @@ def calculate_integrated_confidence(
             if _valid_number(relative_strength.get("score"))
             else None
         ),
+        "Smart Money": (
+            float(smart_money_context.get("overall_score"))
+            if _valid_number(smart_money_context.get("overall_score"))
+            else None
+        ),
     }
 
     components = [
@@ -212,6 +220,10 @@ def calculate_integrated_confidence(
         (
             breakdown["Relative Strength"],
             INTEGRATED_WEIGHTS["relative_strength"],
+        ),
+        (
+            breakdown["Smart Money"],
+            INTEGRATED_WEIGHTS["smart_money"],
         ),
     ]
 
