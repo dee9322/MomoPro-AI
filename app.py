@@ -2284,8 +2284,27 @@ with tabs[6]:
 
     prefill = st.session_state.trade_plan_prefill or {}
     planner_symbol = st.text_input("Ticker", value=str(prefill.get("symbol", "")), key="planner_symbol").upper().strip()
-    account_size = st.number_input("Account Size ($)", min_value=0.0, value=10000.0, step=500.0)
-    risk_pct = st.number_input("Risk Per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
+    account_size = st.number_input(
+        "Account Size ($)",
+        min_value=0.0,
+        value=10000.0,
+        step=500.0,
+        key="planner_account_size",
+    )
+
+    risk_pct = st.number_input(
+        "Risk Per Trade (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=1.0,
+        step=0.1,
+        format="%.2f",
+        key="planner_risk_pct",
+        help=(
+            "Type any value from 0% to 100%. Press Enter or click outside "
+            "the field to apply it."
+        ),
+    )
 
     plan_cols = st.columns(5)
     entry = plan_cols[0].number_input("Entry", min_value=0.0, value=float(prefill.get("entry") or 0.0), step=0.01)
