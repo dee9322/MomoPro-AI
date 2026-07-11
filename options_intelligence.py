@@ -8,6 +8,7 @@ import requests
 
 
 _OPTION_SYMBOL = re.compile(r"^([A-Z0-9]{1,8})(\d{6})([CP])(\d{8})$")
+MAX_PAGES = 10
 
 
 def _number(value: Any) -> float | None:
@@ -39,13 +40,63 @@ def _parse_contract(symbol: str) -> dict[str, Any]:
     }
 
 
-def _friendly_unavailable(message: str | None = None) -> dict[str, Any]:
+def _friendly_unavailable(message: str) -> dict[str, Any]:
     return {
         "status": "Unavailable",
-        "summary": message or "Basic options activity was not returned by Alpaca's indicative feed.",
+        "score": None,
+        "bias": "Unavailable",
+        "summary": message,
+        "active_contracts": [],
         "data_source": "Alpaca Indicative",
         "data_quality": "Unavailable",
     }
+
+
+def _fetch_all_snapshots(
+    symbol: str,
+    headers: dict[str, str],
+    base_params: dict[str, Any],
+) -> tuple[dict[str, Any], int, bool]:
+    snapshots: dict[str, Any] = {}
+    page_token: str | None = None
+    page_count = 0
+    truncated = False
+
+    while page_count < MAX_PAGES:
+        params = dict(base_params)
+        if page_token:
+            params["page_token"] = page_token
+        response = requests.get(
+            f"https://data.alpaca.markets/v1beta1/options/snapshots/{symbol.upper()}",
+            params=params,
+            headers=headers,
+            timeout=30,
+        )
+        if response.status_code in (401, 403):
+            raise PermissionError
+        if response.status_code == 429:
+            raise RuntimeError("rate_limited")
+        response.raise_for_status()
+        payload = response.json()
+
+        page = payload.get("snapshots") or payload.get("data") or {}
+        if isinstance(page, list):
+            page = {
+                str(item.get("symbol") or item.get("contract_symbol") or index): item
+                for index, item in enumerate(page)
+                if isinstance(item, dict)
+            }
+        if isinstance(page, dict):
+            snapshots.update(page)
+
+        page_count += 1
+        page_token = payload.get("next_page_token") or payload.get("nextPageToken")
+        if not page_token:
+            break
+    else:
+        truncated = bool(page_token)
+
+    return snapshots, page_count, truncated
 
 
 def get_options_activity(
@@ -53,12 +104,6 @@ def get_options_activity(
     alpaca_api_key: str | None,
     alpaca_secret_key: str | None,
 ) -> dict[str, Any]:
-    """Build a basic options-activity read from Alpaca's free indicative chain.
-
-    The free feed contains modified quotes and delayed trade information. It is
-    useful for a directional activity proxy, but it is not a real-time sweep or
-    institutional-flow feed and does not identify opening versus closing trades.
-    """
     if not alpaca_api_key or not alpaca_secret_key:
         return _friendly_unavailable("Alpaca API credentials are missing.")
 
@@ -75,30 +120,28 @@ def get_options_activity(
     }
 
     try:
-        response = requests.get(
-            f"https://data.alpaca.markets/v1beta1/options/snapshots/{symbol.upper()}",
-            params=params,
-            headers=headers,
-            timeout=30,
+        snapshots, page_count, truncated = _fetch_all_snapshots(
+            symbol,
+            headers,
+            params,
         )
-        if response.status_code in (401, 403):
-            return _friendly_unavailable("Alpaca options data is not authorized for the connected account.")
-        if response.status_code == 429:
-            return _friendly_unavailable("Alpaca options data is temporarily rate-limited. Try again shortly.")
-        response.raise_for_status()
-        payload = response.json()
+    except PermissionError:
+        return _friendly_unavailable(
+            "Alpaca options data is not authorized for the connected account."
+        )
+    except RuntimeError:
+        return _friendly_unavailable(
+            "Alpaca options data is temporarily rate-limited. Try again shortly."
+        )
     except (requests.RequestException, ValueError):
-        return _friendly_unavailable("Alpaca's indicative options feed could not be reached right now.")
+        return _friendly_unavailable(
+            "Alpaca's indicative options feed could not be reached right now."
+        )
 
-    snapshots = payload.get("snapshots") or payload.get("data") or {}
-    if isinstance(snapshots, list):
-        snapshots = {
-            str(item.get("symbol") or item.get("contract_symbol") or index): item
-            for index, item in enumerate(snapshots)
-            if isinstance(item, dict)
-        }
-    if not isinstance(snapshots, dict) or not snapshots:
-        return _friendly_unavailable("No active option-chain snapshots were returned for this ticker.")
+    if not snapshots:
+        return _friendly_unavailable(
+            "No active option-chain snapshots were returned for this ticker."
+        )
 
     call_trade_size = 0.0
     put_trade_size = 0.0
@@ -140,8 +183,9 @@ def get_options_activity(
 
         if iv is not None and 0 <= iv <= 10:
             iv_values.append(iv)
-        if parsed.get("expiration"):
-            expirations[parsed["expiration"]] = expirations.get(parsed["expiration"], 0) + 1
+        expiration = parsed.get("expiration")
+        if expiration:
+            expirations[expiration] = expirations.get(expiration, 0) + 1
 
         quote_size = max(bid_size, ask_size)
         activity_size = max(trade_size, quote_size)
@@ -150,12 +194,12 @@ def get_options_activity(
                 "contract": parsed["contract"],
                 "type": option_type,
                 "strike": parsed["strike"],
-                "expiration": parsed["expiration"],
-                "latest_trade_size": round(trade_size),
+                "expiration": expiration,
+                "latest_trade_size": round(trade_size) if trade_size else None,
                 "latest_trade_price": round(trade_price, 2) if trade_price is not None else None,
                 "bid": round(bid_price, 2) if bid_price is not None else None,
                 "ask": round(ask_price, 2) if ask_price is not None else None,
-                "largest_quote_size": round(quote_size),
+                "largest_quote_size": round(quote_size) if quote_size else None,
                 "implied_volatility": round(iv * 100, 1) if iv is not None else None,
                 "delta": round(delta, 3) if delta is not None else None,
                 "activity_size": activity_size,
@@ -167,7 +211,7 @@ def get_options_activity(
 
     if call_share is None:
         bias = "Insufficient Trade Activity"
-        score = 50
+        score = None
     elif call_share >= 0.62:
         bias = "Bullish Lean"
         score = round(min(75, 50 + (call_share - 0.5) * 80))
@@ -187,10 +231,10 @@ def get_options_activity(
 
     return {
         "status": "Available",
-        "score": max(0, min(100, score)),
+        "score": max(0, min(100, score)) if score is not None else None,
         "bias": bias,
-        "call_trade_size": round(call_trade_size),
-        "put_trade_size": round(put_trade_size),
+        "call_trade_size": round(call_trade_size) if call_trade_size else None,
+        "put_trade_size": round(put_trade_size) if put_trade_size else None,
         "put_call_activity_ratio": round(put_call_ratio, 2) if put_call_ratio is not None else None,
         "call_contracts": call_contracts,
         "put_contracts": put_contracts,
@@ -199,8 +243,10 @@ def get_options_activity(
         "most_active_expiration": most_active_expiration,
         "active_contract_count": len(candidates),
         "active_contracts": candidates[:12],
+        "pages_loaded": page_count,
+        "chain_truncated": truncated,
         "summary": (
-            f"Alpaca's delayed indicative chain shows a {bias.lower()} across "
+            f"Alpaca's delayed indicative chain shows {bias.lower()} across "
             f"{call_contracts + put_contracts} contracts analyzed."
         ),
         "data_source": "Alpaca Indicative",
