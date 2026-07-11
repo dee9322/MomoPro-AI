@@ -22,6 +22,7 @@ from news_intelligence import (
 )
 from sec_intelligence import get_recent_filings
 from fda_intelligence import get_fda_enforcement
+from smart_money import get_smart_money_intelligence
 from news_ai import analyze_news
 
 
@@ -146,6 +147,18 @@ def load_fda_records(company_name):
     return get_fda_enforcement(company_name)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_smart_money(symbol):
+    return get_smart_money_intelligence(
+        symbol=symbol,
+        alpaca_api_key=st.secrets["ALPACA_API_KEY"],
+        alpaca_secret_key=st.secrets["ALPACA_SECRET_KEY"],
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
+    )
+
+
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 
@@ -163,6 +176,9 @@ if "news_ai_cache" not in st.session_state:
 
 if "news_search_symbol" not in st.session_state:
     st.session_state.news_search_symbol = ""
+
+if "smart_money_cache" not in st.session_state:
+    st.session_state.smart_money_cache = {}
 
 
 tabs = st.tabs(
@@ -940,6 +956,147 @@ with tabs[2]:
                 st.warning(relative_strength.get("summary", "Relative strength is unavailable."))
 
             # -------------------------
+            # Smart Money Intelligence
+            # -------------------------
+            st.divider()
+            st.subheader("Smart Money Intelligence")
+            st.caption(
+                "Combines institutional-style price/volume behavior with available "
+                "options, insider, ownership, float, and short-interest data."
+            )
+
+            smart_refresh = st.button(
+                "Load / Refresh Smart Money",
+                key=f"smart_money_{selected_symbol}",
+            )
+            if smart_refresh:
+                load_smart_money.clear()
+                st.session_state.smart_money_cache.pop(selected_symbol, None)
+
+            smart_money_context = st.session_state.smart_money_cache.get(selected_symbol)
+            if smart_refresh:
+                with st.spinner(f"Loading Smart Money data for {selected_symbol}..."):
+                    try:
+                        smart_money_context = load_smart_money(selected_symbol)
+                        st.session_state.smart_money_cache[selected_symbol] = smart_money_context
+                    except Exception as error:
+                        smart_money_context = {
+                            "status": "Unavailable",
+                            "summary": f"Smart Money data could not be loaded: {error}",
+                        }
+                        st.session_state.smart_money_cache[selected_symbol] = smart_money_context
+
+            if smart_money_context is None:
+                smart_money_context = {
+                    "status": "Not Loaded",
+                    "overall_score": None,
+                    "verdict": "Load to Analyze",
+                    "available_modules": 0,
+                    "institutional_activity": {},
+                    "options_activity": {},
+                    "insider_activity": {},
+                    "ownership": {},
+                    "float": {},
+                    "summary": "Click Load / Refresh Smart Money to query the connected providers for this ticker.",
+                    "data_note": "Smart Money is loaded on demand to conserve free API limits.",
+                }
+
+            sm_top = st.columns(4)
+            sm_top[0].metric("Smart Money Score", smart_money_context.get("overall_score", "—"))
+            sm_top[1].metric("Verdict", smart_money_context.get("verdict", "—"))
+            sm_top[2].metric("Modules Available", smart_money_context.get("available_modules", 0), "of 4 scored")
+            sm_top[3].metric(
+                "Squeeze Score",
+                smart_money_context.get("float", {}).get("squeeze_score", "—"),
+            )
+            st.write(smart_money_context.get("summary", ""))
+
+            inst = smart_money_context.get("institutional_activity", {})
+            opts = smart_money_context.get("options_activity", {})
+            insiders = smart_money_context.get("insider_activity", {})
+            ownership = smart_money_context.get("ownership", {})
+            float_data = smart_money_context.get("float", {})
+
+            sm_tabs = st.tabs([
+                "Accumulation / Distribution",
+                "Options Flow",
+                "Insiders",
+                "Ownership",
+                "Float & Short Interest",
+            ])
+
+            with sm_tabs[0]:
+                if inst.get("status") == "Available":
+                    row = st.columns(5)
+                    row[0].metric("Activity Score", inst.get("score", "—"))
+                    row[1].metric("Verdict", inst.get("verdict", "—"))
+                    row[2].metric("Accumulation Days", inst.get("accumulation_days", "—"))
+                    row[3].metric("Distribution Days", inst.get("distribution_days", "—"))
+                    row[4].metric("Up/Down Volume", inst.get("up_down_volume_ratio", "—"))
+                    st.write(inst.get("summary", ""))
+                    st.caption(inst.get("disclaimer", ""))
+                else:
+                    st.info(inst.get("summary", "Accumulation analysis is unavailable."))
+
+            with sm_tabs[1]:
+                if opts.get("status") == "Available":
+                    row = st.columns(5)
+                    row[0].metric("Options Score", opts.get("score", "—"))
+                    row[1].metric("Bias", opts.get("bias", "—"))
+                    row[2].metric("Call Volume", opts.get("call_volume", "—"))
+                    row[3].metric("Put Volume", opts.get("put_volume", "—"))
+                    row[4].metric("Put/Call", opts.get("put_call_volume_ratio", "—"))
+                    unusual = opts.get("unusual_contracts", [])
+                    if unusual:
+                        st.dataframe(pd.DataFrame(unusual), use_container_width=True, hide_index=True)
+                    st.caption(opts.get("disclaimer", ""))
+                else:
+                    st.info(opts.get("summary", "Options data is unavailable on the connected plan."))
+
+            with sm_tabs[2]:
+                if insiders.get("status") == "Available":
+                    row = st.columns(4)
+                    row[0].metric("Insider Score", insiders.get("score", "—"))
+                    row[1].metric("Verdict", insiders.get("verdict", "—"))
+                    row[2].metric("Purchases", money_text(insiders.get("purchase_value")))
+                    row[3].metric("Sales", money_text(insiders.get("sale_value")))
+                    transactions = insiders.get("transactions", [])
+                    if transactions:
+                        st.dataframe(pd.DataFrame(transactions), use_container_width=True, hide_index=True)
+                    st.caption(insiders.get("disclaimer", ""))
+                else:
+                    st.info(insiders.get("summary", "Insider data is unavailable."))
+
+            with sm_tabs[3]:
+                if ownership.get("status") == "Available":
+                    row = st.columns(5)
+                    row[0].metric("Ownership Score", ownership.get("score", "—"))
+                    row[1].metric("Institutional %", percent_text(ownership.get("institutional_ownership_pct")))
+                    row[2].metric("Insider %", percent_text(ownership.get("insider_ownership_pct")))
+                    row[3].metric("Institutions", ownership.get("institution_count", "—"))
+                    row[4].metric("Trend", ownership.get("trend", "—"))
+                    st.write(ownership.get("summary", ""))
+                    st.caption(ownership.get("disclaimer", ""))
+                else:
+                    st.info(ownership.get("summary", "Ownership data is unavailable."))
+
+            with sm_tabs[4]:
+                if float_data.get("status") == "Available":
+                    row = st.columns(6)
+                    row[0].metric("Float", f'{float_data.get("float_shares", 0):,.0f}' if float_data.get("float_shares") else "—")
+                    row[1].metric("Shares Outstanding", f'{float_data.get("shares_outstanding", 0):,.0f}' if float_data.get("shares_outstanding") else "—")
+                    row[2].metric("Float Type", float_data.get("float_category", "—"))
+                    row[3].metric("Short % Float", percent_text(float_data.get("short_interest_pct_float")))
+                    row[4].metric("Days to Cover", float_data.get("days_to_cover", "—"))
+                    row[5].metric("Squeeze Score", float_data.get("squeeze_score", "—"))
+                    st.write(float_data.get("summary", ""))
+                    st.caption(float_data.get("disclaimer", ""))
+                else:
+                    st.info(float_data.get("summary", "Float and short-interest data is unavailable."))
+
+            st.caption(smart_money_context.get("data_note", ""))
+
+            # -------------------------
             # Momo Engine Confidence
             # -------------------------
             st.divider()
@@ -950,6 +1107,7 @@ with tabs[2]:
                 technical_confidence=selected_stock.get("Momo Confidence"),
                 market_context=report_market,
                 relative_strength=relative_strength,
+                smart_money_context=smart_money_context,
             )
 
             confidence_columns = st.columns(4)
@@ -1028,7 +1186,7 @@ with tabs[2]:
                 context_breakdown = integrated_confidence.get(
                     "Integrated Breakdown", {}
                 )
-                context_row = st.columns(4)
+                context_row = st.columns(5)
                 context_row[0].metric(
                     "Technical", percent_text(context_breakdown.get("Technical"))
                 )
@@ -1041,6 +1199,10 @@ with tabs[2]:
                 context_row[3].metric(
                     "Relative Strength",
                     percent_text(context_breakdown.get("Relative Strength")),
+                )
+                context_row[4].metric(
+                    "Smart Money",
+                    percent_text(context_breakdown.get("Smart Money")),
                 )
                 st.markdown("**Technical module breakdown**")
 
@@ -1115,6 +1277,11 @@ with tabs[2]:
                 selected_stock,
                 market_context=report_market,
                 relative_strength=relative_strength,
+                news_context={
+                    "summary": summarize_news(selected_news),
+                    "headlines": selected_news[:10],
+                },
+                smart_money_context=smart_money_context,
             )
 
             engine_col, ai_col = st.columns(2)
@@ -1149,10 +1316,8 @@ with tabs[2]:
             with ai_col:
                 st.markdown("### Independent AI Decision")
                 st.caption(
-                    "For now, the AI uses the technical and structural "
-                    "data already in this report. News, filings, options, "
-                    "sector, and market feeds will be added in their "
-                    "scheduled roadmap steps."
+                    "The AI uses the technical, market, relative-strength, "
+                    "verified news, and available Smart Money data in this report."
                 )
 
                 cached_ai = st.session_state.ai_commentary_cache.get(
@@ -1185,6 +1350,7 @@ with tabs[2]:
                                     "summary": summarize_news(selected_news),
                                     "headlines": selected_news[:10],
                                 },
+                                smart_money_context=smart_money_context,
                             )
 
                         st.session_state.ai_commentary_cache[
