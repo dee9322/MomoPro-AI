@@ -139,8 +139,30 @@ def _fetch_news(
         exclude_contentless=False,
     )
     response = client.get_news(request)
-    news_items = getattr(response, "news", response)
-    return [_normalize_article(article) for article in list(news_items or [])]
+
+    # Alpaca-py returns a NewsSet. Its articles live in
+    # response.data["news"], not response.news. Iterating the NewsSet
+    # itself yields its model fields (data and next_page_token), which
+    # caused the two fake "Untitled" placeholder rows.
+    response_data = getattr(response, "data", None)
+
+    if isinstance(response_data, dict):
+        news_items = response_data.get("news", [])
+    elif isinstance(response, dict):
+        news_items = response.get("news", [])
+    else:
+        news_items = []
+
+    normalized = []
+    for article in news_items or []:
+        item = _normalize_article(article)
+
+        # Never display synthetic placeholder articles when the API
+        # did not supply a real headline.
+        if item["headline"].strip() and item["headline"] != "Untitled":
+            normalized.append(item)
+
+    return normalized
 
 
 def get_market_news(
