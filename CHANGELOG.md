@@ -1,3 +1,12 @@
+# Changelog
+
+## v0.4.2 — Basic Options Activity
+
+- Replaced the unavailable premium options-flow dependency with Alpaca's free indicative option-chain feed.
+- Added delayed call-versus-put trade-size activity, implied volatility, expiration concentration, and active-contract candidates.
+- Clearly labels the module as delayed/indicative and avoids claiming true real-time institutional flow.
+- Updated the Stock Report Options Flow layout and Smart Money scoring integration.
+
 # MomoPro AI Changelog
 
 ## v0.3.0 — News & Catalyst Intelligence
@@ -77,16 +86,3 @@
 - Smart Money data loads on demand to conserve free API limits.
 - OHLCV accumulation signals are inferred behavior, not proof of a specific institution's trades.
 - Options, ownership, insider, and short-interest availability depends on connected provider entitlements and may be delayed.
-
-## v0.4.1 — Smart Money Polish
-
-- Removed the Alpha Vantage premium options call and raw provider messages.
-- Added a clean unavailable state for options flow on current free plans.
-- Added Finnhub-first insider transaction coverage with FMP fallback.
-- Added Smart Money data coverage, preliminary labeling, and module availability indicators.
-- Excluded incomplete Smart Money reads from integrated confidence until coverage reaches 50%.
-- Added preliminary-data warnings to Momo Engine commentary.
-- Reformatted float, shares outstanding, and monetary values into compact K/M/B notation.
-- Reworked the Smart Money layout to prevent truncated verdicts and oversized values.
-- Missing short-interest and squeeze fields now display as unavailable rather than misleading zeroes.
-- Provider failures are converted into clean user-facing messages instead of raw API errors.
