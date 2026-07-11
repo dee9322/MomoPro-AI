@@ -70,6 +70,21 @@ def r_text(value):
     return f"{float(value):.2f}R"
 
 
+
+def compact_number(value):
+    if not valid_value(value):
+        return "—"
+    number = float(value)
+    absolute = abs(number)
+    if absolute >= 1_000_000_000:
+        return f"{number / 1_000_000_000:.1f}B"
+    if absolute >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M"
+    if absolute >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return f"{number:,.0f}"
+
+
 def reaction_text(
     quality,
     touches,
@@ -962,7 +977,7 @@ with tabs[2]:
             st.subheader("Smart Money Intelligence")
             st.caption(
                 "Combines institutional-style price/volume behavior with available "
-                "options, insider, ownership, float, and short-interest data."
+                "options, insider, ownership, float, and delayed short-interest data."
             )
 
             smart_refresh = st.button(
@@ -978,20 +993,28 @@ with tabs[2]:
                 with st.spinner(f"Loading Smart Money data for {selected_symbol}..."):
                     try:
                         smart_money_context = load_smart_money(selected_symbol)
-                        st.session_state.smart_money_cache[selected_symbol] = smart_money_context
-                    except Exception as error:
+                    except Exception:
                         smart_money_context = {
                             "status": "Unavailable",
-                            "summary": f"Smart Money data could not be loaded: {error}",
+                            "overall_score": None,
+                            "verdict": "Unavailable",
+                            "read_status": "Unavailable",
+                            "coverage_pct": 0,
+                            "available_modules": 0,
+                            "total_modules": 5,
+                            "summary": "Smart Money data could not be loaded from the connected providers.",
                         }
-                        st.session_state.smart_money_cache[selected_symbol] = smart_money_context
+                    st.session_state.smart_money_cache[selected_symbol] = smart_money_context
 
             if smart_money_context is None:
                 smart_money_context = {
                     "status": "Not Loaded",
                     "overall_score": None,
                     "verdict": "Load to Analyze",
+                    "read_status": "Not Loaded",
+                    "coverage_pct": 0,
                     "available_modules": 0,
+                    "total_modules": 5,
                     "institutional_activity": {},
                     "options_activity": {},
                     "insider_activity": {},
@@ -1001,14 +1024,17 @@ with tabs[2]:
                     "data_note": "Smart Money is loaded on demand to conserve free API limits.",
                 }
 
-            sm_top = st.columns(4)
-            sm_top[0].metric("Smart Money Score", smart_money_context.get("overall_score", "—"))
-            sm_top[1].metric("Verdict", smart_money_context.get("verdict", "—"))
-            sm_top[2].metric("Modules Available", smart_money_context.get("available_modules", 0), "of 4 scored")
-            sm_top[3].metric(
-                "Squeeze Score",
-                smart_money_context.get("float", {}).get("squeeze_score", "—"),
-            )
+            score_value = smart_money_context.get("overall_score")
+            coverage_value = smart_money_context.get("coverage_pct")
+            available_modules = smart_money_context.get("available_modules", 0)
+            total_modules = smart_money_context.get("total_modules", 5)
+
+            header_cols = st.columns(4)
+            header_cols[0].metric("Smart Money Score", score_value if valid_value(score_value) else "—")
+            header_cols[1].metric("Data Coverage", percent_text(coverage_value))
+            header_cols[2].metric("Read Status", smart_money_context.get("read_status", "—"))
+            header_cols[3].metric("Modules", f"{available_modules} / {total_modules}")
+            st.markdown(f"**Verdict:** {smart_money_context.get('verdict', '—')}")
             st.write(smart_money_context.get("summary", ""))
 
             inst = smart_money_context.get("institutional_activity", {})
@@ -1017,9 +1043,20 @@ with tabs[2]:
             ownership = smart_money_context.get("ownership", {})
             float_data = smart_money_context.get("float", {})
 
+            status_line = []
+            for label, section in [
+                ("Accumulation", inst),
+                ("Options", opts),
+                ("Insiders", insiders),
+                ("Ownership", ownership),
+                ("Float", float_data),
+            ]:
+                status_line.append(f"{'✓' if section.get('status') == 'Available' else '—'} {label}")
+            st.caption("  ·  ".join(status_line))
+
             sm_tabs = st.tabs([
                 "Accumulation / Distribution",
-                "Options Flow",
+                "Options Activity",
                 "Insiders",
                 "Ownership",
                 "Float & Short Interest",
@@ -1027,90 +1064,92 @@ with tabs[2]:
 
             with sm_tabs[0]:
                 if inst.get("status") == "Available":
-                    row = st.columns(5)
+                    row = st.columns(3)
                     row[0].metric("Activity Score", inst.get("score", "—"))
                     row[1].metric("Verdict", inst.get("verdict", "—"))
-                    row[2].metric("Accumulation Days", inst.get("accumulation_days", "—"))
-                    row[3].metric("Distribution Days", inst.get("distribution_days", "—"))
-                    row[4].metric("Up/Down Volume", inst.get("up_down_volume_ratio", "—"))
+                    row[2].metric("Up/Down Volume", inst.get("up_down_volume_ratio", "—"))
+                    row2 = st.columns(2)
+                    row2[0].metric("Accumulation Days", inst.get("accumulation_days", "—"))
+                    row2[1].metric("Distribution Days", inst.get("distribution_days", "—"))
                     st.write(inst.get("summary", ""))
+                    st.caption(f"Source: {inst.get('source', 'Calculated OHLCV')} · {inst.get('data_quality', 'Calculated / Inferred')}")
                     st.caption(inst.get("disclaimer", ""))
                 else:
                     st.info(inst.get("summary", "Accumulation analysis is unavailable."))
 
             with sm_tabs[1]:
                 if opts.get("status") == "Available":
-                    st.caption(
-                        f'Data: {opts.get("data_source", "Alpaca Indicative")} · '
-                        f'{opts.get("data_quality", "Delayed / Indicative")}'
-                    )
-                    row = st.columns(4)
-                    row[0].metric("Activity Score", opts.get("score", "—"))
+                    st.caption(f"Data: {opts.get('data_source', 'Alpaca Indicative')} · {opts.get('data_quality', 'Delayed / Indicative')}")
+                    row = st.columns(3)
+                    row[0].metric("Activity Score", opts.get("score") if valid_value(opts.get("score")) else "—")
                     row[1].metric("Directional Read", opts.get("bias", "—"))
-                    row[2].metric("Contracts Analyzed", opts.get("contracts_analyzed", "—"))
-                    row[3].metric(
-                        "Avg. Implied Volatility",
-                        percent_text(opts.get("average_implied_volatility_pct")),
-                    )
-
-                    row2 = st.columns(4)
-                    row2[0].metric("Call Trade Size", opts.get("call_trade_size", "—"))
-                    row2[1].metric("Put Trade Size", opts.get("put_trade_size", "—"))
-                    row2[2].metric("Put/Call Activity", opts.get("put_call_activity_ratio", "—"))
-                    row2[3].metric("Leading Expiration", opts.get("most_active_expiration", "—"))
-
+                    row[2].metric("Contracts Analyzed", compact_number(opts.get("contracts_analyzed")))
+                    row2 = st.columns(3)
+                    row2[0].metric("Avg. IV", percent_text(opts.get("average_implied_volatility_pct")))
+                    row2[1].metric("Put/Call Activity", opts.get("put_call_activity_ratio") if valid_value(opts.get("put_call_activity_ratio")) else "—")
+                    row2[2].metric("Leading Expiration", opts.get("most_active_expiration") or "—")
                     st.write(opts.get("summary", ""))
                     active_contracts = opts.get("active_contracts", [])
                     if active_contracts:
                         st.markdown("**Largest recent trade/quote-size candidates**")
-                        st.dataframe(
-                            pd.DataFrame(active_contracts),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
+                        st.dataframe(pd.DataFrame(active_contracts), use_container_width=True, hide_index=True)
                     else:
                         st.info("No larger recent trade or quote-size candidates were found in the returned chain.")
+                    if opts.get("chain_truncated"):
+                        st.warning("The chain reached the safety page limit, so this read may be incomplete.")
                     st.caption(opts.get("disclaimer", ""))
                 else:
                     st.info(opts.get("summary", "Basic options activity is unavailable right now."))
 
             with sm_tabs[2]:
                 if insiders.get("status") == "Available":
-                    row = st.columns(4)
+                    row = st.columns(3)
                     row[0].metric("Insider Score", insiders.get("score", "—"))
                     row[1].metric("Verdict", insiders.get("verdict", "—"))
-                    row[2].metric("Purchases", money_text(insiders.get("purchase_value")))
-                    row[3].metric("Sales", money_text(insiders.get("sale_value")))
+                    row[2].metric("Transactions", insiders.get("transaction_count", "—"))
+                    row2 = st.columns(2)
+                    row2[0].metric("Purchases", money_text(insiders.get("purchase_value")))
+                    row2[1].metric("Sales", money_text(insiders.get("sale_value")))
                     transactions = insiders.get("transactions", [])
                     if transactions:
                         st.dataframe(pd.DataFrame(transactions), use_container_width=True, hide_index=True)
+                    st.caption(f"Source: {insiders.get('source', '—')} · {insiders.get('data_quality', 'Reported / Delayed')}")
                     st.caption(insiders.get("disclaimer", ""))
                 else:
-                    st.info(insiders.get("summary", "Insider data is unavailable."))
+                    st.info(insiders.get("display_message") or insiders.get("summary", "Insider data is unavailable."))
 
             with sm_tabs[3]:
                 if ownership.get("status") == "Available":
-                    row = st.columns(5)
+                    row = st.columns(3)
                     row[0].metric("Ownership Score", ownership.get("score", "—"))
                     row[1].metric("Institutional %", percent_text(ownership.get("institutional_ownership_pct")))
-                    row[2].metric("Insider %", percent_text(ownership.get("insider_ownership_pct")))
-                    row[3].metric("Institutions", ownership.get("institution_count", "—"))
-                    row[4].metric("Trend", ownership.get("trend", "—"))
+                    row[2].metric("Trend", ownership.get("trend", "—"))
+                    row2 = st.columns(3)
+                    row2[0].metric("Insider %", percent_text(ownership.get("insider_ownership_pct")))
+                    row2[1].metric("Institutions", compact_number(ownership.get("institution_count")))
+                    row2[2].metric("Institutional Shares", compact_number(ownership.get("institutional_shares")))
                     st.write(ownership.get("summary", ""))
+                    st.caption(f"Source: {ownership.get('source') or 'Connected provider'} · {ownership.get('data_quality', 'Delayed / Reported')}")
                     st.caption(ownership.get("disclaimer", ""))
                 else:
-                    st.info(ownership.get("summary", "Ownership data is unavailable."))
+                    st.info(ownership.get("summary", "Ownership data is unavailable on the connected plans."))
 
             with sm_tabs[4]:
                 if float_data.get("status") == "Available":
-                    row = st.columns(6)
-                    row[0].metric("Float", f'{float_data.get("float_shares", 0):,.0f}' if float_data.get("float_shares") else "—")
-                    row[1].metric("Shares Outstanding", f'{float_data.get("shares_outstanding", 0):,.0f}' if float_data.get("shares_outstanding") else "—")
+                    row = st.columns(3)
+                    row[0].metric("Float", compact_number(float_data.get("float_shares")))
+                    row[1].metric("Shares Outstanding", compact_number(float_data.get("shares_outstanding")))
                     row[2].metric("Float Type", float_data.get("float_category", "—"))
-                    row[3].metric("Short % Float", percent_text(float_data.get("short_interest_pct_float")))
-                    row[4].metric("Days to Cover", float_data.get("days_to_cover", "—"))
-                    row[5].metric("Squeeze Score", float_data.get("squeeze_score", "—"))
+                    row2 = st.columns(3)
+                    row2[0].metric("Short % Float", percent_text(float_data.get("short_interest_pct_float")))
+                    row2[1].metric("Days to Cover", float_data.get("days_to_cover") if valid_value(float_data.get("days_to_cover")) else "—")
+                    row2[2].metric("Short Risk", float_data.get("short_risk") or "—")
+                    row3 = st.columns(3)
+                    row3[0].metric("Shares Short", compact_number(float_data.get("shares_short")))
+                    row3[1].metric("Short Interest Change", percent_text(float_data.get("short_interest_change_pct")))
+                    row3[2].metric("Squeeze Score", float_data.get("squeeze_score") if valid_value(float_data.get("squeeze_score")) else "—")
                     st.write(float_data.get("summary", ""))
+                    st.caption(f"Source: {float_data.get('source') or 'Connected provider'} · {float_data.get('data_quality', 'Delayed / Reported')}")
                     st.caption(float_data.get("disclaimer", ""))
                 else:
                     st.info(float_data.get("summary", "Float and short-interest data is unavailable."))
