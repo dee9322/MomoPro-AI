@@ -208,7 +208,11 @@ def calculate_integrated_confidence(
         ),
         "Smart Money": (
             float(smart_money_context.get("overall_score"))
-            if _valid_number(smart_money_context.get("overall_score"))
+            if (
+                _valid_number(smart_money_context.get("overall_score"))
+                and _valid_number(smart_money_context.get("coverage_pct"))
+                and float(smart_money_context.get("coverage_pct")) >= 50
+            )
             else None
         ),
     }
