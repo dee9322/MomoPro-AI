@@ -1,3 +1,19 @@
+# Changelog
+
+## v0.6.0 — AI Research Workstation
+
+- Rebuilt the AI Analysis tab as the full independent research workstation.
+- Added executive summary, independent sentiment, confidence, conviction, time horizon, risk level, and final AI rating.
+- Added Momo Engine versus Independent AI comparison with disagreement analysis.
+- Added dedicated Technical, Market, News & Catalysts, Smart Money, Trading Intelligence, Bull/Bear, Risk/Thesis, and Confidence Trace sections.
+- Added confidence-component transparency.
+- Added blind spots, confirmation conditions, invalidation conditions, and suggested follow-up questions.
+- Added optional comparison against another ticker from the latest scan.
+- Added Ask Momo AI conversational research grounded in the current Stock Report evidence.
+- Added persistent per-symbol chat history and report caching.
+- AI responses distinguish verified, calculated, inferred, delayed, and unavailable evidence.
+- The AI forms its own opinion and may disagree with the deterministic Momo Engine.
+
 # v0.4 Final — Smart Money Audit
 
 - Corrected Finnhub/FMP insider-provider key ordering.
