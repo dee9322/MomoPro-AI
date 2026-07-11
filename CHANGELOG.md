@@ -47,3 +47,13 @@
 - EMA21, EMA50, EMA200, RSI, MACD, ATR, and RVOL
 - Momo Score, Dee Fit, grade, setup, and reasons
 - Clickable Stock Report
+
+## v0.3.1 — Multi-Source News Coverage
+
+- Added Alpha Vantage News & Sentiment as a supplemental source.
+- Added Finnhub company and market news.
+- Added Financial Modeling Prep stock news, general news, and company press releases.
+- Merged all providers with Alpaca/Benzinga into one normalized feed.
+- Added duplicate removal across providers.
+- Added provider-aware ranking and source coverage counts.
+- Added graceful fallback when a provider is unavailable or rate-limited.
