@@ -137,3 +137,11 @@
 ### Notes
 - Historical setup statistics are descriptive same-symbol analogues, not predictive guarantees or a full portfolio backtest.
 - Multi-timeframe and Trading Intelligence data load on demand to protect API limits and scan speed.
+
+
+## v0.6.1 — AI Research Workstation startup repair
+
+- Restored the complete v0.5.3 Streamlit application after the v0.6 package accidentally replaced `app.py` with the AI chat module.
+- Integrated the full AI Research Workstation into the existing AI Analysis tab.
+- Preserved Scanner, Market Context, News, Smart Money, Trading Intelligence, Trade Planner, and Position Sizing Engine behavior.
+- Added guarded, on-demand AI research and chat so no OpenAI request runs during app startup.
