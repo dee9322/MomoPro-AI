@@ -1,6 +1,7 @@
 import math
 
 import pandas as pd
+from position_sizing import calculate_position_size
 import streamlit as st
 
 from ai_commentary import (
@@ -2313,16 +2314,71 @@ with tabs[6]:
     t2 = plan_cols[3].number_input("T2", min_value=0.0, value=float(prefill.get("t2") or 0.0), step=0.01)
     t3 = plan_cols[4].number_input("T3", min_value=0.0, value=float(prefill.get("t3") or 0.0), step=0.01)
 
-    risk_dollars = account_size * risk_pct / 100
-    risk_per_share = entry - stop if entry > stop > 0 else None
-    shares = int(risk_dollars // risk_per_share) if risk_per_share and risk_per_share > 0 else 0
-    position_value = shares * entry
+    sizing = calculate_position_size(
+        account_size=account_size,
+        risk_percent=risk_pct,
+        entry_price=entry,
+        stop_price=stop,
+    )
+
+    risk_dollars = sizing["risk_budget"]
+    risk_per_share = sizing["risk_per_share"]
+    risk_based_shares = sizing["risk_based_shares"]
+    cash_based_shares = sizing["cash_based_shares"]
+    shares = sizing["final_shares"]
+    position_value = sizing["position_value"]
+    total_dollar_risk = sizing["total_dollar_risk"]
+    unused_cash = sizing["unused_cash"]
+    unused_risk_budget = sizing["unused_risk_budget"]
+    sizing_limit = sizing["sizing_constraint"]
+
+    st.caption("Position Sizing Engine v0.5.3 — cash cap and stop-risk cap are both enforced.")
 
     result_cols = st.columns(4)
     result_cols[0].metric("Risk Budget", money_text(risk_dollars))
     result_cols[1].metric("Risk / Share", money_text(risk_per_share))
-    result_cols[2].metric("Position Size", f"{shares:,} shares" if shares else "—")
+    result_cols[2].metric("Final Position Size", f"{shares:,} shares" if shares else "—")
     result_cols[3].metric("Position Value", money_text(position_value) if shares else "—")
+
+    detail_cols = st.columns(4)
+    detail_cols[0].metric(
+        "Total Dollar Risk",
+        money_text(total_dollar_risk) if shares else "—",
+    )
+    detail_cols[1].metric(
+        "Cash-Limit Shares",
+        f"{cash_based_shares:,}" if cash_based_shares else "—",
+    )
+    detail_cols[2].metric(
+        "Risk-Limit Shares",
+        f"{risk_based_shares:,}" if risk_based_shares else "—",
+    )
+    detail_cols[3].metric("Sizing Constraint", sizing_limit)
+
+    extra_cols = st.columns(2)
+    extra_cols[0].metric(
+        "Unused Cash",
+        money_text(unused_cash) if account_size > 0 else "—",
+    )
+    extra_cols[1].metric(
+        "Unused Risk Budget",
+        money_text(unused_risk_budget) if shares else "—",
+    )
+
+    if shares > 0 and sizing_limit == "Cash-Limited":
+        st.info(
+            "Cash-Limited: available account cash allows fewer shares than the "
+            "selected stop-risk budget. Position value is capped at account size."
+        )
+    elif shares > 0 and sizing_limit == "Risk-Limited":
+        st.info(
+            "Risk-Limited: the selected dollar-risk budget allows fewer shares "
+            "than the account cash could purchase."
+        )
+    elif shares > 0 and sizing_limit == "Cash and Risk Limits Match":
+        st.info("Cash and risk limits produce the same final share count.")
+    elif sizing["error"]:
+        st.warning(sizing["error"])
 
     rr_rows = []
     for name, target in [("T1", t1), ("T2", t2), ("T3", t3)]:
