@@ -1,3 +1,15 @@
+# v0.4 Final — Smart Money Audit
+
+- Corrected Finnhub/FMP insider-provider key ordering.
+- Added paginated Alpaca indicative option-chain loading.
+- Preserved v0.4.1 missing-data and compact-display behavior.
+- Added honest module coverage and preliminary/full read status.
+- Prevented missing short-interest values from becoming zero.
+- Added short-risk classification and gated squeeze scoring.
+- Added provider/source and data-quality labels.
+- Excluded incomplete Smart Money reads from integrated confidence.
+- Removed raw provider exceptions from the user interface.
+
 # Changelog
 
 ## v0.4.2 — Basic Options Activity
