@@ -181,12 +181,17 @@ def build_momo_engine_decision(
         concerns.append(f"{high_impact_news} recent high-impact headline(s) require review")
 
     smart_score = _number(smart_money_context.get("overall_score"))
+    smart_coverage = _number(smart_money_context.get("coverage_pct")) or 0
     smart_verdict = smart_money_context.get("verdict")
-    if smart_score is not None:
+    if smart_score is not None and smart_coverage >= 50:
         if smart_score >= 70:
             strengths.append(f"Smart Money evidence is constructive ({smart_score:.0f}/100)")
         elif smart_score < 40:
             concerns.append(f"Smart Money evidence is weak ({smart_score:.0f}/100)")
+    elif smart_score is not None and smart_coverage > 0:
+        concerns.append(
+            f"Smart Money read is preliminary because data coverage is only {smart_coverage:.0f}%"
+        )
     insider_verdict = smart_money_context.get("insider_activity", {}).get("verdict")
     if insider_verdict == "Net Buying":
         strengths.append("Recent reported insider activity shows net buying")
