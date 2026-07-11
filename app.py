@@ -24,6 +24,7 @@ from sec_intelligence import get_recent_filings
 from fda_intelligence import get_fda_enforcement
 from smart_money import get_smart_money_intelligence
 from news_ai import analyze_news
+from trade_intelligence import get_trade_intelligence
 
 
 st.set_page_config(
@@ -174,6 +175,16 @@ def load_smart_money(symbol):
     )
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_trade_intelligence(symbol, stock_payload):
+    return get_trade_intelligence(
+        api_key=st.secrets["ALPACA_API_KEY"],
+        secret_key=st.secrets["ALPACA_SECRET_KEY"],
+        symbol=symbol,
+        stock=stock_payload,
+    )
+
+
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 
@@ -194,6 +205,12 @@ if "news_search_symbol" not in st.session_state:
 
 if "smart_money_cache" not in st.session_state:
     st.session_state.smart_money_cache = {}
+
+if "trade_intelligence_cache" not in st.session_state:
+    st.session_state.trade_intelligence_cache = {}
+
+if "trade_plan_prefill" not in st.session_state:
+    st.session_state.trade_plan_prefill = {}
 
 
 tabs = st.tabs(
@@ -1157,6 +1174,159 @@ with tabs[2]:
             st.caption(smart_money_context.get("data_note", ""))
 
             # -------------------------
+            # Trading Intelligence
+            # -------------------------
+            st.divider()
+            st.subheader("Trading Intelligence")
+            st.caption(
+                "Pattern recognition, trend health, multi-timeframe alignment, "
+                "entry quality, adaptive stops, target intelligence, exit warnings, "
+                "and same-symbol historical analogues."
+            )
+
+            trade_refresh = st.button(
+                "Load / Refresh Trading Intelligence",
+                key=f"trade_intelligence_{selected_symbol}",
+            )
+            if trade_refresh:
+                load_trade_intelligence.clear()
+                st.session_state.trade_intelligence_cache.pop(selected_symbol, None)
+
+            trade_intelligence_context = st.session_state.trade_intelligence_cache.get(selected_symbol)
+            if trade_refresh:
+                with st.spinner(f"Analyzing trading structure for {selected_symbol}..."):
+                    try:
+                        trade_intelligence_context = load_trade_intelligence(
+                            selected_symbol, selected_stock.to_dict()
+                        )
+                    except Exception:
+                        trade_intelligence_context = {
+                            "overall_score": None,
+                            "status": "Unavailable",
+                            "pattern": {},
+                            "trend_health": {},
+                            "multi_timeframe": {},
+                            "entry_quality": {},
+                            "adaptive_stops": {},
+                            "targets": {"targets": []},
+                            "exit_management": {},
+                            "historical_setup": {},
+                        }
+                    st.session_state.trade_intelligence_cache[selected_symbol] = trade_intelligence_context
+
+            if trade_intelligence_context is None:
+                trade_intelligence_context = {
+                    "overall_score": None,
+                    "status": "Not Loaded",
+                    "pattern": {},
+                    "trend_health": {},
+                    "multi_timeframe": {},
+                    "entry_quality": {},
+                    "adaptive_stops": {},
+                    "targets": {"targets": []},
+                    "exit_management": {},
+                    "historical_setup": {},
+                }
+
+            ti_top = st.columns(4)
+            ti_top[0].metric("Trading Intelligence", trade_intelligence_context.get("overall_score") if valid_value(trade_intelligence_context.get("overall_score")) else "—")
+            ti_top[1].metric("Status", trade_intelligence_context.get("status", "—"))
+            ti_top[2].metric("Entry Grade", trade_intelligence_context.get("entry_quality", {}).get("grade", "—"))
+            ti_top[3].metric("MTF Alignment", trade_intelligence_context.get("multi_timeframe", {}).get("alignment", "—"))
+
+            ti_tabs = st.tabs([
+                "Pattern & Trend",
+                "Multi-Timeframe",
+                "Entry & Stops",
+                "Targets",
+                "Exit Management",
+                "Historical Setup",
+            ])
+
+            pattern_data = trade_intelligence_context.get("pattern", {})
+            trend_data = trade_intelligence_context.get("trend_health", {})
+            with ti_tabs[0]:
+                row = st.columns(4)
+                row[0].metric("Primary Pattern", pattern_data.get("primary_pattern", "—"))
+                row[1].metric("Pattern Score", pattern_data.get("pattern_score") if valid_value(pattern_data.get("pattern_score")) else "—")
+                row[2].metric("Pattern Maturity", pattern_data.get("maturity", "—"))
+                row[3].metric("Trend Health", trend_data.get("score") if valid_value(trend_data.get("score")) else "—", trend_data.get("rating", "—"))
+                patterns = pattern_data.get("patterns", [])
+                if patterns:
+                    st.dataframe(pd.DataFrame(patterns), use_container_width=True, hide_index=True)
+                if trend_data.get("strengths"):
+                    st.markdown("**Trend strengths**")
+                    for item in trend_data.get("strengths", []): st.write(f"• {item}")
+                if trend_data.get("warnings"):
+                    st.markdown("**Trend warnings**")
+                    for item in trend_data.get("warnings", []): st.write(f"• {item}")
+
+            mtf_data = trade_intelligence_context.get("multi_timeframe", {})
+            with ti_tabs[1]:
+                st.metric("Alignment Score", mtf_data.get("alignment_score") if valid_value(mtf_data.get("alignment_score")) else "—", mtf_data.get("alignment", "—"))
+                rows = []
+                for timeframe, details in mtf_data.get("timeframes", {}).items():
+                    rows.append({"Timeframe": timeframe, "Trend": details.get("trend"), "Score": details.get("score"), "Close": details.get("close")})
+                if rows:
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            entry_data = trade_intelligence_context.get("entry_quality", {})
+            stop_data = trade_intelligence_context.get("adaptive_stops", {})
+            with ti_tabs[2]:
+                row = st.columns(3)
+                row[0].metric("Entry Score", entry_data.get("score") if valid_value(entry_data.get("score")) else "—")
+                row[1].metric("Entry Grade", entry_data.get("grade", "—"))
+                row[2].metric("Entry Status", entry_data.get("status", "—"))
+                stop_row = st.columns(3)
+                stop_row[0].metric("Aggressive Stop", money_text(stop_data.get("aggressive")))
+                stop_row[1].metric("Standard Stop", money_text(stop_data.get("standard")))
+                stop_row[2].metric("Conservative Stop", money_text(stop_data.get("conservative")))
+                if entry_data.get("reasons"):
+                    st.markdown("**Why the entry scores well**")
+                    for item in entry_data.get("reasons", []): st.write(f"• {item}")
+                if entry_data.get("warnings"):
+                    st.markdown("**Entry concerns**")
+                    for item in entry_data.get("warnings", []): st.write(f"• {item}")
+
+            with ti_tabs[3]:
+                target_rows = trade_intelligence_context.get("targets", {}).get("targets", [])
+                if target_rows:
+                    st.dataframe(pd.DataFrame(target_rows), use_container_width=True, hide_index=True)
+                measured = trade_intelligence_context.get("targets", {}).get("measured_move_reference")
+                st.metric("Measured-Move Reference", money_text(measured))
+
+            exit_data = trade_intelligence_context.get("exit_management", {})
+            with ti_tabs[4]:
+                st.metric("Warning Severity", exit_data.get("severity", "—"))
+                if exit_data.get("warnings"):
+                    st.markdown("**Current warnings**")
+                    for item in exit_data.get("warnings", []): st.write(f"• {item}")
+                if exit_data.get("management_actions"):
+                    st.markdown("**Management ideas**")
+                    for item in exit_data.get("management_actions", []): st.write(f"• {item}")
+
+            history_data = trade_intelligence_context.get("historical_setup", {})
+            with ti_tabs[5]:
+                row = st.columns(4)
+                row[0].metric("Samples", history_data.get("sample_size", 0))
+                row[1].metric("Win Rate", percent_text(history_data.get("win_rate")))
+                row[2].metric("Avg. Return", percent_text(history_data.get("average_return")))
+                row[3].metric("Avg. Drawdown", percent_text(history_data.get("average_drawdown")))
+                st.caption(history_data.get("note", ""))
+
+            if trade_intelligence_context.get("overall_score") is not None:
+                if st.button("Send to Trade Planner", key=f"send_to_planner_{selected_symbol}"):
+                    st.session_state.trade_plan_prefill = {
+                        "symbol": selected_symbol,
+                        "entry": selected_stock.get("Reference Entry") or selected_stock.get("Close"),
+                        "stop": stop_data.get("standard") or selected_stock.get("Risk Reference"),
+                        "t1": (trade_intelligence_context.get("targets", {}).get("targets", [{}])[0] or {}).get("price"),
+                        "t2": (trade_intelligence_context.get("targets", {}).get("targets", [{}, {}])[1] or {}).get("price") if len(trade_intelligence_context.get("targets", {}).get("targets", [])) > 1 else None,
+                        "t3": (trade_intelligence_context.get("targets", {}).get("targets", [{}, {}, {}])[2] or {}).get("price") if len(trade_intelligence_context.get("targets", {}).get("targets", [])) > 2 else None,
+                    }
+                    st.success("Trade plan loaded into the Trade Planner tab.")
+
+            # -------------------------
             # Momo Engine Confidence
             # -------------------------
             st.divider()
@@ -1168,6 +1338,7 @@ with tabs[2]:
                 market_context=report_market,
                 relative_strength=relative_strength,
                 smart_money_context=smart_money_context,
+                trade_intelligence_context=trade_intelligence_context,
             )
 
             confidence_columns = st.columns(4)
@@ -1246,7 +1417,7 @@ with tabs[2]:
                 context_breakdown = integrated_confidence.get(
                     "Integrated Breakdown", {}
                 )
-                context_row = st.columns(5)
+                context_row = st.columns(6)
                 context_row[0].metric(
                     "Technical", percent_text(context_breakdown.get("Technical"))
                 )
@@ -1263,6 +1434,10 @@ with tabs[2]:
                 context_row[4].metric(
                     "Smart Money",
                     percent_text(context_breakdown.get("Smart Money")),
+                )
+                context_row[5].metric(
+                    "Trading Intelligence",
+                    percent_text(context_breakdown.get("Trading Intelligence")),
                 )
                 st.markdown("**Technical module breakdown**")
 
@@ -1342,6 +1517,7 @@ with tabs[2]:
                     "headlines": selected_news[:10],
                 },
                 smart_money_context=smart_money_context,
+                trade_intelligence_context=trade_intelligence_context,
             )
 
             engine_col, ai_col = st.columns(2)
@@ -1411,6 +1587,7 @@ with tabs[2]:
                                     "headlines": selected_news[:10],
                                 },
                                 smart_money_context=smart_money_context,
+                                trade_intelligence_context=trade_intelligence_context,
                             )
 
                         st.session_state.ai_commentary_cache[
@@ -2103,7 +2280,43 @@ with tabs[5]:
 # -----------------------------
 with tabs[6]:
     st.header("Trade Planner")
-    st.write("Interactive trade planning will be built in its scheduled roadmap phase.")
+    st.caption("Build a custom trade plan while keeping the objective engine plan separate.")
+
+    prefill = st.session_state.trade_plan_prefill or {}
+    planner_symbol = st.text_input("Ticker", value=str(prefill.get("symbol", "")), key="planner_symbol").upper().strip()
+    account_size = st.number_input("Account Size ($)", min_value=0.0, value=10000.0, step=500.0)
+    risk_pct = st.number_input("Risk Per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
+
+    plan_cols = st.columns(5)
+    entry = plan_cols[0].number_input("Entry", min_value=0.0, value=float(prefill.get("entry") or 0.0), step=0.01)
+    stop = plan_cols[1].number_input("Stop", min_value=0.0, value=float(prefill.get("stop") or 0.0), step=0.01)
+    t1 = plan_cols[2].number_input("T1", min_value=0.0, value=float(prefill.get("t1") or 0.0), step=0.01)
+    t2 = plan_cols[3].number_input("T2", min_value=0.0, value=float(prefill.get("t2") or 0.0), step=0.01)
+    t3 = plan_cols[4].number_input("T3", min_value=0.0, value=float(prefill.get("t3") or 0.0), step=0.01)
+
+    risk_dollars = account_size * risk_pct / 100
+    risk_per_share = entry - stop if entry > stop > 0 else None
+    shares = int(risk_dollars // risk_per_share) if risk_per_share and risk_per_share > 0 else 0
+    position_value = shares * entry
+
+    result_cols = st.columns(4)
+    result_cols[0].metric("Risk Budget", money_text(risk_dollars))
+    result_cols[1].metric("Risk / Share", money_text(risk_per_share))
+    result_cols[2].metric("Position Size", f"{shares:,} shares" if shares else "—")
+    result_cols[3].metric("Position Value", money_text(position_value) if shares else "—")
+
+    rr_rows = []
+    for name, target in [("T1", t1), ("T2", t2), ("T3", t3)]:
+        reward = target - entry if target > entry > 0 else None
+        r_multiple = reward / risk_per_share if reward is not None and risk_per_share and risk_per_share > 0 else None
+        rr_rows.append({"Target": name, "Price": target if target > 0 else None, "Reward / Share": round(reward, 2) if reward is not None else None, "R Multiple": round(r_multiple, 2) if r_multiple is not None else None})
+    st.dataframe(pd.DataFrame(rr_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("### Plan Notes")
+    plan_notes = st.text_area("Trade Thesis / Confirmation / Invalidation", key="trade_plan_notes")
+    if st.button("Save Plan to Session", use_container_width=True):
+        st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
+        st.success("Trade plan saved in this session. Journal persistence comes in v0.8.")
 
 
 # -----------------------------
