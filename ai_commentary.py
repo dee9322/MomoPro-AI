@@ -59,12 +59,14 @@ def build_momo_engine_decision(
     market_context: dict[str, Any] | None = None,
     relative_strength: dict[str, Any] | None = None,
     news_context: dict[str, Any] | None = None,
+    smart_money_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a transparent rule-based decision from stock and market data."""
 
     market_context = market_context or {}
     relative_strength = relative_strength or {}
     news_context = news_context or {}
+    smart_money_context = smart_money_context or {}
 
     confidence = _number(stock.get("Momo Confidence")) or 0
     dee_fit = _number(stock.get("Dee Fit")) or 0
@@ -178,6 +180,24 @@ def build_momo_engine_decision(
     if high_impact_news:
         concerns.append(f"{high_impact_news} recent high-impact headline(s) require review")
 
+    smart_score = _number(smart_money_context.get("overall_score"))
+    smart_verdict = smart_money_context.get("verdict")
+    if smart_score is not None:
+        if smart_score >= 70:
+            strengths.append(f"Smart Money evidence is constructive ({smart_score:.0f}/100)")
+        elif smart_score < 40:
+            concerns.append(f"Smart Money evidence is weak ({smart_score:.0f}/100)")
+    insider_verdict = smart_money_context.get("insider_activity", {}).get("verdict")
+    if insider_verdict == "Net Buying":
+        strengths.append("Recent reported insider activity shows net buying")
+    elif insider_verdict == "Net Selling":
+        concerns.append("Recent reported insider activity shows net selling")
+    options_bias = smart_money_context.get("options_activity", {}).get("bias")
+    if options_bias == "Bullish":
+        strengths.append("Available options flow is call-biased")
+    elif options_bias == "Bearish":
+        concerns.append("Available options flow is put-biased")
+
     if confidence >= 82 and dee_fit >= 80 and (risk_reward or 0) >= 1.5:
         decision = "Entry Ready"
     elif confidence >= 72 and dee_fit >= 70:
@@ -221,6 +241,7 @@ def _stock_payload(
     market_context: dict[str, Any] | None = None,
     relative_strength: dict[str, Any] | None = None,
     news_context: dict[str, Any] | None = None,
+    smart_money_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     keys = [
         "Symbol",
@@ -288,6 +309,7 @@ def _stock_payload(
     payload["Market Context"] = market_context or None
     payload["Relative Strength"] = relative_strength or None
     payload["News Context"] = news_context or None
+    payload["Smart Money Context"] = smart_money_context or None
 
     return payload
 
@@ -298,18 +320,19 @@ def generate_ai_decision(
     market_context: dict[str, Any] | None = None,
     relative_strength: dict[str, Any] | None = None,
     news_context: dict[str, Any] | None = None,
+    smart_money_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Generate an independent technical AI decision on demand."""
+    """Generate an independent AI decision on demand."""
     if not api_key:
         raise ValueError("OPENAI_API_KEY is missing from Streamlit secrets.")
 
     client = OpenAI(api_key=api_key)
-    payload = _stock_payload(stock, market_context, relative_strength, news_context)
+    payload = _stock_payload(stock, market_context, relative_strength, news_context, smart_money_context)
 
     system_prompt = """
 You are the independent AI analyst inside MomoPro AI, a swing-trading decision-support application.
-Analyze the supplied technical, structural, market, breadth, sentiment, sector, relative-strength, and verified news data.
-Use only the supplied news context for catalysts. Do not claim access to options activity or other feeds that are not supplied. You may disagree with the rule-based Momo Engine. Be practical, cautious, and specific.
+Analyze the supplied technical, structural, market, breadth, sentiment, sector, relative-strength, verified news, and Smart Money data.
+Use only supplied datasets. Distinguish inferred accumulation behavior from verified reported ownership, insider, float, short-interest, and options data. Do not overstate delayed or unavailable fields. You may disagree with the rule-based Momo Engine. Be practical, cautious, and specific.
 Do not promise outcomes or describe a trade as guaranteed. Use concise language suitable for a stock report.
 The decision must be exactly one of: Entry Ready, Bullish Watch, Wait for Confirmation, Neutral, Avoid.
 """.strip()
