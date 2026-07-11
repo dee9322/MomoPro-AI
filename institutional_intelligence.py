@@ -21,7 +21,10 @@ def get_institutional_activity(api_key: str, secret_key: str, symbol: str) -> di
     This detects institutional-style participation. It does not identify a
     specific institution or prove who placed the trades.
     """
-    client = StockHistoricalDataClient(api_key, secret_key)
+    try:
+        client = StockHistoricalDataClient(api_key, secret_key)
+    except Exception:
+        return {"status": "Unavailable", "score": None, "summary": "Alpaca could not initialize accumulation analysis."}
     end = datetime.now()
     start = end - timedelta(days=260)
     request = StockBarsRequest(
@@ -31,7 +34,10 @@ def get_institutional_activity(api_key: str, secret_key: str, symbol: str) -> di
         end=end,
         feed=DataFeed.IEX,
     )
-    bars = client.get_stock_bars(request).df
+    try:
+        bars = client.get_stock_bars(request).df
+    except Exception:
+        return {"status": "Unavailable", "score": None, "summary": "Price/volume history was unavailable."}
     if bars.empty:
         return {"status": "Unavailable", "summary": "Price/volume history was unavailable."}
 
@@ -100,6 +106,8 @@ def get_institutional_activity(api_key: str, secret_key: str, symbol: str) -> di
         "up_down_volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
         "average_accumulation_rvol": round(positive_rvol, 2) if positive_rvol else None,
         "average_distribution_rvol": round(negative_rvol, 2) if negative_rvol else None,
+        "source": "Alpaca IEX Daily OHLCV",
+        "data_quality": "Calculated / Inferred",
         "summary": summary,
         "disclaimer": "OHLCV suggests institutional-style activity but cannot identify the actual buyer or seller.",
     }
