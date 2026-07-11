@@ -210,8 +210,7 @@ def calculate_integrated_confidence(
             float(smart_money_context.get("overall_score"))
             if (
                 _valid_number(smart_money_context.get("overall_score"))
-                and _valid_number(smart_money_context.get("coverage_pct"))
-                and float(smart_money_context.get("coverage_pct")) >= 50
+                and bool(smart_money_context.get("confidence_eligible"))
             )
             else None
         ),
