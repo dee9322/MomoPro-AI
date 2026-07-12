@@ -36,7 +36,7 @@ from watchlist_manager import (
     get_watchlist_item, list_watchlists, remove_symbol, rename_watchlist,
     update_watchlist_item,
 )
-from watchlist_ai import build_morning_brief, refresh_item_from_scan
+from watchlist_ai import build_morning_brief, refresh_item_from_scan, sync_ai_report_to_item
 from watchlist_models import WatchlistItem, utc_now
 from alert_engine import (
     clear_events, create_rule, delete_rule, evaluate_alerts, load_alerts,
@@ -2569,7 +2569,13 @@ with tabs[4]:
                         )
                         st.session_state.ai_research_reports[report_key] = report
                         st.session_state.ai_research_evidence[report_key] = evidence
-                        st.success("Independent AI research completed.")
+                        saved_item = get_watchlist_item(analysis_symbol)
+                        if saved_item is not None:
+                            sync_ai_report_to_item(saved_item, report)
+                            update_watchlist_item(saved_item)
+                            st.success("Independent AI research completed and synced to the watchlist profile.")
+                        else:
+                            st.success("Independent AI research completed. Add this ticker to a watchlist to persist it there.")
                 except Exception as exc:
                     st.error(f"AI research could not be generated: {exc}")
 
@@ -2884,11 +2890,32 @@ with tabs[5]:
     action_cols = st.columns([1, 1, 2])
     if action_cols[0].button("Refresh Intelligence", key="refresh_watchlist_intelligence", disabled=not items):
         refreshed = 0
+        missing_scan = []
         for item in items:
             row = scan_lookup.get(item.symbol)
-            if row:
-                refresh_item_from_scan(item, row); update_watchlist_item(item); refreshed += 1
-        st.success(f"Refreshed {refreshed} watchlist profile(s) from the latest scanner results.")
+            if not row:
+                missing_scan.append(item.symbol)
+                continue
+            report = st.session_state.ai_research_reports.get(item.symbol)
+            if report is None:
+                report = next(
+                    (value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol),
+                    None,
+                )
+            refresh_item_from_scan(
+                item,
+                row,
+                ai_report=report,
+                market_context=st.session_state.market_context,
+                smart_money_context=st.session_state.smart_money_cache.get(item.symbol),
+                trade_intelligence_context=st.session_state.trade_intelligence_cache.get(item.symbol),
+            )
+            update_watchlist_item(item)
+            refreshed += 1
+        message = f"Refreshed {refreshed} watchlist profile(s) from the latest scanner and saved intelligence."
+        if missing_scan:
+            message += " Not in the latest scan: " + ", ".join(missing_scan) + "."
+        st.success(message)
         st.rerun()
     if action_cols[1].button("Evaluate Alerts", key="evaluate_watchlist_alerts", disabled=not items):
         fired = evaluate_alerts({item.symbol: item for item in items})
@@ -2909,7 +2936,7 @@ with tabs[5]:
     if brief["ranked"]:
         priority_rows = []
         for rank, item in enumerate(brief["ranked"], 1):
-            priority_rows.append({"Priority": rank, "Symbol": item.symbol, "Grade": item.technical.get("grade", "—"), "AI Confidence": item.technical.get("confidence", "—"), "Opportunity": item.ai_state.get("opportunity_score", "—"), "AI Status": item.ai_state.get("thesis_status", "Not evaluated"), "Why Now": item.ai_state.get("opportunity_reason", "Run refresh intelligence.")})
+            priority_rows.append({"Priority": rank, "Symbol": item.symbol, "Grade": item.technical.get("grade", "—"), "AI Confidence": item.ai_state.get("ai_confidence", "—"), "Opportunity": item.ai_state.get("opportunity_score", "—"), "AI Status": item.ai_state.get("thesis_status", "Not evaluated"), "Why Now": item.ai_state.get("opportunity_reason", "Run refresh intelligence.")})
         st.dataframe(pd.DataFrame(priority_rows), hide_index=True, width="stretch")
 
     profile_tab, alerts_tab, history_tab = st.tabs(["Smart Watchlist", "Smart Alerts", "Alert Inbox"])
@@ -2924,13 +2951,14 @@ with tabs[5]:
             header_cols[0].metric("Symbol", item.symbol)
             header_cols[1].metric("Grade", tech.get("grade", "—"))
             header_cols[2].metric("Momo Score", tech.get("momo_score", "—"))
-            header_cols[3].metric("AI Confidence", tech.get("confidence", "—"))
+            header_cols[3].metric("AI Confidence", ai.get("ai_confidence", "—"))
             header_cols[4].metric("Opportunity", ai.get("opportunity_score", "—"))
             header_cols[5].metric("Price", money_text(tech.get("price")))
             st.caption(ai.get("opportunity_reason", "Run Refresh Intelligence after a scanner run to calculate Opportunity Score."))
 
             identity_tab, thesis_tab, timeline_tab, research_tab = st.tabs(["Profile", "AI Thesis Tracker", "Timeline", "Research History"])
             with identity_tab:
+                st.caption("Company identity and system snapshots fill automatically during Refresh Intelligence. Tags are personal and editable.")
                 c1, c2 = st.columns(2)
                 item.company = c1.text_input("Company", value=item.company, key=f"company_{item.symbol}")
                 item.sector = c2.text_input("Sector", value=item.sector, key=f"sector_{item.symbol}")
@@ -2939,12 +2967,23 @@ with tabs[5]:
                 item.tags = [x.strip() for x in tags_text.split(",") if x.strip()]
                 st.markdown("#### Technical Snapshot")
                 st.json(tech if tech else {"status": "Refresh intelligence after running the scanner."}, expanded=False)
+                st.markdown("#### Independent AI Snapshot")
+                independent_ai = (item.intelligence or {}).get("independent_ai", {})
+                if independent_ai.get("status") == "Available":
+                    ai_cols = st.columns(3)
+                    ai_cols[0].metric("AI Confidence", independent_ai.get("confidence", "—"))
+                    ai_cols[1].metric("AI Sentiment", independent_ai.get("sentiment", "—"))
+                    ai_cols[2].metric("Independent Action", independent_ai.get("independent_action", "—"))
+                    st.write(independent_ai.get("executive_summary") or "—")
+                else:
+                    st.info("AI research not generated yet. Run Full Independent AI Research in the AI Analysis tab for this ticker.")
                 st.markdown("#### Intelligence Snapshot")
                 st.json(item.intelligence if item.intelligence else {"status": "No intelligence snapshot saved yet."}, expanded=False)
                 if st.button("Save profile", key=f"save_profile_{item.symbol}"):
                     update_watchlist_item(item); st.success("Profile saved.")
 
             with thesis_tab:
+                st.caption("These are your personal planning fields. MomoPro will evaluate them, but will not overwrite them.")
                 item.thesis = st.text_area("Why did you save this stock?", value=item.thesis, height=100, key=f"thesis_{item.symbol}")
                 p1, p2, p3 = st.columns(3)
                 item.entry_idea = p1.text_input("Entry idea", value=item.entry_idea, key=f"entry_{item.symbol}")
@@ -2979,7 +3018,7 @@ with tabs[5]:
                     item.timeline.append({"timestamp": utc_now(), "event": "Research snapshot saved", "details": research_title.strip() or "Research snapshot"}); update_watchlist_item(item); st.rerun()
                 for snap in reversed(item.research_snapshots):
                     with st.expander(f"{snap.get('title','Research')} · {snap.get('timestamp','')}"):
-                        st.write(snap.get("content", "")); st.caption(f"Opportunity then: {snap.get('ai_state',{}).get('opportunity_score','—')} · Confidence then: {snap.get('technical',{}).get('confidence','—')}")
+                        st.write(snap.get("content", "")); st.caption(f"Opportunity then: {snap.get('ai_state',{}).get('opportunity_score','—')} · AI Confidence then: {snap.get('ai_confidence', snap.get('ai_state',{}).get('ai_confidence','—'))}")
 
             quick = st.columns(5)
             if quick[0].button("Open Stock Report", key=f"quick_report_{item.symbol}"):
