@@ -31,6 +31,19 @@ from smart_money import get_smart_money_intelligence
 from news_ai import analyze_news
 from trade_intelligence import get_trade_intelligence
 
+from watchlist_manager import (
+    add_symbols, create_watchlist, delete_watchlist, get_symbols,
+    get_watchlist_item, list_watchlists, remove_symbol, rename_watchlist,
+    update_watchlist_item,
+)
+from watchlist_ai import build_morning_brief, refresh_item_from_scan
+from watchlist_models import WatchlistItem, utc_now
+from alert_engine import (
+    clear_events, create_rule, delete_rule, evaluate_alerts, load_alerts,
+    mark_event_read, set_rule_enabled,
+)
+from alert_rules import RULE_TYPES
+
 
 st.set_page_config(
     page_title="MomoPro AI",
@@ -2814,14 +2827,211 @@ with tabs[4]:
 
 
 # -----------------------------
-# Watchlist
+# Watchlist & Alert Intelligence
 # -----------------------------
 with tabs[5]:
-    st.header("Watchlist")
+    st.header("Watchlist & Alert Intelligence")
+    st.caption("Living stock profiles, thesis tracking, opportunity scoring, timelines, research history, and smart alerts.")
 
-    st.write(
-        "Saved stocks will appear here."
-    )
+    watchlist_names = list_watchlists()
+    if "active_watchlist" not in st.session_state or st.session_state.active_watchlist not in watchlist_names:
+        st.session_state.active_watchlist = watchlist_names[0]
+
+    top_left, top_mid, top_right = st.columns([2, 1, 1])
+    with top_left:
+        active_watchlist = st.selectbox("Watchlist", watchlist_names, index=watchlist_names.index(st.session_state.active_watchlist), key="watchlist_selector")
+        st.session_state.active_watchlist = active_watchlist
+    with top_mid:
+        with st.popover("＋ New"):
+            new_name = st.text_input("New watchlist name", key="new_watchlist_name")
+            if st.button("Create watchlist", key="create_watchlist"):
+                try:
+                    create_watchlist(new_name); st.session_state.active_watchlist = new_name.strip(); st.rerun()
+                except ValueError as exc: st.error(str(exc))
+    with top_right:
+        with st.popover("Manage"):
+            renamed = st.text_input("Rename selected watchlist", value=active_watchlist, key="rename_watchlist_value")
+            if st.button("Rename", key="rename_watchlist"):
+                try: rename_watchlist(active_watchlist, renamed); st.session_state.active_watchlist=renamed.strip(); st.rerun()
+                except ValueError as exc: st.error(str(exc))
+            if st.button("Delete watchlist", key="delete_watchlist"):
+                try: delete_watchlist(active_watchlist); st.session_state.active_watchlist=list_watchlists()[0]; st.rerun()
+                except ValueError as exc: st.error(str(exc))
+
+    symbols = get_symbols(active_watchlist)
+    add_col, import_col = st.columns(2)
+    with add_col:
+        raw_symbols = st.text_input("Add ticker(s)", placeholder="PLTR, AMD, CVE", key="watchlist_add_symbols")
+        if st.button("Add to watchlist", key="watchlist_add_button"):
+            added, skipped = add_symbols(active_watchlist, [x.strip() for x in raw_symbols.replace("\n", ",").split(",") if x.strip()])
+            if added: st.success("Added: " + ", ".join(added))
+            if skipped: st.warning("Skipped: " + ", ".join(skipped))
+            if added: st.rerun()
+    with import_col:
+        scan_df = st.session_state.scan_results
+        available_scan_symbols = [] if scan_df is None or scan_df.empty else sorted(scan_df["Symbol"].astype(str).tolist())
+        selected_imports = st.multiselect("Import from latest scanner results", available_scan_symbols, key="watchlist_scan_import")
+        if st.button("Import selected", key="watchlist_import_button", disabled=not selected_imports):
+            added, skipped = add_symbols(active_watchlist, selected_imports)
+            if added: st.success("Imported: " + ", ".join(added)); st.rerun()
+
+    items = [get_watchlist_item(symbol) for symbol in symbols]
+    items = [item for item in items if item is not None]
+    scan_lookup = {}
+    if st.session_state.scan_results is not None and not st.session_state.scan_results.empty:
+        scan_lookup = {str(row.get("Symbol", "")).upper(): row.to_dict() for _, row in st.session_state.scan_results.iterrows()}
+
+    action_cols = st.columns([1, 1, 2])
+    if action_cols[0].button("Refresh Intelligence", key="refresh_watchlist_intelligence", disabled=not items):
+        refreshed = 0
+        for item in items:
+            row = scan_lookup.get(item.symbol)
+            if row:
+                refresh_item_from_scan(item, row); update_watchlist_item(item); refreshed += 1
+        st.success(f"Refreshed {refreshed} watchlist profile(s) from the latest scanner results.")
+        st.rerun()
+    if action_cols[1].button("Evaluate Alerts", key="evaluate_watchlist_alerts", disabled=not items):
+        fired = evaluate_alerts({item.symbol: item for item in items})
+        for item in items: update_watchlist_item(item)
+        st.success(f"{len(fired)} alert(s) triggered.") if fired else st.info("No alert conditions are currently met.")
+        st.rerun()
+    action_cols[2].caption("Run the scanner first for fresh technical values, then refresh intelligence.")
+
+    brief = build_morning_brief(items)
+    st.subheader("☀️ Morning Brief")
+    brief_cols = st.columns(5)
+    brief_cols[0].metric("Watchlist Stocks", brief["count"])
+    brief_cols[1].metric("Thesis Improved", brief["improved"])
+    brief_cols[2].metric("Weakened / Invalid", brief["weakened"])
+    brief_cols[3].metric("Highest Opportunity", brief["top_symbol"] or "—")
+    brief_cols[4].metric("Opportunity Score", brief["top_opportunity"] if brief["top_opportunity"] is not None else "—")
+
+    if brief["ranked"]:
+        priority_rows = []
+        for rank, item in enumerate(brief["ranked"], 1):
+            priority_rows.append({"Priority": rank, "Symbol": item.symbol, "Grade": item.technical.get("grade", "—"), "AI Confidence": item.technical.get("confidence", "—"), "Opportunity": item.ai_state.get("opportunity_score", "—"), "AI Status": item.ai_state.get("thesis_status", "Not evaluated"), "Why Now": item.ai_state.get("opportunity_reason", "Run refresh intelligence.")})
+        st.dataframe(pd.DataFrame(priority_rows), hide_index=True, width="stretch")
+
+    profile_tab, alerts_tab, history_tab = st.tabs(["Smart Watchlist", "Smart Alerts", "Alert Inbox"])
+    with profile_tab:
+        if not symbols:
+            st.info("Add a ticker or import one from the scanner to create its living profile.")
+        else:
+            selected_symbol = st.selectbox("Open living profile", symbols, key="watchlist_profile_symbol")
+            item = get_watchlist_item(selected_symbol) or WatchlistItem(symbol=selected_symbol)
+            tech, ai = item.technical or {}, item.ai_state or {}
+            header_cols = st.columns(6)
+            header_cols[0].metric("Symbol", item.symbol)
+            header_cols[1].metric("Grade", tech.get("grade", "—"))
+            header_cols[2].metric("Momo Score", tech.get("momo_score", "—"))
+            header_cols[3].metric("AI Confidence", tech.get("confidence", "—"))
+            header_cols[4].metric("Opportunity", ai.get("opportunity_score", "—"))
+            header_cols[5].metric("Price", money_text(tech.get("price")))
+            st.caption(ai.get("opportunity_reason", "Run Refresh Intelligence after a scanner run to calculate Opportunity Score."))
+
+            identity_tab, thesis_tab, timeline_tab, research_tab = st.tabs(["Profile", "AI Thesis Tracker", "Timeline", "Research History"])
+            with identity_tab:
+                c1, c2 = st.columns(2)
+                item.company = c1.text_input("Company", value=item.company, key=f"company_{item.symbol}")
+                item.sector = c2.text_input("Sector", value=item.sector, key=f"sector_{item.symbol}")
+                item.industry = c1.text_input("Industry", value=item.industry, key=f"industry_{item.symbol}")
+                tags_text = c2.text_input("Tags", value=", ".join(item.tags), key=f"tags_{item.symbol}")
+                item.tags = [x.strip() for x in tags_text.split(",") if x.strip()]
+                st.markdown("#### Technical Snapshot")
+                st.json(tech if tech else {"status": "Refresh intelligence after running the scanner."}, expanded=False)
+                st.markdown("#### Intelligence Snapshot")
+                st.json(item.intelligence if item.intelligence else {"status": "No intelligence snapshot saved yet."}, expanded=False)
+                if st.button("Save profile", key=f"save_profile_{item.symbol}"):
+                    update_watchlist_item(item); st.success("Profile saved.")
+
+            with thesis_tab:
+                item.thesis = st.text_area("Why did you save this stock?", value=item.thesis, height=100, key=f"thesis_{item.symbol}")
+                p1, p2, p3 = st.columns(3)
+                item.entry_idea = p1.text_input("Entry idea", value=item.entry_idea, key=f"entry_{item.symbol}")
+                item.stop = p2.number_input("Stop", min_value=0.0, value=float(item.stop or 0), step=0.01, key=f"stop_{item.symbol}") or None
+                item.target = p3.number_input("Target", min_value=0.0, value=float(item.target or 0), step=0.01, key=f"target_{item.symbol}") or None
+                item.notes = st.text_area("Notes", value=item.notes, key=f"notes_{item.symbol}")
+                st.info(f"AI Status: {ai.get('thesis_status', 'Not evaluated')} · Recommendation: {ai.get('recommendation', 'Not evaluated')}")
+                if st.button("Save thesis", key=f"save_thesis_{item.symbol}"):
+                    item.timeline.append({"timestamp": utc_now(), "event": "Thesis updated", "details": item.thesis})
+                    update_watchlist_item(item); st.success("Thesis saved.")
+
+            with timeline_tab:
+                manual_event = st.text_input("Add timeline event", placeholder="Earnings date moved / Sold / New catalyst", key=f"manual_event_{item.symbol}")
+                if st.button("Add event", key=f"add_event_{item.symbol}") and manual_event.strip():
+                    item.timeline.append({"timestamp": utc_now(), "event": manual_event.strip(), "details": "Manual event"}); update_watchlist_item(item); st.rerun()
+                if item.timeline:
+                    for event in reversed(item.timeline):
+                        st.markdown(
+                            f"**{event.get('event', 'Event')}**  \n"
+                            f"{event.get('details', '')}  \n"
+                            f"<small>{event.get('timestamp', '')}</small>",
+                            unsafe_allow_html=True,
+                        )
+                        st.divider()
+                else: st.caption("No timeline events yet.")
+
+            with research_tab:
+                research_title = st.text_input("Snapshot title", placeholder="Pre-earnings research", key=f"research_title_{item.symbol}")
+                research_body = st.text_area("Save an AI report, conclusion, or research note", height=180, key=f"research_body_{item.symbol}")
+                if st.button("Save research snapshot", key=f"save_research_{item.symbol}") and research_body.strip():
+                    item.research_snapshots.append({"timestamp": utc_now(), "title": research_title.strip() or "Research snapshot", "content": research_body.strip(), "ai_state": dict(item.ai_state), "technical": dict(item.technical)})
+                    item.timeline.append({"timestamp": utc_now(), "event": "Research snapshot saved", "details": research_title.strip() or "Research snapshot"}); update_watchlist_item(item); st.rerun()
+                for snap in reversed(item.research_snapshots):
+                    with st.expander(f"{snap.get('title','Research')} · {snap.get('timestamp','')}"):
+                        st.write(snap.get("content", "")); st.caption(f"Opportunity then: {snap.get('ai_state',{}).get('opportunity_score','—')} · Confidence then: {snap.get('technical',{}).get('confidence','—')}")
+
+            quick = st.columns(5)
+            if quick[0].button("Open Stock Report", key=f"quick_report_{item.symbol}"):
+                st.session_state.selected_symbol = item.symbol; st.info("Ticker loaded as the selected scanner stock. Open the Scanner tab.")
+            if quick[1].button("Trade Planner", key=f"quick_plan_{item.symbol}"):
+                st.session_state.trade_plan_prefill = {"symbol": item.symbol, "entry": item.entry_idea or tech.get("price"), "stop": item.stop, "t1": item.target}; st.success("Loaded into Trade Planner.")
+            if quick[2].button("AI Research", key=f"quick_ai_{item.symbol}"):
+                st.session_state.ai_analysis_symbol = item.symbol; st.info("Ticker loaded for AI Analysis.")
+            if quick[3].button("News", key=f"quick_news_{item.symbol}"):
+                st.session_state.news_search_symbol = item.symbol; st.info("Ticker loaded for News.")
+            if quick[4].button("Remove", key=f"quick_remove_{item.symbol}"):
+                remove_symbol(active_watchlist, item.symbol); st.rerun()
+
+    with alerts_tab:
+        st.subheader("Create Smart Alert")
+        if not symbols: st.info("Add watchlist symbols before creating alerts.")
+        else:
+            rule_labels = list(RULE_TYPES.keys())
+            alert_name = st.text_input("Alert name", key="new_alert_name")
+            alert_symbols = st.multiselect("Apply to", symbols, default=symbols[:1], key="new_alert_symbols")
+            rule_label = st.selectbox("Condition", rule_labels, key="new_alert_rule_type")
+            rule_type = RULE_TYPES[rule_label]
+            if rule_type in {"grade_equals", "setup_contains", "thesis_equals", "recommendation_equals"}:
+                alert_value = st.text_input("Value", key="new_alert_text_value")
+            else:
+                alert_value = st.number_input("Threshold", value=0.0, step=0.1, key="new_alert_number_value")
+            cooldown = st.number_input("Cooldown hours", min_value=1, value=24, step=1, key="new_alert_cooldown")
+            if st.button("Create alert", key="create_smart_alert", disabled=not alert_symbols):
+                create_rule(alert_name or rule_label, alert_symbols, rule_type, alert_value, cooldown); st.success("Alert created."); st.rerun()
+
+        alert_data = load_alerts()
+        st.markdown("#### Active Rules")
+        for rule in alert_data["rules"]:
+            cols = st.columns([3, 2, 1, 1])
+            cols[0].write(f"**{rule['name']}**  \n{', '.join(rule['symbols'])}")
+            cols[1].write(f"{rule['type']} · {rule['value']}")
+            if cols[2].button("Pause" if rule.get("enabled", True) else "Resume", key=f"toggle_alert_{rule['id']}"):
+                set_rule_enabled(rule["id"], not rule.get("enabled", True)); st.rerun()
+            if cols[3].button("Delete", key=f"delete_alert_{rule['id']}"):
+                delete_rule(rule["id"]); st.rerun()
+
+    with history_tab:
+        alert_data = load_alerts(); unread = sum(not e.get("read", False) for e in alert_data["events"])
+        h1, h2, h3 = st.columns([2, 1, 1]); h1.metric("Unread Alerts", unread)
+        if h2.button("Mark all read", key="mark_all_alerts_read"): mark_event_read(); st.rerun()
+        if h3.button("Clear history", key="clear_alert_history"): clear_events(); st.rerun()
+        if not alert_data["events"]: st.info("No alerts have triggered yet.")
+        for event in alert_data["events"]:
+            with st.expander(f"{'🔔' if not event.get('read') else '✓'} {event['symbol']} · {event['rule_name']} · {event['timestamp']}"):
+                st.write(event.get("details", ""))
+                if not event.get("read") and st.button("Mark read", key=f"read_alert_{event['id']}"):
+                    mark_event_read(event["id"]); st.rerun()
 
 
 # -----------------------------
