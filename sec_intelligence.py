@@ -7,7 +7,7 @@ import requests
 
 
 SEC_HEADERS = {
-    "User-Agent": "MomoProAI/0.3 dbardwell9322@gmail.com",
+    "User-Agent": "MomoProAI/0.7 contact: dbardwell9322@gmail.com",
     "Accept-Encoding": "gzip, deflate",
 }
 
@@ -31,7 +31,52 @@ def _ticker_map() -> dict[str, dict[str, Any]]:
 
 
 def get_company_identity(symbol: str) -> dict[str, Any] | None:
-    return _ticker_map().get(symbol.strip().upper())
+    try:
+        return _ticker_map().get(symbol.strip().upper())
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1000)
+def get_company_profile(symbol: str) -> dict[str, Any]:
+    """Return safe SEC identity enrichment for a ticker.
+
+    Company name, SIC description and exchange are populated when SEC data is
+    available. Failures are returned as unavailable data rather than breaking
+    the Streamlit page.
+    """
+    ticker = str(symbol or "").strip().upper()
+    identity = get_company_identity(ticker)
+    if not identity:
+        return {"status": "Unavailable", "symbol": ticker}
+    profile = {
+        "status": "Partial",
+        "symbol": ticker,
+        "company": identity.get("title"),
+        "cik": identity.get("cik"),
+        "sector": "",
+        "industry": "",
+        "sic": "",
+        "exchange": "",
+    }
+    try:
+        response = requests.get(
+            f'https://data.sec.gov/submissions/CIK{identity["cik"]}.json',
+            headers=SEC_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        profile.update({
+            "status": "Available",
+            "company": payload.get("name") or identity.get("title"),
+            "industry": payload.get("sicDescription") or "",
+            "sic": str(payload.get("sic") or ""),
+            "exchange": ", ".join(payload.get("exchanges") or []),
+        })
+    except Exception:
+        pass
+    return profile
 
 
 def get_recent_filings(symbol: str, limit: int = 12) -> dict[str, Any]:
@@ -62,17 +107,15 @@ def get_recent_filings(symbol: str, limit: int = 12) -> dict[str, Any]:
         accession = accessions[index]
         accession_no_dash = accession.replace("-", "")
         document = primary_docs[index]
-        filings.append(
-            {
-                "form": form,
-                "date": dates[index],
-                "description": descriptions[index] or form,
-                "url": (
-                    f'https://www.sec.gov/Archives/edgar/data/{int(identity["cik"])}/'
-                    f'{accession_no_dash}/{document}'
-                ),
-            }
-        )
+        filings.append({
+            "form": form,
+            "date": dates[index],
+            "description": descriptions[index] or form,
+            "url": (
+                f'https://www.sec.gov/Archives/edgar/data/{int(identity["cik"])}/'
+                f'{accession_no_dash}/{document}'
+            ),
+        })
         if len(filings) >= limit:
             break
 
