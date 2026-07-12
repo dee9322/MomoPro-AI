@@ -238,6 +238,12 @@ if "ai_research_evidence" not in st.session_state:
 if "ai_chat_history" not in st.session_state:
     st.session_state.ai_chat_history = {}
 
+if "global_ai_history" not in st.session_state:
+    st.session_state.global_ai_history = []
+
+if "global_ai_last_meta" not in st.session_state:
+    st.session_state.global_ai_last_meta = {}
+
 
 tabs = st.tabs(
     [
@@ -2268,11 +2274,133 @@ with tabs[4]:
         "opinion, explains disagreements, and answers follow-up questions."
     )
 
+    st.subheader("🌎 Global Ask Momo AI")
+    st.caption(
+        "Always available. Ask about any stock, the broader market, current news, "
+        "trade ideas, comparisons, or trading concepts. Independent research comes "
+        "first; MomoPro is used only as an additional reference."
+    )
+
+    global_history = st.session_state.global_ai_history
+    for message in global_history:
+        with st.chat_message(message.get("role", "assistant")):
+            st.write(message.get("content", ""))
+
+    with st.form("global_momo_ai_form", clear_on_submit=True):
+        global_question = st.text_area(
+            "Ask anything",
+            placeholder=(
+                "Examples: What are the strongest swing setups right now? "
+                "Research Nike. Compare AMD and NVDA. What is driving the market today?"
+            ),
+            height=90,
+        )
+        global_submit = st.form_submit_button(
+            "Research and Answer",
+            type="primary",
+            use_container_width=True,
+        )
+
+    global_controls = st.columns([1, 3])
+    with global_controls[0]:
+        if st.button(
+            "Clear Global Chat",
+            key="clear_global_ai_chat",
+            use_container_width=True,
+        ):
+            st.session_state.global_ai_history = []
+            st.session_state.global_ai_last_meta = {}
+            st.rerun()
+
+    if global_submit and global_question.strip():
+        scan_reference = []
+        current_scan = st.session_state.scan_results
+        if current_scan is not None and not current_scan.empty:
+            preferred_columns = [
+                column
+                for column in [
+                    "Symbol",
+                    "Grade",
+                    "Momo Score",
+                    "Dee Fit",
+                    "Momo Confidence",
+                    "Setup",
+                    "Price",
+                    "RVOL",
+                    "ATR %",
+                ]
+                if column in current_scan.columns
+            ]
+            if preferred_columns:
+                scan_reference = (
+                    current_scan[preferred_columns]
+                    .head(30)
+                    .to_dict(orient="records")
+                )
+
+        global_history.append(
+            {"role": "user", "content": global_question.strip()}
+        )
+        try:
+            with st.spinner(
+                "Global Momo AI is independently researching the market and web..."
+            ):
+                from global_ai import answer_global_question
+
+                result = answer_global_question(
+                    api_key=_secret("OPENAI_API_KEY"),
+                    question=global_question.strip(),
+                    conversation=global_history[:-1],
+                    alpaca_api_key=st.secrets["ALPACA_API_KEY"],
+                    alpaca_secret_key=st.secrets["ALPACA_SECRET_KEY"],
+                    alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+                    finnhub_api_key=_secret("FINNHUB_API_KEY"),
+                    fmp_api_key=_secret("FMP_API_KEY"),
+                    momo_scan_reference=scan_reference,
+                    market_context=st.session_state.market_context,
+                )
+            global_history.append(
+                {"role": "assistant", "content": result["answer"]}
+            )
+            st.session_state.global_ai_history = global_history
+            st.session_state.global_ai_last_meta = result
+            st.rerun()
+        except Exception as exc:
+            global_history.append(
+                {
+                    "role": "assistant",
+                    "content": f"I could not complete the independent research: {exc}",
+                }
+            )
+            st.session_state.global_ai_history = global_history
+            st.rerun()
+
+    global_meta = st.session_state.global_ai_last_meta
+    if global_meta:
+        web_status = (
+            "Web research used"
+            if global_meta.get("used_web_search")
+            else "Provider research used; web-search fallback was unavailable"
+        )
+        st.caption(
+            f'{web_status} • '
+            f'{global_meta.get("provider_candidate_count", 0)} independent market candidates • '
+            f'{global_meta.get("explicit_ticker_count", 0)} directly researched tickers'
+        )
+        with st.expander("Global AI research scope"):
+            st.write(global_meta.get("research_scope", "—"))
+            fallback = global_meta.get("web_search_fallback_reason")
+            if fallback:
+                st.caption(f"Web-search fallback reason: {fallback}")
+
+    st.divider()
+    st.subheader("Selected Stock Research Workstation")
+
     analysis_symbol = st.session_state.selected_symbol
     analysis_df = st.session_state.scan_results
 
     if not analysis_symbol or analysis_df is None or analysis_df.empty:
-        st.info("Run the scanner and select a ticker to open the AI Research Workstation.")
+        st.info("Select a ticker from the scanner to open the stock-specific research workstation. Global Ask Momo AI above remains fully available.")
     else:
         matching_rows = analysis_df[analysis_df["Symbol"] == analysis_symbol]
         if matching_rows.empty:
