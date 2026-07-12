@@ -145,3 +145,18 @@
 - Integrated the full AI Research Workstation into the existing AI Analysis tab.
 - Preserved Scanner, Market Context, News, Smart Money, Trading Intelligence, Trade Planner, and Position Sizing Engine behavior.
 - Added guarded, on-demand AI research and chat so no OpenAI request runs during app startup.
+
+## v0.6.0 — Complete AI Research Workstation
+
+- Built from the latest uploaded project checkpoint.
+- Fixed full AI research evidence parsing for news, SEC filings and FDA records.
+- Added responsive AI Analysis cards that wrap long text.
+- Added on-demand comparison research for any ticker or company.
+- Ask Momo AI now researches comparison companies mentioned naturally in questions.
+- Added independent AI action, strategy fit and practical action plan.
+- Added Bull AI vs Bear AI debate and debate winner.
+- Added readiness checklist, evidence quality and missing-evidence disclosure.
+- Added earnings and filing interpretation.
+- Added complete confidence trace.
+- Added chart and screenshot analysis.
+- Preserved all completed v0.1–v0.5.3 functionality.
