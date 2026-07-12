@@ -182,3 +182,14 @@
 - Added persistent global conversation memory and a clear-chat control.
 - Added transparent research-scope and source-status indicators.
 - Preserved the selected-stock research report, Ask Momo AI, comparisons and screenshot analysis.
+
+## v0.7.9 — Watchlist Intelligence Completion
+
+- Corrected Watchlist AI Confidence to use Full Independent AI Research only.
+- Persisted independent AI reports into living profiles and research history.
+- Kept Momo Confidence separate inside the technical snapshot.
+- Added automatic SEC company and industry enrichment with safe failure handling.
+- Corrected Opportunity Score to use Distance EMA21 %, scanner risk fields, and optional independent AI confidence.
+- Synced current market, smart-money, and trading-intelligence context during refresh when available.
+- Corrected AI-confidence alerts and Morning Brief confidence display.
+- Clarified automatic profile fields versus personal thesis/planning fields.
