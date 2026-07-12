@@ -1,3 +1,13 @@
+# MomoPro AI Changelog
+
+## v0.7 — Watchlist & Alert Intelligence
+- Added persistent living watchlist profiles and multiple named watchlists.
+- Added personal thesis, entry, stop, target, tags, notes, timeline, and research snapshots.
+- Added scanner-driven technical/intelligence snapshots and Opportunity Score.
+- Added AI thesis status, recommendation, priority queue, and Morning Brief.
+- Added traditional and AI-state smart alerts with cooldowns and alert inbox.
+- Added portfolio-ready object storage and modular watchlist architecture.
+
 # Changelog
 
 ## v0.6.0 — AI Research Workstation
