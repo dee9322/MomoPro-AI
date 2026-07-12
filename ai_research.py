@@ -1,4 +1,4 @@
-"""Independent AI Research Workstation for MomoPro AI."""
+"""Complete Independent AI Research Workstation for MomoPro AI."""
 
 from __future__ import annotations
 
@@ -19,21 +19,29 @@ class ConfidenceComponent(BaseModel):
     reason: str
 
 
+class ChecklistItem(BaseModel):
+    item: str
+    status: str = Field(description="Pass, Caution, Fail, or Unavailable")
+    explanation: str
+
+
 class AIResearchReport(BaseModel):
     executive_summary: str
-    sentiment: str = Field(
-        description="One of: Very Bullish, Bullish, Cautiously Bullish, Neutral, Cautiously Bearish, Bearish, Very Bearish"
-    )
+    sentiment: str
     confidence: int = Field(ge=0, le=100)
-    conviction: str = Field(description="One of: Low, Moderate, High")
+    conviction: str
     time_horizon: str
-    risk_level: str = Field(description="One of: Low, Moderate, Elevated, High")
-    final_rating: str = Field(
-        description="One of: Strong Buy Candidate, Buy Candidate, Watch, Neutral, Avoid, Avoid Completely"
+    risk_level: str
+    final_rating: str
+    user_strategy_fit: str
+    independent_action: str = Field(
+        description="Buy Now, Wait for Pullback, Wait for Confirmation, Watchlist, Reduce Size, or Pass"
     )
+    action_plan: str
     technical_analysis: str
     market_analysis: str
     news_catalyst_analysis: str
+    earnings_filing_analysis: str
     smart_money_analysis: str
     trading_intelligence_analysis: str
     bull_case: list[str]
@@ -44,7 +52,14 @@ class AIResearchReport(BaseModel):
     blind_spots: list[str]
     momo_engine_comparison: str
     disagreement_reason: str
+    bull_analyst_argument: str
+    bear_analyst_argument: str
+    debate_winner: str
+    debate_reason: str
+    evidence_quality: str
+    missing_evidence: list[str]
     confidence_breakdown: list[ConfidenceComponent]
+    readiness_checklist: list[ChecklistItem]
     questions_to_ask_next: list[str]
 
 
@@ -62,11 +77,6 @@ def generate_research_report(
     trade_intelligence_context: dict[str, Any] | None = None,
     comparison_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a full independent research report from app evidence.
-
-    The model is instructed to form its own opinion rather than merely mirror
-    the deterministic Momo Engine.
-    """
     if not api_key:
         raise ValueError("OPENAI_API_KEY is missing from Streamlit secrets.")
 
@@ -85,27 +95,39 @@ def generate_research_report(
     }
 
     system_prompt = """
-You are the Independent AI Research Analyst inside MomoPro AI, a swing-trading research and decision-support platform.
+You are the Independent AI Research Analyst inside MomoPro AI.
 
-Your job is NOT to repeat the Momo Engine. Review all supplied evidence, form your own independent sentiment, and explain where you agree or disagree with the deterministic engine. The user prefers momentum swing trades, especially fresh EMA21 reclaim/retest setups, usually lasting days to a few weeks. They avoid chasing stocks that are too extended and prefer logical support-based risk with asymmetric reward.
+Your job is to form your own evidence-based swing-trading opinion. Do not merely repeat or endorse the deterministic Momo Engine. Compare your conclusion with it and clearly explain agreement or disagreement.
+
+The user prefers:
+- momentum swing trades lasting days to roughly 2–3 weeks;
+- fresh EMA21 reclaim/retest and continuation setups;
+- entries near logical support rather than chasing;
+- EMA21/EMA50/EMA200, RSI, MACD, RVOL, ATR, structure and multiple targets;
+- strong reward/risk and clear invalidation;
+- A/A+ quality over quantity.
 
 Rules:
-- Use only supplied evidence. Never invent current news, filings, ownership, options, short-interest, prices, or chart facts.
-- Treat missing data as missing, not neutral or zero.
-- Separate verified facts from inferred behavior.
-- Smart Money OHLCV accumulation is inferred, not proof of institutional orders.
-- Indicative options data is delayed and not equivalent to institutional sweep flow.
-- Treat the current close as a reference, not an automatic entry.
-- Your final opinion may disagree with the Momo Engine.
-- Be specific and practical, but never promise outcomes.
-- Make the report useful to a swing trader, not a long-term investment analyst.
-- Confidence must reflect both evidence strength and data completeness.
-- Confidence breakdown contributions should approximately sum to the final confidence.
+- Use only supplied current evidence, including on-demand comparison research.
+- Never invent current prices, news, filings, ownership, options, short interest, earnings dates, chart patterns, or provider results.
+- Missing evidence is missing, not neutral and not zero.
+- Clearly separate verified provider facts, deterministic calculations, inferred behavior, and your interpretation.
+- Smart Money accumulation inferred from OHLCV is not proof of institutional orders.
+- Indicative options data is delayed and is not verified sweep flow.
+- A good company is not automatically a good entry.
+- The current close is only a reference.
+- If comparison evidence exists, make a direct side-by-side swing-trade judgment.
+- Your independent action must be practical: Buy Now, Wait for Pullback, Wait for Confirmation, Watchlist, Reduce Size, or Pass.
+- Confidence must decline when evidence is incomplete or contradictory.
+- The confidence breakdown must be transparent and approximately reconcile to final confidence.
+- Write like an experienced swing trader, not a generic chatbot.
+- Never guarantee outcomes.
 """.strip()
 
     user_prompt = (
         f"Create the complete independent AI research report for {symbol}. "
-        "State your own conclusion after considering the Momo Engine, but do not defer to it.\n\n"
+        "Give your own sentiment, debate the strongest bull and bear cases, state what you would do, "
+        "explain how well the setup fits the user's strategy, and identify missing evidence.\n\n"
         + json.dumps(evidence, default=str, indent=2)
     )
 
