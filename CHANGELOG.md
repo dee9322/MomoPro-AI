@@ -160,3 +160,15 @@
 - Added complete confidence trace.
 - Added chart and screenshot analysis.
 - Preserved all completed v0.1–v0.5.3 functionality.
+
+## v0.6 Final — Global Independent AI
+
+- Added always-available Global Ask Momo AI to the AI Analysis tab.
+- Global AI works with or without a selected scanner stock.
+- Added independent broad-market candidate discovery from external market feeds.
+- Added current multi-source market news and direct ticker/company research.
+- Added OpenAI web-search research with a provider-data fallback.
+- MomoPro scanner and market context are optional references, not the AI's boundary.
+- Added persistent global conversation memory and a clear-chat control.
+- Added transparent research-scope and source-status indicators.
+- Preserved the selected-stock research report, Ask Momo AI, comparisons and screenshot analysis.
