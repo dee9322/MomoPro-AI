@@ -4,11 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from broker_models import BrokerExecution, BrokerImportRecord
 from trade_models import TradeRecord, utc_now
 
 TRADE_DATA_FILE = Path(__file__).with_name("trade_data.json")
 ATTACHMENT_DIR = Path(__file__).with_name("journal_attachments")
-DEFAULT_PAYLOAD = {"schema_version": 1, "updated_at": None, "trades": []}
+DEFAULT_PAYLOAD = {"schema_version": 2, "updated_at": None, "trades": [], "broker_executions": [], "broker_imports": []}
 
 
 def _ensure_storage() -> None:
@@ -24,8 +25,10 @@ def load_payload() -> dict[str, Any]:
         return dict(DEFAULT_PAYLOAD)
     if not isinstance(payload, dict):
         return dict(DEFAULT_PAYLOAD)
-    payload.setdefault("schema_version", 1)
+    payload.setdefault("schema_version", 2)
     payload.setdefault("trades", [])
+    payload.setdefault("broker_executions", [])
+    payload.setdefault("broker_imports", [])
     return payload
 
 
@@ -56,3 +59,32 @@ def save_attachment(trade_id: str, uploaded_file) -> str | None:
     destination = ATTACHMENT_DIR / f"{trade_id}_{safe_name}"
     destination.write_bytes(uploaded_file.getbuffer())
     return str(destination.relative_to(Path(__file__).parent))
+
+
+def load_broker_executions() -> list[BrokerExecution]:
+    return [BrokerExecution.from_dict(item) for item in load_payload().get("broker_executions", []) if isinstance(item, dict)]
+
+
+def save_broker_executions(executions: list[BrokerExecution]) -> None:
+    payload = load_payload()
+    payload["broker_executions"] = [item.to_dict() for item in executions]
+    save_payload(payload)
+
+
+def load_broker_imports() -> list[BrokerImportRecord]:
+    return [BrokerImportRecord.from_dict(item) for item in load_payload().get("broker_imports", []) if isinstance(item, dict)]
+
+
+def save_broker_imports(imports: list[BrokerImportRecord]) -> None:
+    payload = load_payload()
+    payload["broker_imports"] = [item.to_dict() for item in imports]
+    save_payload(payload)
+
+
+def save_broker_state(trades: list[TradeRecord], executions: list[BrokerExecution], imports: list[BrokerImportRecord]) -> None:
+    payload = load_payload()
+    payload["schema_version"] = 2
+    payload["trades"] = [trade.to_dict() for trade in trades]
+    payload["broker_executions"] = [item.to_dict() for item in executions]
+    payload["broker_imports"] = [item.to_dict() for item in imports]
+    save_payload(payload)
