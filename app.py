@@ -62,6 +62,9 @@ from performance_engine import (
     trade_timeline, trades_to_frame,
 )
 from performance_insights import build_performance_insights
+from settings_engine import (
+    get_setting, get_settings, reset_settings, save_settings, settings_summary, update_section,
+)
 
 
 st.set_page_config(
@@ -276,8 +279,13 @@ if "global_ai_history" not in st.session_state:
 if "global_ai_last_meta" not in st.session_state:
     st.session_state.global_ai_last_meta = {}
 
+if "momopro_settings" not in st.session_state:
+    st.session_state.momopro_settings = get_settings()
+
 if "dashboard_universe" not in st.session_state:
-    st.session_state.dashboard_universe = "Entire Market"
+    st.session_state.dashboard_universe = get_setting(
+        "dashboard.default_universe", "Entire Market", st.session_state.momopro_settings
+    )
 
 if "dashboard_headlines" not in st.session_state:
     st.session_state.dashboard_headlines = []
@@ -3216,7 +3224,7 @@ with tabs[6]:
     account_size = st.number_input(
         "Account Size ($)",
         min_value=0.0,
-        value=10000.0,
+        value=float(get_setting("risk.account_size", 10000.0, st.session_state.momopro_settings)),
         step=500.0,
         key="planner_account_size",
     )
@@ -3225,7 +3233,7 @@ with tabs[6]:
         "Risk Per Trade (%)",
         min_value=0.0,
         max_value=100.0,
-        value=1.0,
+        value=float(get_setting("risk.risk_per_trade_pct", 1.0, st.session_state.momopro_settings)),
         step=0.1,
         format="%.2f",
         key="planner_risk_pct",
@@ -3719,9 +3727,13 @@ with tabs[8]:
         st.markdown("### Performance Filters")
         filter_cols = st.columns([1.3, 1.7, 1, 1])
         with filter_cols[0]:
+            default_perf_source = get_setting(
+                "performance.default_source_filter", "All Trades", st.session_state.momopro_settings
+            )
             performance_source = st.selectbox(
                 "Trade source",
                 SOURCE_OPTIONS,
+                index=SOURCE_OPTIONS.index(default_perf_source) if default_perf_source in SOURCE_OPTIONS else 0,
                 key="performance_source_filter",
             )
         available_symbols = sorted(performance_frame_all["symbol"].dropna().unique().tolist())
@@ -4009,11 +4021,263 @@ with tabs[8]:
 
 
 # -----------------------------
-# Settings
+# Settings & Personalization
 # -----------------------------
 with tabs[9]:
-    st.header("Settings")
-
-    st.write(
-        "Strategy settings will appear here."
+    st.header("Settings & Personalization")
+    st.caption(
+        "One persistent profile for strategy, risk, scanner, AI, dashboard, journal, performance, alerts, and integrations."
     )
+
+    settings = get_settings()
+    st.session_state.momopro_settings = settings
+    summary = settings_summary(settings)
+    summary_cols = st.columns(5)
+    summary_cols[0].metric("Trading Style", summary["Trading style"])
+    summary_cols[1].metric("Account Size", money_text(summary["Account size"]))
+    summary_cols[2].metric("Risk / Trade", percent_text(summary["Risk / trade"]))
+    summary_cols[3].metric("AI Style", summary["AI style"])
+    summary_cols[4].metric("Default Universe", summary["Dashboard universe"])
+
+    st.info(
+        "Settings save to `settings_data.json`. Trade Planner and Performance defaults use these values now. "
+        "Scanner/engine fields are stored centrally for the unified-engine phase, where all engines will consume them without duplicate calculations."
+    )
+
+    settings_tabs = st.tabs([
+        "Profile", "Risk", "Scanner", "Indicators", "AI Behavior",
+        "Dashboard", "Journal & Performance", "Alerts", "Data & Integrations", "Backup & Reset",
+    ])
+
+    with settings_tabs[0]:
+        profile = settings["profile"]
+        with st.form("settings_profile_form"):
+            display_name = st.text_input("Display name", value=profile.get("display_name", "Dee"))
+            trading_style = st.selectbox(
+                "Trading style", ["Day Trading", "Swing Trading", "Position Trading", "Mixed"],
+                index=["Day Trading", "Swing Trading", "Position Trading", "Mixed"].index(profile.get("trading_style", "Swing Trading")),
+            )
+            typical_hold_days = st.number_input("Typical hold period (days)", 1, 365, int(profile.get("typical_hold_days", 10)))
+            setup_options = ["EMA21 Reclaim", "EMA21 Retest", "Higher-Low Continuation", "Bull Flag", "Ascending Triangle", "Breakout", "Pullback"]
+            preferred_setups = st.multiselect("Preferred setups", setup_options, default=[x for x in profile.get("preferred_setups", []) if x in setup_options])
+            preferred_sectors = st.multiselect(
+                "Preferred sectors", ["Technology", "Semiconductors", "Healthcare", "Biotechnology", "Financials", "Energy", "Industrials", "Consumer", "Communication Services"],
+                default=profile.get("preferred_sectors", []),
+            )
+            preferred_universes = st.multiselect("Preferred universes", UNIVERSE_OPTIONS, default=[x for x in profile.get("preferred_universes", []) if x in UNIVERSE_OPTIONS])
+            if st.form_submit_button("Save Profile", use_container_width=True):
+                update_section("profile", {
+                    "display_name": display_name.strip() or "Dee", "trading_style": trading_style,
+                    "typical_hold_days": typical_hold_days, "preferred_setups": preferred_setups,
+                    "preferred_sectors": preferred_sectors, "preferred_universes": preferred_universes,
+                })
+                st.session_state.momopro_settings = get_settings(); st.success("Profile saved."); st.rerun()
+
+    with settings_tabs[1]:
+        risk = settings["risk"]
+        with st.form("settings_risk_form"):
+            c1, c2, c3 = st.columns(3)
+            account_size_setting = c1.number_input("Account size ($)", min_value=0.0, value=float(risk.get("account_size", 10000)), step=500.0)
+            risk_per_trade = c2.number_input("Risk per trade (%)", 0.0, 100.0, float(risk.get("risk_per_trade_pct", 1)), 0.1)
+            max_position_pct = c3.number_input("Maximum position size (%)", 0.0, 100.0, float(risk.get("max_position_pct", 25)), 1.0)
+            c4, c5, c6 = st.columns(3)
+            max_open_positions = c4.number_input("Maximum open positions", 1, 100, int(risk.get("max_open_positions", 5)))
+            daily_loss = c5.number_input("Daily loss limit (%)", 0.0, 100.0, float(risk.get("daily_loss_limit_pct", 2)), 0.1)
+            weekly_loss = c6.number_input("Weekly loss limit (%)", 0.0, 100.0, float(risk.get("weekly_loss_limit_pct", 5)), 0.1)
+            minimum_rr = st.number_input("Minimum acceptable risk/reward", 0.0, 20.0, float(risk.get("minimum_rr", 2)), 0.1)
+            stop_options = ["Structure / Support", "EMA21", "EMA50", "ATR", "Swing Low", "Manual"]
+            stop_style = st.selectbox("Default stop style", stop_options, index=stop_options.index(risk.get("stop_style", "Structure / Support")) if risk.get("stop_style") in stop_options else 0)
+            profit_options = ["Scale at T1 / T2 / T3", "Full exit at target", "Trail after T1", "Manual"]
+            profit_style = st.selectbox("Partial-profit preference", profit_options, index=profit_options.index(risk.get("partial_profit_style", profit_options[0])) if risk.get("partial_profit_style") in profit_options else 0)
+            if st.form_submit_button("Save Risk Settings", use_container_width=True):
+                update_section("risk", {
+                    "account_size": account_size_setting, "risk_per_trade_pct": risk_per_trade,
+                    "max_position_pct": max_position_pct, "max_open_positions": max_open_positions,
+                    "daily_loss_limit_pct": daily_loss, "weekly_loss_limit_pct": weekly_loss,
+                    "minimum_rr": minimum_rr, "stop_style": stop_style, "partial_profit_style": profit_style,
+                })
+                st.session_state.momopro_settings = get_settings(); st.success("Risk settings saved."); st.rerun()
+
+    with settings_tabs[2]:
+        scan = settings["scanner"]
+        with st.form("settings_scanner_form"):
+            a, b, c = st.columns(3)
+            price_min = a.number_input("Minimum price ($)", 0.0, 100000.0, float(scan.get("price_min", 3)), 0.5)
+            price_max = b.number_input("Maximum price ($)", 0.0, 100000.0, float(scan.get("price_max", 50)), 1.0)
+            avg_volume = c.number_input("Minimum average volume", 0, 1000000000, int(scan.get("minimum_average_volume", 1000000)), 100000)
+            d, e, f = st.columns(3)
+            min_rvol = d.number_input("Minimum RVOL", 0.0, 100.0, float(scan.get("minimum_rvol", 1.1)), 0.1)
+            min_atr = e.number_input("Minimum ATR %", 0.0, 100.0, float(scan.get("minimum_atr_pct", 4)), 0.25)
+            max_extension = f.number_input("Maximum EMA21 extension %", 0.0, 100.0, float(scan.get("maximum_ema21_extension_pct", 6)), 0.5)
+            g, h, i = st.columns(3)
+            min_momo = g.number_input("Minimum Momo Score", 0, 100, int(scan.get("minimum_momo_score", 0)))
+            grade_options = ["A+", "A", "B", "C", "D"]
+            min_grade = h.selectbox("Minimum grade", grade_options, index=grade_options.index(scan.get("minimum_grade", "C")) if scan.get("minimum_grade") in grade_options else 3)
+            result_limit = i.number_input("Maximum displayed results", 1, 1000, int(scan.get("result_limit", 100)))
+            default_universe = st.selectbox("Default scanner universe", UNIVERSE_OPTIONS, index=UNIVERSE_OPTIONS.index(scan.get("default_universe", "Entire Market")) if scan.get("default_universe") in UNIVERSE_OPTIONS else 0)
+            exclude_etfs = st.checkbox("Exclude ETFs/funds", value=bool(scan.get("exclude_etfs", True)))
+            exclude_otc = st.checkbox("Exclude OTC securities", value=bool(scan.get("exclude_otc", True)))
+            if st.form_submit_button("Save Scanner Settings", use_container_width=True):
+                if price_max < price_min: st.error("Maximum price must be at least the minimum price.")
+                else:
+                    update_section("scanner", {
+                        "price_min": price_min, "price_max": price_max, "minimum_average_volume": avg_volume,
+                        "minimum_rvol": min_rvol, "minimum_atr_pct": min_atr,
+                        "maximum_ema21_extension_pct": max_extension, "minimum_momo_score": min_momo,
+                        "minimum_grade": min_grade, "result_limit": result_limit, "default_universe": default_universe,
+                        "exclude_etfs": exclude_etfs, "exclude_otc": exclude_otc,
+                    })
+                    st.session_state.momopro_settings = get_settings(); st.success("Scanner preferences saved."); st.rerun()
+
+    with settings_tabs[3]:
+        ind = settings["indicators"]
+        with st.form("settings_indicators_form"):
+            c1, c2, c3 = st.columns(3)
+            ema_fast = c1.number_input("Fast EMA", 1, 500, int(ind.get("ema_fast", 21)))
+            ema_mid = c2.number_input("Mid EMA", 1, 500, int(ind.get("ema_mid", 50)))
+            ema_slow = c3.number_input("Slow EMA", 1, 1000, int(ind.get("ema_slow", 200)))
+            c4, c5, c6 = st.columns(3)
+            rsi_length = c4.number_input("RSI length", 2, 100, int(ind.get("rsi_length", 14)))
+            atr_length = c5.number_input("ATR length", 2, 100, int(ind.get("atr_length", 14)))
+            rvol_lookback = c6.number_input("RVOL lookback", 2, 250, int(ind.get("rvol_lookback", 20)))
+            c7, c8, c9 = st.columns(3)
+            macd_fast = c7.number_input("MACD fast", 1, 100, int(ind.get("macd_fast", 12)))
+            macd_slow = c8.number_input("MACD slow", 2, 200, int(ind.get("macd_slow", 26)))
+            macd_signal = c9.number_input("MACD signal", 1, 100, int(ind.get("macd_signal", 9)))
+            primary_tf = st.selectbox("Primary timeframe", ["Daily", "4H", "1H", "15m"], index=["Daily", "4H", "1H", "15m"].index(ind.get("primary_timeframe", "Daily")))
+            confirmation_tfs = st.multiselect("Confirmation timeframes", ["Weekly", "Daily", "4H", "1H", "15m", "5m"], default=ind.get("confirmation_timeframes", ["4H", "1H", "15m"]))
+            if st.form_submit_button("Save Indicator Settings", use_container_width=True):
+                update_section("indicators", {
+                    "ema_fast": ema_fast, "ema_mid": ema_mid, "ema_slow": ema_slow,
+                    "rsi_length": rsi_length, "atr_length": atr_length, "rvol_lookback": rvol_lookback,
+                    "macd_fast": macd_fast, "macd_slow": macd_slow, "macd_signal": macd_signal,
+                    "primary_timeframe": primary_tf, "confirmation_timeframes": confirmation_tfs,
+                })
+                st.session_state.momopro_settings = get_settings(); st.success("Indicator preferences saved."); st.rerun()
+
+    with settings_tabs[4]:
+        ai = settings["ai"]
+        with st.form("settings_ai_form"):
+            style_options = ["Conservative", "Balanced", "Aggressive"]
+            ai_style = st.selectbox("Analysis style", style_options, index=style_options.index(ai.get("analysis_style", "Balanced")))
+            depth_options = ["Concise", "Detailed", "Deep Research"]
+            response_depth = st.selectbox("Response depth", depth_options, index=depth_options.index(ai.get("response_depth", "Detailed")))
+            challenge = st.checkbox("Challenge my thesis when evidence disagrees", value=bool(ai.get("challenge_thesis", True)))
+            st.markdown("#### Evidence weights")
+            cols = st.columns(5)
+            tech_w = cols[0].number_input("Technicals", 0, 100, int(ai.get("technical_weight", 35)))
+            market_w = cols[1].number_input("Market", 0, 100, int(ai.get("market_weight", 15)))
+            news_w = cols[2].number_input("News", 0, 100, int(ai.get("news_weight", 20)))
+            smart_w = cols[3].number_input("Smart Money", 0, 100, int(ai.get("smart_money_weight", 15)))
+            hist_w = cols[4].number_input("Historical", 0, 100, int(ai.get("historical_weight", 15)))
+            st.caption(f"Current total weight: {tech_w + market_w + news_w + smart_w + hist_w}%")
+            t1, t2, t3 = st.columns(3)
+            buy_threshold = t1.number_input("Buy threshold", 0, 100, int(ai.get("buy_threshold", 85)))
+            watch_threshold = t2.number_input("Watch threshold", 0, 100, int(ai.get("watch_threshold", 70)))
+            wait_threshold = t3.number_input("Wait threshold", 0, 100, int(ai.get("wait_threshold", 50)))
+            if st.form_submit_button("Save AI Behavior", use_container_width=True):
+                if not (buy_threshold >= watch_threshold >= wait_threshold): st.error("Thresholds must descend: Buy ≥ Watch ≥ Wait.")
+                elif tech_w + market_w + news_w + smart_w + hist_w != 100: st.error("AI evidence weights must total exactly 100%.")
+                else:
+                    update_section("ai", {
+                        "analysis_style": ai_style, "response_depth": response_depth, "challenge_thesis": challenge,
+                        "technical_weight": tech_w, "market_weight": market_w, "news_weight": news_w,
+                        "smart_money_weight": smart_w, "historical_weight": hist_w,
+                        "buy_threshold": buy_threshold, "watch_threshold": watch_threshold, "wait_threshold": wait_threshold,
+                    })
+                    st.session_state.momopro_settings = get_settings(); st.success("AI behavior saved."); st.rerun()
+
+    with settings_tabs[5]:
+        dash = settings["dashboard"]
+        with st.form("settings_dashboard_form"):
+            default_dash_universe = st.selectbox("Default universe", UNIVERSE_OPTIONS, index=UNIVERSE_OPTIONS.index(dash.get("default_universe", "Entire Market")) if dash.get("default_universe") in UNIVERSE_OPTIONS else 0)
+            candidate_count = st.number_input("Scanner candidates shown", 1, 50, int(dash.get("candidate_count", 10)))
+            morning_brief = st.checkbox("Show Today’s Trading Plan", value=bool(dash.get("morning_brief_enabled", True)))
+            dashboard_toggles = {}
+            labels = {
+                "show_market_health": "Market health", "show_sector_leadership": "Sector leadership",
+                "show_scanner_candidates": "Scanner candidates", "show_watchlist_alerts": "Watchlist alerts",
+                "show_open_trades": "Open trades", "show_market_news": "Market news",
+                "show_ai_recommendations": "Recent AI recommendations", "show_broker_status": "Broker status",
+            }
+            cols = st.columns(2)
+            for idx, (key, label) in enumerate(labels.items()): dashboard_toggles[key] = cols[idx % 2].checkbox(label, value=bool(dash.get(key, True)), key=f"dash_setting_{key}")
+            if st.form_submit_button("Save Dashboard Settings", use_container_width=True):
+                update_section("dashboard", {"default_universe": default_dash_universe, "candidate_count": candidate_count, "morning_brief_enabled": morning_brief, **dashboard_toggles})
+                st.session_state.dashboard_universe = default_dash_universe
+                st.session_state.momopro_settings = get_settings(); st.success("Dashboard preferences saved."); st.rerun()
+
+    with settings_tabs[6]:
+        journal = settings["journal"]; perf = settings["performance"]
+        with st.form("settings_journal_performance_form"):
+            st.markdown("#### Journal")
+            c1, c2 = st.columns(2)
+            default_direction = c1.selectbox("Default direction", ["Long", "Short"], index=0 if journal.get("default_direction", "Long") == "Long" else 1)
+            default_broker = c2.selectbox("Default broker", ["Webull", "Manual / None", "Other"], index=["Webull", "Manual / None", "Other"].index(journal.get("default_broker", "Webull")) if journal.get("default_broker") in ["Webull", "Manual / None", "Other"] else 0)
+            require_thesis = st.checkbox("Require an entry thesis", value=bool(journal.get("require_entry_thesis", True)))
+            require_review = st.checkbox("Require post-trade review", value=bool(journal.get("require_exit_review", True)))
+            save_screens = st.checkbox("Save chart screenshots", value=bool(journal.get("save_chart_screenshots", True)))
+            st.markdown("#### Performance")
+            perf_source = st.selectbox("Default source filter", SOURCE_OPTIONS, index=SOURCE_OPTIONS.index(perf.get("default_source_filter", "All Trades")) if perf.get("default_source_filter") in SOURCE_OPTIONS else 0)
+            perf_period = st.selectbox("Default period", ["All Time", "Year to Date", "Last 12 Months", "Last 90 Days", "Last 30 Days"], index=0)
+            pnl_display = st.selectbox("Default P/L display", ["Net P/L", "Gross P/L"], index=0 if perf.get("pnl_display", "Net P/L") == "Net P/L" else 1)
+            show_fees = st.checkbox("Show fees", value=bool(perf.get("show_fees", True)))
+            show_equity = st.checkbox("Show equity curve", value=bool(perf.get("show_equity_curve", True)))
+            show_ai_acc = st.checkbox("Show AI accuracy", value=bool(perf.get("show_ai_accuracy", True)))
+            show_discipline = st.checkbox("Show discipline metrics", value=bool(perf.get("show_discipline_metrics", True)))
+            if st.form_submit_button("Save Journal & Performance Settings", use_container_width=True):
+                update_section("journal", {"default_direction": default_direction, "default_broker": default_broker, "require_entry_thesis": require_thesis, "require_exit_review": require_review, "save_chart_screenshots": save_screens})
+                update_section("performance", {"default_source_filter": perf_source, "default_period": perf_period, "pnl_display": pnl_display, "show_fees": show_fees, "show_equity_curve": show_equity, "show_ai_accuracy": show_ai_acc, "show_discipline_metrics": show_discipline})
+                st.session_state.momopro_settings = get_settings(); st.success("Journal and Performance preferences saved."); st.rerun()
+
+    with settings_tabs[7]:
+        alert_settings = settings["alerts"]
+        with st.form("settings_alert_form"):
+            cooldown_setting = st.number_input("Default alert cooldown (hours)", 0, 720, int(alert_settings.get("default_cooldown_hours", 24)))
+            priority_options = ["Low", "Medium", "High", "Critical"]
+            priority = st.selectbox("Minimum notification priority", priority_options, index=priority_options.index(alert_settings.get("minimum_priority", "Medium")))
+            brief_alerts = st.checkbox("Include alert summary in Morning Brief", value=bool(alert_settings.get("morning_brief_alert_summary", True)))
+            quiet_enabled = st.checkbox("Enable quiet hours", value=bool(alert_settings.get("quiet_hours_enabled", False)))
+            q1, q2 = st.columns(2)
+            quiet_start = q1.text_input("Quiet hours start (24h)", value=str(alert_settings.get("quiet_hours_start", "21:00")))
+            quiet_end = q2.text_input("Quiet hours end (24h)", value=str(alert_settings.get("quiet_hours_end", "06:00")))
+            if st.form_submit_button("Save Alert Settings", use_container_width=True):
+                update_section("alerts", {"default_cooldown_hours": cooldown_setting, "minimum_priority": priority, "morning_brief_alert_summary": brief_alerts, "quiet_hours_enabled": quiet_enabled, "quiet_hours_start": quiet_start, "quiet_hours_end": quiet_end})
+                st.session_state.momopro_settings = get_settings(); st.success("Alert preferences saved."); st.rerun()
+
+    with settings_tabs[8]:
+        data = settings["data"]
+        provider_rows = [
+            {"Integration": "Alpaca Market Data", "Status": "Configured" if _secret("ALPACA_API_KEY") and _secret("ALPACA_SECRET_KEY") else "Missing secrets", "Role": "Market data"},
+            {"Integration": "OpenAI", "Status": "Configured" if _secret("OPENAI_API_KEY") else "Missing secret", "Role": "AI research"},
+            {"Integration": "Webull CSV", "Status": "Enabled" if data.get("webull_csv_enabled", True) else "Disabled", "Role": "Historical import"},
+            {"Integration": "Webull OpenAPI", "Status": data.get("webull_api_mode", "Not Connected"), "Role": "Read-only sync planned for v0.95"},
+            {"Integration": "TradingView", "Status": data.get("tradingview_status", "Planned for v0.95"), "Role": "Execution ecosystem"},
+        ]
+        st.dataframe(pd.DataFrame(provider_rows), use_container_width=True, hide_index=True)
+        with st.form("settings_data_form"):
+            c1, c2, c3 = st.columns(3)
+            market_cache = c1.number_input("Market cache (minutes)", 1, 1440, int(data.get("market_cache_minutes", 15)))
+            news_cache = c2.number_input("News cache (minutes)", 1, 1440, int(data.get("news_cache_minutes", 15)))
+            scanner_cache = c3.number_input("Scanner cache (minutes)", 1, 1440, int(data.get("scanner_cache_minutes", 30)))
+            auto_refresh = st.checkbox("Auto-refresh Dashboard when supported", value=bool(data.get("auto_refresh_dashboard", False)))
+            webull_csv = st.checkbox("Enable Webull CSV import", value=bool(data.get("webull_csv_enabled", True)))
+            if st.form_submit_button("Save Data Preferences", use_container_width=True):
+                update_section("data", {"market_cache_minutes": market_cache, "news_cache_minutes": news_cache, "scanner_cache_minutes": scanner_cache, "auto_refresh_dashboard": auto_refresh, "webull_csv_enabled": webull_csv})
+                st.session_state.momopro_settings = get_settings(); st.success("Data preferences saved."); st.rerun()
+
+    with settings_tabs[9]:
+        st.markdown("#### Current settings JSON")
+        st.json(settings, expanded=False)
+        export_payload = __import__("json").dumps(settings, indent=2)
+        st.download_button("Download Settings Backup", export_payload, "momopro_settings.json", "application/json", use_container_width=True)
+        uploaded_settings = st.file_uploader("Restore settings backup", type=["json"], key="settings_restore_upload")
+        if uploaded_settings is not None and st.button("Restore Uploaded Settings", use_container_width=True):
+            try:
+                restored = __import__("json").loads(uploaded_settings.getvalue().decode("utf-8"))
+                save_settings(restored); st.session_state.momopro_settings = get_settings(); st.success("Settings restored."); st.rerun()
+            except Exception as error:
+                st.error(f"Could not restore settings: {error}")
+        st.warning("Resetting restores MomoPro defaults. It does not delete trades, watchlists, alerts, AI reports, or broker history.")
+        if st.button("Reset All Settings to Defaults", type="secondary", use_container_width=True):
+            reset_settings(); st.session_state.momopro_settings = get_settings(); st.session_state.dashboard_universe = get_setting("dashboard.default_universe", "Entire Market", st.session_state.momopro_settings); st.success("Settings reset."); st.rerun()
