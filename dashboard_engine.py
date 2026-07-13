@@ -8,6 +8,7 @@ import pandas as pd
 
 from alert_engine import load_alerts
 from watchlist_manager import get_symbols, list_watchlists
+from trade_journal import broker_import_status
 
 TRADE_DATA_FILE = Path(__file__).with_name("trade_data.json")
 
@@ -279,3 +280,7 @@ def market_index_rows(market_context: dict[str, Any] | None) -> list[dict[str, A
 def sector_rows(market_context: dict[str, Any] | None, limit: int = 6) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     sectors = (market_context or {}).get("sectors", {})
     return list(sectors.get("leaders", []))[:limit], list(sectors.get("laggards", []))[:limit]
+
+
+def broker_status() -> dict[str, Any]:
+    return broker_import_status()
