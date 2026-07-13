@@ -49,6 +49,11 @@ from alert_engine import (
     mark_event_read, set_rule_enabled,
 )
 from alert_rules import RULE_TYPES
+from trade_journal import (
+    add_exit, add_management_update, create_trade, delete_trade, get_trade,
+    reopen_trade, trade_summary, update_trade,
+)
+from trade_storage import load_trades, save_attachment
 
 
 st.set_page_config(
@@ -268,6 +273,9 @@ if "dashboard_universe" not in st.session_state:
 
 if "dashboard_headlines" not in st.session_state:
     st.session_state.dashboard_headlines = []
+
+if "journal_prefill" not in st.session_state:
+    st.session_state.journal_prefill = {}
 
 
 tabs = st.tabs(
@@ -3122,16 +3130,18 @@ with tabs[5]:
                     with st.expander(f"{snap.get('title','Research')} · {snap.get('timestamp','')}"):
                         st.write(snap.get("content", "")); st.caption(f"Opportunity then: {snap.get('ai_state',{}).get('opportunity_score','—')} · AI Confidence then: {snap.get('ai_confidence', snap.get('ai_state',{}).get('ai_confidence','—'))}")
 
-            quick = st.columns(5)
+            quick = st.columns(6)
             if quick[0].button("Open Stock Report", key=f"quick_report_{item.symbol}"):
                 st.session_state.selected_symbol = item.symbol; st.info("Ticker loaded as the selected scanner stock. Open the Scanner tab.")
             if quick[1].button("Trade Planner", key=f"quick_plan_{item.symbol}"):
                 st.session_state.trade_plan_prefill = {"symbol": item.symbol, "entry": item.entry_idea or tech.get("price"), "stop": item.stop, "t1": item.target}; st.success("Loaded into Trade Planner.")
-            if quick[2].button("AI Research", key=f"quick_ai_{item.symbol}"):
+            if quick[2].button("Journal", key=f"quick_journal_{item.symbol}"):
+                st.session_state.journal_prefill = {"symbol": item.symbol, "entry_price": tech.get("price") or 0, "initial_stop": item.stop or 0, "t1": item.target or 0, "thesis": item.thesis}; st.success("Watchlist profile loaded into the Journal.")
+            if quick[3].button("AI Research", key=f"quick_ai_{item.symbol}"):
                 st.session_state.ai_analysis_symbol = item.symbol; st.info("Ticker loaded for AI Analysis.")
-            if quick[3].button("News", key=f"quick_news_{item.symbol}"):
+            if quick[4].button("News", key=f"quick_news_{item.symbol}"):
                 st.session_state.news_search_symbol = item.symbol; st.info("Ticker loaded for News.")
-            if quick[4].button("Remove", key=f"quick_remove_{item.symbol}"):
+            if quick[5].button("Remove", key=f"quick_remove_{item.symbol}"):
                 remove_symbol(active_watchlist, item.symbol); st.rerun()
 
     with alerts_tab:
@@ -3288,20 +3298,243 @@ with tabs[6]:
 
     st.markdown("### Plan Notes")
     plan_notes = st.text_area("Trade Thesis / Confirmation / Invalidation", key="trade_plan_notes")
-    if st.button("Save Plan to Session", use_container_width=True):
+    planner_action_1, planner_action_2 = st.columns(2)
+    if planner_action_1.button("Save Plan to Session", use_container_width=True):
         st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
-        st.success("Trade plan saved in this session. Journal persistence comes in v0.8.")
+        st.success("Trade plan saved in this session.")
+    if planner_action_2.button("Send Plan to Journal", use_container_width=True):
+        st.session_state.journal_prefill = {
+            "symbol": planner_symbol, "entry_price": entry, "shares": shares,
+            "initial_stop": stop, "t1": t1, "t2": t2, "t3": t3,
+            "thesis": plan_notes,
+        }
+        st.success("Trade plan loaded into the Journal. Open the Journal tab to review and save it.")
 
 
 # -----------------------------
-# Journal
+# Journal & Open Trades
 # -----------------------------
 with tabs[7]:
-    st.header("Journal")
+    st.header("Journal & Open Trades")
+    st.caption("Plan, monitor, manage, close, and review every trade in one persistent record.")
 
-    st.write(
-        "Trade journal will appear here."
+    journal_trades = load_trades()
+    journal_open = [trade for trade in journal_trades if trade.status in {"open", "partial"}]
+    journal_closed = [trade for trade in journal_trades if trade.status == "closed"]
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Open Trades", len(journal_open))
+    metric_cols[1].metric("Closed Trades", len(journal_closed))
+    metric_cols[2].metric("Partial Positions", sum(trade.status == "partial" for trade in journal_open))
+    metric_cols[3].metric("Total Journal Records", len(journal_trades))
+
+    open_tab, new_tab, manage_tab, closed_tab = st.tabs(
+        ["Open Trades", "New Trade", "Manage Trade", "Closed Trades & Review"]
     )
+
+    with open_tab:
+        st.subheader("Open Positions")
+        if not journal_open:
+            st.info("No open trades yet. Create one manually or send a plan from the Trade Planner.")
+        else:
+            open_rows = [trade_summary(trade) for trade in journal_open]
+            st.dataframe(pd.DataFrame(open_rows), use_container_width=True, hide_index=True)
+            for trade in journal_open:
+                with st.expander(f"{trade.symbol} · {trade.status.title()} · {trade.remaining_shares:g} shares remaining"):
+                    summary_cols = st.columns(5)
+                    summary_cols[0].metric("Entry", money_text(trade.entry_price))
+                    summary_cols[1].metric("Current Stop", money_text(trade.current_stop))
+                    summary_cols[2].metric("T1", money_text(trade.t1))
+                    summary_cols[3].metric("Momo Score", trade.momo_score if trade.momo_score is not None else "—")
+                    summary_cols[4].metric("AI Confidence", f"{trade.ai_confidence:.0f}%" if trade.ai_confidence is not None else "—")
+                    st.markdown(f"**Setup:** {trade.setup or '—'}  |  **Grade:** {trade.grade or '—'}  |  **Dee Fit:** {trade.dee_fit or '—'}")
+                    if trade.thesis:
+                        st.markdown("**Entry Thesis**")
+                        st.write(trade.thesis)
+                    if trade.updates:
+                        st.markdown("**Latest Management Updates**")
+                        for update in trade.updates[:5]:
+                            st.caption(f"{update.date} · {update.update_type}")
+                            st.write(update.note or "No note entered.")
+                    if trade.exits:
+                        st.markdown("**Partial Exits**")
+                        st.dataframe(pd.DataFrame([{"Date": item.date, "Shares": item.shares, "Price": item.price, "Reason": item.reason} for item in trade.exits]), use_container_width=True, hide_index=True)
+
+    with new_tab:
+        st.subheader("Create Trade Record")
+        prefill = st.session_state.journal_prefill or {}
+        scan_df = st.session_state.scan_results
+        scanner_row = None
+        default_symbol = str(prefill.get("symbol", "")).upper()
+        if default_symbol and scan_df is not None and not scan_df.empty and "Symbol" in scan_df.columns:
+            matched = scan_df[scan_df["Symbol"].astype(str).str.upper() == default_symbol]
+            if not matched.empty:
+                scanner_row = matched.iloc[0]
+
+        def journal_scan_value(names, default=None):
+            if scanner_row is None:
+                return default
+            for name in names:
+                if name in scanner_row.index and valid_value(scanner_row.get(name)):
+                    return scanner_row.get(name)
+            return default
+
+        ai_report = None
+        if default_symbol:
+            matching_reports = [report for key, report in st.session_state.ai_research_reports.items() if str((report or {}).get("symbol") or key).upper().startswith(default_symbol)]
+            if matching_reports:
+                ai_report = matching_reports[-1]
+
+        base_1, base_2, base_3, base_4 = st.columns(4)
+        journal_symbol = base_1.text_input("Ticker", value=default_symbol, key="journal_new_symbol").upper().strip()
+        journal_direction = base_2.selectbox("Direction", ["long", "short"], key="journal_new_direction")
+        journal_entry_date = base_3.date_input("Entry Date", key="journal_new_entry_date")
+        journal_status = base_4.selectbox("Starting Status", ["open"], key="journal_new_status")
+
+        price_1, price_2, price_3, price_4 = st.columns(4)
+        journal_entry = price_1.number_input("Entry Price", min_value=0.0, value=float(prefill.get("entry_price") or 0.0), step=0.01, key="journal_new_entry")
+        journal_shares = price_2.number_input("Shares", min_value=0.0, value=float(prefill.get("shares") or 0.0), step=1.0, key="journal_new_shares")
+        journal_stop = price_3.number_input("Initial Stop", min_value=0.0, value=float(prefill.get("initial_stop") or 0.0), step=0.01, key="journal_new_stop")
+        journal_setup = price_4.text_input("Setup", value=str(journal_scan_value(["Setup", "Setup Tag"], "")), key="journal_new_setup")
+
+        target_1, target_2, target_3 = st.columns(3)
+        journal_t1 = target_1.number_input("T1", min_value=0.0, value=float(prefill.get("t1") or 0.0), step=0.01, key="journal_new_t1")
+        journal_t2 = target_2.number_input("T2", min_value=0.0, value=float(prefill.get("t2") or 0.0), step=0.01, key="journal_new_t2")
+        journal_t3 = target_3.number_input("T3", min_value=0.0, value=float(prefill.get("t3") or 0.0), step=0.01, key="journal_new_t3")
+
+        intelligence_1, intelligence_2, intelligence_3, intelligence_4 = st.columns(4)
+        journal_grade = intelligence_1.text_input("Grade", value=str(journal_scan_value(["Grade"], "")), key="journal_new_grade")
+        journal_momo = intelligence_2.number_input("Momo Score", min_value=0.0, max_value=100.0, value=float(journal_scan_value(["Momo Score", "Score"], 0.0) or 0.0), key="journal_new_momo")
+        journal_opportunity = intelligence_3.number_input("Opportunity Score", min_value=0.0, max_value=100.0, value=float(journal_scan_value(["Opportunity Score", "Opportunity"], 0.0) or 0.0), key="journal_new_opportunity")
+        journal_ai_confidence = intelligence_4.number_input("Independent AI Confidence", min_value=0.0, max_value=100.0, value=float((ai_report or {}).get("confidence") or 0.0), key="journal_new_ai_confidence")
+
+        journal_dee_fit = st.text_input("Dee Fit", value=str(journal_scan_value(["Dee Fit"], "")), key="journal_new_dee_fit")
+        journal_thesis = st.text_area("Entry Thesis / Why This Trade", value=str(prefill.get("thesis") or ""), key="journal_new_thesis")
+        confirm_col, invalid_col = st.columns(2)
+        journal_confirmation = confirm_col.text_area("Required Confirmation", key="journal_new_confirmation")
+        journal_invalidation = invalid_col.text_area("Thesis Invalidation", key="journal_new_invalidation")
+
+        context_col_1, context_col_2 = st.columns(2)
+        journal_market = context_col_1.text_area("Market / Sector Context", value=str((st.session_state.market_context or {}).get("summary") or ""), key="journal_new_market")
+        journal_news = context_col_2.text_area("News / Catalyst Context", key="journal_new_news")
+        journal_smart_money = st.text_area("Smart Money Context", key="journal_new_smart_money")
+        journal_notes = st.text_area("Personal Notes", key="journal_new_notes")
+        journal_image = st.file_uploader("Chart Screenshot (optional)", type=["png", "jpg", "jpeg", "webp"], key="journal_new_image")
+
+        if st.button("Save Trade to Journal", type="primary", use_container_width=True, key="journal_create_trade"):
+            try:
+                created = create_trade(
+                    symbol=journal_symbol, status=journal_status, direction=journal_direction,
+                    entry_date=f"{journal_entry_date.isoformat()}T00:00:00+00:00",
+                    entry_price=journal_entry, shares=journal_shares,
+                    initial_stop=journal_stop or None, t1=journal_t1 or None, t2=journal_t2 or None, t3=journal_t3 or None,
+                    setup=journal_setup, grade=journal_grade, momo_score=journal_momo or None,
+                    dee_fit=journal_dee_fit, opportunity_score=journal_opportunity or None,
+                    ai_confidence=journal_ai_confidence or None,
+                    ai_action=str((ai_report or {}).get("independent_action") or ""),
+                    market_regime=journal_market, news_context=journal_news,
+                    smart_money_context=journal_smart_money, thesis=journal_thesis,
+                    confirmation=journal_confirmation, invalidation=journal_invalidation, notes=journal_notes,
+                )
+                if journal_image is not None:
+                    attachment_path = save_attachment(created.id, journal_image)
+                    if attachment_path:
+                        update_trade(created.id, screenshot_paths=[attachment_path])
+                st.session_state.journal_prefill = {}
+                st.success(f"{created.symbol} was saved as an open trade.")
+                st.rerun()
+            except Exception as error:
+                st.error(str(error))
+
+    with manage_tab:
+        st.subheader("Manage an Open Trade")
+        if not journal_open:
+            st.info("There are no open trades to manage.")
+        else:
+            selected_trade_id = st.selectbox(
+                "Trade",
+                [trade.id for trade in journal_open],
+                format_func=lambda value: next(f"{trade.symbol} · {trade.entry_price:.2f} · {trade.status.title()}" for trade in journal_open if trade.id == value),
+                key="journal_manage_trade",
+            )
+            selected_trade = get_trade(selected_trade_id)
+            if selected_trade:
+                edit_tab, update_tab, exit_tab = st.tabs(["Edit Plan", "Management Update", "Record Exit"])
+                with edit_tab:
+                    edit_1, edit_2, edit_3, edit_4 = st.columns(4)
+                    edit_stop = edit_1.number_input("Current Stop", min_value=0.0, value=float(selected_trade.current_stop or 0.0), step=0.01, key=f"edit_stop_{selected_trade.id}")
+                    edit_t1 = edit_2.number_input("T1", min_value=0.0, value=float(selected_trade.t1 or 0.0), step=0.01, key=f"edit_t1_{selected_trade.id}")
+                    edit_t2 = edit_3.number_input("T2", min_value=0.0, value=float(selected_trade.t2 or 0.0), step=0.01, key=f"edit_t2_{selected_trade.id}")
+                    edit_t3 = edit_4.number_input("T3", min_value=0.0, value=float(selected_trade.t3 or 0.0), step=0.01, key=f"edit_t3_{selected_trade.id}")
+                    edit_thesis = st.text_area("Current Thesis", value=selected_trade.thesis, key=f"edit_thesis_{selected_trade.id}")
+                    edit_notes = st.text_area("Notes", value=selected_trade.notes, key=f"edit_notes_{selected_trade.id}")
+                    if st.button("Save Trade Changes", use_container_width=True, key=f"save_edit_{selected_trade.id}"):
+                        update_trade(selected_trade.id, current_stop=edit_stop or None, t1=edit_t1 or None, t2=edit_t2 or None, t3=edit_t3 or None, thesis=edit_thesis, notes=edit_notes)
+                        st.success("Trade updated.")
+                        st.rerun()
+
+                with update_tab:
+                    management_type = st.selectbox("Update Type", ["Management Note", "Stop Raised", "Target Reached", "Momentum Change", "Support Test", "AI Opinion Change", "News / Catalyst", "Risk Warning"], key=f"manage_type_{selected_trade.id}")
+                    management_cols = st.columns(2)
+                    management_price = management_cols[0].number_input("Current Price (optional)", min_value=0.0, value=0.0, step=0.01, key=f"manage_price_{selected_trade.id}")
+                    management_stop = management_cols[1].number_input("New Stop (optional)", min_value=0.0, value=float(selected_trade.current_stop or 0.0), step=0.01, key=f"manage_stop_{selected_trade.id}")
+                    management_note = st.text_area("What changed?", key=f"manage_note_{selected_trade.id}")
+                    if st.button("Add Management Update", use_container_width=True, key=f"add_update_{selected_trade.id}"):
+                        add_management_update(selected_trade.id, management_type, management_note, management_stop or None, management_price or None)
+                        st.success("Management update added.")
+                        st.rerun()
+
+                with exit_tab:
+                    exit_cols = st.columns(3)
+                    exit_shares = exit_cols[0].number_input("Shares to Exit", min_value=0.0, max_value=float(selected_trade.remaining_shares), value=float(selected_trade.remaining_shares), step=1.0, key=f"exit_shares_{selected_trade.id}")
+                    exit_price = exit_cols[1].number_input("Exit Price", min_value=0.0, value=0.0, step=0.01, key=f"exit_price_{selected_trade.id}")
+                    exit_date = exit_cols[2].date_input("Exit Date", key=f"exit_date_{selected_trade.id}")
+                    exit_reason = st.selectbox("Exit Reason", ["Target Hit", "Stop Hit", "Thesis Invalidated", "Momentum Faded", "Risk Reduction", "Earnings / Catalyst Risk", "Manual Exit", "Other"], key=f"exit_reason_{selected_trade.id}")
+                    exit_notes = st.text_area("Exit Notes", key=f"exit_notes_{selected_trade.id}")
+                    if st.button("Record Exit", type="primary", use_container_width=True, key=f"record_exit_{selected_trade.id}"):
+                        try:
+                            add_exit(selected_trade.id, exit_shares, exit_price, exit_reason, exit_notes, f"{exit_date.isoformat()}T00:00:00+00:00")
+                            st.success("Exit recorded. The trade was closed if all remaining shares were exited.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
+
+                st.divider()
+                if st.button("Delete Trade Permanently", key=f"delete_trade_{selected_trade.id}"):
+                    delete_trade(selected_trade.id)
+                    st.success("Trade deleted.")
+                    st.rerun()
+
+    with closed_tab:
+        st.subheader("Closed Trades & Post-Trade Review")
+        if not journal_closed:
+            st.info("Closed trades will appear here after the final exit is recorded.")
+        else:
+            closed_rows = [trade_summary(trade) for trade in journal_closed]
+            st.dataframe(pd.DataFrame(closed_rows), use_container_width=True, hide_index=True)
+            closed_id = st.selectbox(
+                "Review Trade",
+                [trade.id for trade in journal_closed],
+                format_func=lambda value: next(f"{trade.symbol} · {trade.entry_price:.2f}" for trade in journal_closed if trade.id == value),
+                key="journal_closed_trade",
+            )
+            closed_trade = get_trade(closed_id)
+            if closed_trade:
+                review_1, review_2 = st.columns(2)
+                followed = review_1.selectbox("Did you follow the planned exit?", ["Not Reviewed", "Yes", "Mostly", "No"], index=["Not Reviewed", "Yes", "Mostly", "No"].index(closed_trade.planned_exit_followed if closed_trade.planned_exit_followed in ["Not Reviewed", "Yes", "Mostly", "No"] else "Not Reviewed"), key=f"review_followed_{closed_trade.id}")
+                rule_score = review_2.slider("Plan / Rule Following Score", 0, 100, int(closed_trade.rule_following_score or 0), key=f"review_score_{closed_trade.id}")
+                strengths = st.text_area("What Went Right / Biggest Strength", value=closed_trade.strengths, key=f"review_strengths_{closed_trade.id}")
+                mistakes = st.text_area("What Went Wrong / Biggest Mistake", value=closed_trade.mistakes, key=f"review_mistakes_{closed_trade.id}")
+                lessons = st.text_area("Lessons Learned", value=closed_trade.lessons, key=f"review_lessons_{closed_trade.id}")
+                ai_review = st.text_area("AI Coaching / Post-Trade Review", value=closed_trade.ai_review, help="This field stores the AI review when one is generated or pasted. Automated coaching is expanded in the Learning phase.", key=f"review_ai_{closed_trade.id}")
+                if st.button("Save Post-Trade Review", type="primary", use_container_width=True, key=f"save_review_{closed_trade.id}"):
+                    update_trade(closed_trade.id, planned_exit_followed=followed, rule_following_score=rule_score, strengths=strengths, mistakes=mistakes, lessons=lessons, ai_review=ai_review)
+                    st.success("Post-trade review saved.")
+                    st.rerun()
+                if st.button("Reopen Trade", key=f"reopen_{closed_trade.id}"):
+                    reopen_trade(closed_trade.id)
+                    st.success("Trade reopened.")
+                    st.rerun()
 
 
 # -----------------------------
