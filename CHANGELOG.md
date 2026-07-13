@@ -267,3 +267,16 @@
 - Trade Planner now uses the saved account-size and risk-per-trade defaults.
 - Performance Analytics now uses the saved default source filter.
 - Preserved all v0.1-v0.9 functionality and persistent trading data.
+
+## v0.94 — Learning Engine
+- Added personalized edge detection from the reconciled Journal and Webull trade history.
+- Added evidence labels: Insufficient Data, Early Signal, Moderate Evidence and Strong Evidence.
+- Added strengths and weaknesses by setup, grade, market regime, sector, price range, hold duration, score bands and source.
+- Added Independent AI Confidence, Momo Score and Opportunity Score calibration against actual outcomes.
+- Added recurring mistake and behavior detection using post-trade review fields.
+- Added weekly and monthly coaching summaries with a single next-improvement priority.
+- Added persistent learning snapshots and human-approved strategy rules.
+- Prevented silent self-modification: learning recommendations never rewrite scanner, risk or AI settings without explicit approval.
+- Expanded pattern recognition to pennants, descending and symmetrical triangles, rising and falling wedges, VCP and cup-and-handle candidates.
+- Added exact EMA21 reclaim freshness when detectable.
+- Preserved one source of truth by deriving learning directly from existing TradeRecord and Performance Analytics data.
