@@ -30,6 +30,12 @@ from fda_intelligence import get_fda_enforcement
 from smart_money import get_smart_money_intelligence
 from news_ai import analyze_news
 from trade_intelligence import get_trade_intelligence
+from dashboard_engine import (
+    UNIVERSE_OPTIONS, filter_scan_universe, load_open_trades,
+    market_index_rows, rank_scanner_candidates, recent_ai_recommendations,
+    sector_rows, unread_watchlist_alerts,
+)
+from dashboard_brief import build_today_trading_plan
 
 from watchlist_manager import (
     add_symbols, create_watchlist, delete_watchlist, get_symbols,
@@ -257,6 +263,12 @@ if "global_ai_history" not in st.session_state:
 if "global_ai_last_meta" not in st.session_state:
     st.session_state.global_ai_last_meta = {}
 
+if "dashboard_universe" not in st.session_state:
+    st.session_state.dashboard_universe = "Entire Market"
+
+if "dashboard_headlines" not in st.session_state:
+    st.session_state.dashboard_headlines = []
+
 
 tabs = st.tabs(
     [
@@ -275,110 +287,200 @@ tabs = st.tabs(
 
 
 # -----------------------------
-# Dashboard
+# Dashboard — Morning Command Center
 # -----------------------------
 with tabs[0]:
-    st.header("Dashboard")
+    st.header("Morning Command Center")
+    st.caption("Market health, leadership, opportunities, alerts, open trades, and today’s plan in one place.")
 
-    if st.button(
-        "Test Alpaca Connection",
-        key="test_alpaca",
-    ):
-        (
-            success,
-            status,
-            buying_power,
-        ) = test_alpaca_connection()
+    control_left, control_mid, control_right = st.columns([2, 1, 1])
+    with control_left:
+        dashboard_universe = st.selectbox(
+            "Universe",
+            UNIVERSE_OPTIONS,
+            index=UNIVERSE_OPTIONS.index(st.session_state.dashboard_universe),
+            key="dashboard_universe_selector",
+        )
+        st.session_state.dashboard_universe = dashboard_universe
+    with control_mid:
+        refresh_market = st.button("Refresh Market", use_container_width=True, key="dashboard_refresh_market")
+    with control_right:
+        refresh_news = st.button("Refresh News", use_container_width=True, key="dashboard_refresh_news")
 
-        if success:
-            st.success(
-                "✅ Alpaca connected "
-                "successfully!"
-            )
+    if refresh_market:
+        with st.spinner("Refreshing the market command center..."):
+            try:
+                st.session_state.market_context = get_market_context(
+                    st.secrets["ALPACA_API_KEY"],
+                    st.secrets["ALPACA_SECRET_KEY"],
+                )
+                st.success("Market Context refreshed.")
+            except Exception as error:
+                st.error(f"Market Context refresh failed: {error}")
 
-            st.write(
-                f"Account status: {status}"
-            )
+    if refresh_news:
+        load_market_news.clear()
+        try:
+            st.session_state.dashboard_headlines = rank_news(load_market_news())
+            st.success("Market headlines refreshed.")
+        except Exception as error:
+            st.warning(f"Market headlines are temporarily unavailable: {error}")
 
-            st.write(
-                f"Buying power: "
-                f"${buying_power}"
-            )
-
-        else:
-            st.error(
-                "❌ Alpaca connection failed."
-            )
-
-            st.write(status)
-
-
-    st.divider()
-    st.subheader("Market Snapshot")
     dashboard_market = st.session_state.market_context
-    if dashboard_market:
-        snap = st.columns(6)
-        snap[0].metric("Market Score", dashboard_market.get("market_score", "—"))
-        snap[1].metric("Trend", dashboard_market.get("market_trend", "—"))
-        snap[2].metric("Risk Environment", dashboard_market.get("risk_environment", "—"))
-        dash_breadth = dashboard_market.get("breadth", {})
-        snap[3].metric(
-            "Breadth",
-            dash_breadth.get("breadth_status", "—"),
-            (
-                f'{dash_breadth.get("breadth_score")}/100'
-                if dash_breadth.get("breadth_score") is not None
-                else None
-            ),
-        )
-        dash_sentiment = dashboard_market.get("sentiment", {})
-        snap[4].metric(
-            "Sentiment",
-            dash_sentiment.get("fear_greed_label", "—"),
-            (
-                f'{dash_sentiment.get("fear_greed_score")}/100'
-                if dash_sentiment.get("fear_greed_score") is not None
-                else None
-            ),
-        )
-        dash_sectors = dashboard_market.get("sectors", {})
-        top_sector = (dash_sectors.get("leaders") or [{}])[0]
-        snap[5].metric(
-            "Top Sector",
-            top_sector.get("sector", "—"),
-            (
-                f'{top_sector.get("score")}/100'
-                if top_sector.get("score") is not None
-                else None
-            ),
-        )
-        st.caption(dashboard_market.get("summary", ""))
-        rotation = dashboard_market.get("sectors", {}).get("rotation_regime")
-        sentiment_warning = dashboard_market.get("sentiment", {}).get("warning")
-        if rotation:
-            st.write(f"**Sector rotation:** {rotation}")
-        if sentiment_warning:
-            st.warning(sentiment_warning)
-    else:
-        st.caption("Open Market Context and refresh it to populate today’s snapshot.")
+    if not st.session_state.dashboard_headlines:
+        try:
+            st.session_state.dashboard_headlines = rank_news(load_market_news())
+        except Exception:
+            st.session_state.dashboard_headlines = []
+    dashboard_news = st.session_state.dashboard_headlines[:10]
 
+    filtered_scan, universe_note = filter_scan_universe(
+        st.session_state.scan_results,
+        dashboard_universe,
+        st.session_state.get("active_watchlist"),
+    )
+    candidates = rank_scanner_candidates(filtered_scan, limit=10)
+    alerts = unread_watchlist_alerts(limit=10)
+    open_trades = load_open_trades(limit=10)
+    ai_recommendations = recent_ai_recommendations(st.session_state.ai_research_reports, limit=8)
+
+    market_score = dashboard_market.get("market_score") if dashboard_market else None
+    market_trend = dashboard_market.get("market_trend", "—") if dashboard_market else "—"
+    risk_environment = dashboard_market.get("risk_environment", "—") if dashboard_market else "—"
+    breadth = (dashboard_market or {}).get("breadth", {})
+    sentiment = (dashboard_market or {}).get("sentiment", {})
+    sectors = (dashboard_market or {}).get("sectors", {})
+    leaders = sectors.get("leaders") or []
+    top_sector = leaders[0] if leaders else {}
+
+    metrics = st.columns(7)
+    metrics[0].metric("Market Health", market_score if market_score is not None else "—")
+    metrics[1].metric("Market Trend", market_trend)
+    metrics[2].metric("Risk", risk_environment)
+    metrics[3].metric("Breadth", breadth.get("breadth_status", "—"), f"{breadth.get('breadth_score')}/100" if breadth.get("breadth_score") is not None else None)
+    metrics[4].metric("Fear & Greed", sentiment.get("fear_greed_label", "—"), f"{sentiment.get('fear_greed_score')}/100" if sentiment.get("fear_greed_score") is not None else None)
+    metrics[5].metric("Top Sector", top_sector.get("sector", "—"), f"{top_sector.get('score')}/100" if top_sector.get("score") is not None else None)
+    metrics[6].metric("Unread Alerts", len(alerts))
+
+    plan = build_today_trading_plan(
+        market_context=dashboard_market,
+        candidates=candidates,
+        alert_count=len(alerts),
+        open_trade_count=len(open_trades),
+        headline_count=len(dashboard_news),
+    )
+    st.subheader("Today’s Trading Plan")
+    st.info(f"**{plan['headline']}**\n\n{plan['plan']}")
+    st.caption(f"Suggested risk posture: {plan['risk_posture']}")
 
     st.divider()
-    st.subheader("Top Market Headlines")
-    try:
-        dashboard_news = rank_news(load_market_news())[:5]
+    st.subheader("Market Health & Index Leadership")
+    index_rows = market_index_rows(dashboard_market)
+    if index_rows:
+        st.dataframe(pd.DataFrame(index_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Refresh Market Context to populate SPY, QQQ, IWM, DIA, and volatility-proxy intelligence.")
+
+    breadth_col, sector_col = st.columns(2)
+    with breadth_col:
+        st.markdown("#### Breadth & Sentiment")
+        if dashboard_market:
+            breadth_metrics = st.columns(3)
+            breadth_metrics[0].metric("Above EMA21", percent_text(breadth.get("above_ema21_pct")))
+            breadth_metrics[1].metric("Above EMA50", percent_text(breadth.get("above_ema50_pct")))
+            breadth_metrics[2].metric("Above EMA200", percent_text(breadth.get("above_ema200_pct")))
+            st.write(breadth.get("summary", "Breadth summary unavailable."))
+            st.write(f"**Risk appetite:** {sentiment.get('risk_appetite', '—')}")
+            if sentiment.get("warning"):
+                st.warning(sentiment.get("warning"))
+        else:
+            st.caption("Market breadth is not loaded.")
+    with sector_col:
+        st.markdown("#### Sector Leaders & Laggards")
+        sector_leaders, sector_laggards = sector_rows(dashboard_market)
+        if sector_leaders or sector_laggards:
+            sector_table = []
+            for item in sector_leaders:
+                sector_table.append({"Group": "Leader", "Sector": item.get("sector"), "Score": item.get("score"), "Trend": item.get("trend"), "Rotation": item.get("rotation")})
+            for item in sector_laggards:
+                sector_table.append({"Group": "Laggard", "Sector": item.get("sector"), "Score": item.get("score"), "Trend": item.get("trend"), "Rotation": item.get("rotation")})
+            st.dataframe(pd.DataFrame(sector_table), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sector leadership is not loaded.")
+
+    st.divider()
+    left, right = st.columns([1.25, 1])
+    with left:
+        st.subheader(f"Top Scanner Candidates — {dashboard_universe}")
+        if universe_note:
+            st.caption(universe_note)
+        if candidates:
+            candidate_df = pd.DataFrame(candidates)
+            st.dataframe(candidate_df, use_container_width=True, hide_index=True)
+            selected_dashboard_symbol = st.selectbox(
+                "Load candidate into Stock Report",
+                [item["Symbol"] for item in candidates],
+                key="dashboard_candidate_selector",
+            )
+            if st.button("Open Selected Candidate", key="dashboard_open_candidate"):
+                st.session_state.selected_symbol = selected_dashboard_symbol
+                st.success(f"{selected_dashboard_symbol} is loaded. Open the Scanner tab to view its Stock Report.")
+        else:
+            st.caption("No candidates match this universe yet.")
+
+    with right:
+        st.subheader("Watchlist Alerts")
+        if alerts:
+            for event in alerts[:6]:
+                symbol = event.get("symbol", "—")
+                message = event.get("message") or event.get("reason") or event.get("rule_name") or "Alert triggered"
+                st.markdown(f"**{symbol}** — {message}")
+                st.caption(event.get("triggered_at") or event.get("created_at") or "")
+        else:
+            st.caption("No unread watchlist alerts.")
+
+        st.markdown("#### Open Trades")
+        if open_trades:
+            st.dataframe(pd.DataFrame(open_trades), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Open trades will appear automatically after Journal & Open Trades persistence is added.")
+
+    st.divider()
+    news_col, ai_col = st.columns(2)
+    with news_col:
+        st.subheader("Macro & Breaking Market News")
         if dashboard_news:
-            for item in dashboard_news:
-                label = f'{item.get("impact", "—")} impact · {item.get("sentiment", "Neutral")}'
+            for item in dashboard_news[:7]:
+                headline = item.get("headline", "Untitled headline")
                 if item.get("url"):
-                    st.markdown(f'**[{item.get("headline")}]({item.get("url")})**')
+                    st.markdown(f"**[{headline}]({item.get('url')})**")
                 else:
-                    st.markdown(f'**{item.get("headline")}**')
-                st.caption(label)
+                    st.markdown(f"**{headline}**")
+                st.caption(f"{item.get('category', 'Market')} · {item.get('impact', '—')} impact · {item.get('sentiment', 'Neutral')}")
         else:
             st.caption("No recent market headlines were returned.")
-    except Exception as error:
-        st.caption(f"Market headlines are temporarily unavailable: {error}")
+    with ai_col:
+        st.subheader("Recent Independent AI Recommendations")
+        if ai_recommendations:
+            st.dataframe(pd.DataFrame(ai_recommendations).drop(columns=["Summary"], errors="ignore"), use_container_width=True, hide_index=True)
+            with st.expander("Latest AI summaries"):
+                for item in ai_recommendations[:5]:
+                    st.markdown(f"**{item['Symbol']} — {item['Action']} ({item.get('AI Confidence', '—')}%)**")
+                    st.write(item.get("Summary") or "No executive summary stored.")
+        else:
+            st.caption("Independent AI recommendations will appear after Full Independent AI Research is generated.")
+
+    st.divider()
+    with st.expander("Connection Test"):
+        if st.button("Test Alpaca Connection", key="test_alpaca"):
+            success, status, buying_power = test_alpaca_connection()
+            if success:
+                st.success("Alpaca connected successfully.")
+                st.write(f"Account status: {status}")
+                st.write(f"Buying power: ${buying_power}")
+            else:
+                st.error("Alpaca connection failed.")
+                st.write(status)
 
 
 # -----------------------------
