@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from trade_models import TradeExit, TradeRecord, TradeUpdate, utc_now
-from trade_storage import load_trades, save_trades
+from broker_import import build_import
+from broker_reconciliation import reconcile_executions, unmatched_executions
+from trade_storage import (
+    load_broker_executions, load_broker_imports, load_trades, save_broker_state, save_trades,
+)
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -186,4 +190,37 @@ def trade_summary(trade: TradeRecord, current_price: float | None = None) -> dic
         "AI Confidence": trade.ai_confidence,
         "Momo Score": trade.momo_score,
         "Days Held": days_held(trade),
+    }
+
+
+def import_webull_history(data: bytes, filename: str) -> dict[str, Any]:
+    trades = load_trades()
+    executions = load_broker_executions()
+    imports = load_broker_imports()
+    fingerprints = {item.fingerprint for item in executions if item.fingerprint}
+    import_record, new_executions = build_import(data, filename, fingerprints)
+    executions.extend(new_executions)
+    trades, executions, reconciliation = reconcile_executions(trades, executions)
+    imports.insert(0, import_record)
+    save_broker_state(trades, executions, imports)
+    return {
+        "import": import_record.to_dict(),
+        "reconciliation": reconciliation,
+        "unmatched": [item.to_dict() for item in unmatched_executions(executions)],
+    }
+
+
+def broker_import_status() -> dict[str, Any]:
+    executions = load_broker_executions()
+    imports = load_broker_imports()
+    unmatched = unmatched_executions(executions)
+    return {
+        "connected": bool(imports),
+        "broker": "Webull",
+        "executions": len(executions),
+        "imports": len(imports),
+        "last_import": imports[0].imported_at if imports else None,
+        "last_file": imports[0].source_file if imports else None,
+        "unmatched": len(unmatched),
+        "duplicates_skipped": sum(item.duplicates_skipped for item in imports),
     }
