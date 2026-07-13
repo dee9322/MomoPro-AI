@@ -56,6 +56,12 @@ from trade_journal import (
 from broker_import import preview_webull_csv
 from trade_storage import load_broker_executions, load_broker_imports
 from trade_storage import load_trades, save_attachment
+from performance_engine import (
+    SOURCE_OPTIONS, calculate_summary, data_quality_report, decision_accuracy, equity_curve,
+    filter_performance_frame, group_performance, monthly_performance, review_metrics,
+    trade_timeline, trades_to_frame,
+)
+from performance_insights import build_performance_insights
 
 
 st.set_page_config(
@@ -3685,14 +3691,321 @@ with tabs[7]:
 
 
 # -----------------------------
-# Performance
+# Performance Analytics
 # -----------------------------
 with tabs[8]:
-    st.header("Performance")
-
-    st.write(
-        "Your stats will appear here."
+    st.header("Performance Analytics")
+    st.caption(
+        "Analyze completed journal trades and historical Webull executions from one reconciled performance record."
     )
+
+    performance_trades = load_trades()
+    performance_executions = load_broker_executions()
+    performance_imports = load_broker_imports()
+    performance_frame_all = trades_to_frame(performance_trades)
+
+    if performance_frame_all.empty:
+        st.info(
+            "No completed trades are available yet. Import Webull history in Journal → Broker Import & Reconcile, "
+            "or close a journal trade to unlock analytics."
+        )
+        quality = data_quality_report(performance_frame_all, performance_executions, performance_imports)
+        empty_cols = st.columns(4)
+        empty_cols[0].metric("Broker Executions", quality["broker_executions"])
+        empty_cols[1].metric("Matched Executions", quality["matched_executions"])
+        empty_cols[2].metric("Unmatched", quality["unmatched_executions"])
+        empty_cols[3].metric("Import Files", quality["imports"])
+    else:
+        st.markdown("### Performance Filters")
+        filter_cols = st.columns([1.3, 1.7, 1, 1])
+        with filter_cols[0]:
+            performance_source = st.selectbox(
+                "Trade source",
+                SOURCE_OPTIONS,
+                key="performance_source_filter",
+            )
+        available_symbols = sorted(performance_frame_all["symbol"].dropna().unique().tolist())
+        with filter_cols[1]:
+            performance_symbols = st.multiselect(
+                "Symbols",
+                available_symbols,
+                default=[],
+                placeholder="All symbols",
+                key="performance_symbol_filter",
+            )
+        exit_dates = performance_frame_all["exit_date"].dropna()
+        min_exit_date = exit_dates.min().date() if not exit_dates.empty else None
+        max_exit_date = exit_dates.max().date() if not exit_dates.empty else None
+        with filter_cols[2]:
+            performance_start = st.date_input(
+                "From",
+                value=min_exit_date,
+                min_value=min_exit_date,
+                max_value=max_exit_date,
+                key="performance_start_date",
+            ) if min_exit_date else None
+        with filter_cols[3]:
+            performance_end = st.date_input(
+                "Through",
+                value=max_exit_date,
+                min_value=min_exit_date,
+                max_value=max_exit_date,
+                key="performance_end_date",
+            ) if max_exit_date else None
+
+        performance_frame = filter_performance_frame(
+            performance_frame_all,
+            source=performance_source,
+            symbols=performance_symbols,
+            start_date=performance_start,
+            end_date=performance_end,
+        )
+        summary = calculate_summary(performance_frame)
+        review = review_metrics(performance_frame)
+        quality = data_quality_report(performance_frame, performance_executions, performance_imports)
+        insights = build_performance_insights(performance_frame, summary, review)
+
+        if performance_frame.empty:
+            st.warning("No completed trades match the selected filters.")
+        else:
+            st.markdown("### Performance Snapshot")
+            metric_row_1 = st.columns(6)
+            metric_row_1[0].metric("Net P/L", money_text(summary["net_pnl"]))
+            metric_row_1[1].metric("Win Rate", percent_text(summary["win_rate"]))
+            metric_row_1[2].metric("Completed Trades", summary["trades"])
+            metric_row_1[3].metric(
+                "Profit Factor",
+                f"{summary['profit_factor']:.2f}" if summary["profit_factor"] is not None else "—",
+            )
+            metric_row_1[4].metric("Expectancy", money_text(summary["expectancy"]))
+            metric_row_1[5].metric("Average R", r_text(summary["average_r"]))
+
+            metric_row_2 = st.columns(6)
+            metric_row_2[0].metric("Average Winner", money_text(summary["avg_winner"]))
+            metric_row_2[1].metric("Average Loser", money_text(summary["avg_loser"]))
+            metric_row_2[2].metric("Average Hold", f"{summary['average_hold_days']:.1f} days" if summary["average_hold_days"] is not None else "—")
+            metric_row_2[3].metric("Longest Win Streak", summary["longest_win_streak"])
+            metric_row_2[4].metric("Longest Loss Streak", summary["longest_loss_streak"])
+            metric_row_2[5].metric("Broker Fees", money_text(summary["fees"]))
+
+            best_worst = st.columns(2)
+            best_trade = summary.get("best_trade") or {}
+            worst_trade = summary.get("worst_trade") or {}
+            with best_worst[0]:
+                st.success(
+                    f"Best trade: {best_trade.get('symbol', '—')} · {money_text(best_trade.get('net_pnl'))}"
+                )
+            with best_worst[1]:
+                st.error(
+                    f"Worst trade: {worst_trade.get('symbol', '—')} · {money_text(worst_trade.get('net_pnl'))}"
+                )
+
+            st.markdown("### Performance Intelligence")
+            st.info(insights["headline"])
+            insight_cols = st.columns(3)
+            with insight_cols[0]:
+                st.markdown("**What is working**")
+                if insights.get("strengths"):
+                    for item in insights["strengths"]:
+                        st.write(f"• {item}")
+                else:
+                    st.caption("More labeled trades are needed to identify dependable strengths.")
+            with insight_cols[1]:
+                st.markdown("**Risks and weak spots**")
+                if insights.get("risks"):
+                    for item in insights["risks"]:
+                        st.write(f"• {item}")
+                else:
+                    st.caption("No major weakness is confirmed by the current sample.")
+            with insight_cols[2]:
+                st.markdown("**Next improvements**")
+                for item in insights.get("next_actions", []):
+                    st.write(f"• {item}")
+
+            chart_cols = st.columns(2)
+            with chart_cols[0]:
+                st.markdown("### Equity Curve")
+                curve = equity_curve(performance_frame)
+                if curve.empty:
+                    st.caption("Exit dates are required to draw the equity curve.")
+                else:
+                    st.line_chart(curve.set_index("Date")[["Cumulative P/L"]], use_container_width=True)
+            with chart_cols[1]:
+                st.markdown("### Monthly Net P/L")
+                monthly = monthly_performance(performance_frame)
+                if monthly.empty:
+                    st.caption("Monthly results will appear when dated exits are available.")
+                else:
+                    st.bar_chart(monthly.set_index("Month")[["Net P/L"]], use_container_width=True)
+
+            perf_tabs = st.tabs([
+                "Monthly",
+                "Strategy",
+                "Scores & AI",
+                "Market Conditions",
+                "Execution & Discipline",
+                "Trade History",
+                "Data Quality",
+            ])
+
+            with perf_tabs[0]:
+                monthly = monthly_performance(performance_frame)
+                if monthly.empty:
+                    st.info("No dated monthly performance is available.")
+                else:
+                    st.dataframe(monthly, use_container_width=True, hide_index=True)
+
+            with perf_tabs[1]:
+                strategy_cols = st.columns(3)
+                with strategy_cols[0]:
+                    st.markdown("#### By Setup")
+                    setup_table = group_performance(performance_frame, "setup", "Setup")
+                    st.dataframe(setup_table, use_container_width=True, hide_index=True) if not setup_table.empty else st.caption("No setup labels yet.")
+                with strategy_cols[1]:
+                    st.markdown("#### By Grade")
+                    grade_table = group_performance(performance_frame, "grade", "Grade")
+                    st.dataframe(grade_table, use_container_width=True, hide_index=True) if not grade_table.empty else st.caption("No grades yet.")
+                with strategy_cols[2]:
+                    st.markdown("#### By Hold Time")
+                    hold_table = group_performance(performance_frame, "hold_bucket", "Hold Time")
+                    st.dataframe(hold_table, use_container_width=True, hide_index=True)
+
+                secondary_strategy = st.columns(2)
+                with secondary_strategy[0]:
+                    st.markdown("#### By Price Range")
+                    st.dataframe(group_performance(performance_frame, "price_range", "Price Range"), use_container_width=True, hide_index=True)
+                with secondary_strategy[1]:
+                    st.markdown("#### By Trade Source")
+                    st.dataframe(group_performance(performance_frame, "source", "Source"), use_container_width=True, hide_index=True)
+
+            with perf_tabs[2]:
+                score_cols = st.columns(3)
+                with score_cols[0]:
+                    st.markdown("#### Momo Score")
+                    st.dataframe(group_performance(performance_frame, "momo_score_band", "Momo Score"), use_container_width=True, hide_index=True)
+                with score_cols[1]:
+                    st.markdown("#### Opportunity Score")
+                    st.dataframe(group_performance(performance_frame, "opportunity_band", "Opportunity Score"), use_container_width=True, hide_index=True)
+                with score_cols[2]:
+                    st.markdown("#### Independent AI Confidence")
+                    st.dataframe(group_performance(performance_frame, "ai_confidence_band", "AI Confidence"), use_container_width=True, hide_index=True)
+
+                ai_accuracy = decision_accuracy(
+                    performance_frame,
+                    "ai_action",
+                    {"buy", "bullish", "accumulate", "watch closely", "long"},
+                )
+                accuracy_cols = st.columns(3)
+                accuracy_cols[0].metric("AI Decision Coverage", percent_text(ai_accuracy["coverage"]))
+                accuracy_cols[1].metric("AI Direction Accuracy", percent_text(ai_accuracy["accuracy"]))
+                accuracy_cols[2].metric("AI-Labeled Sample", ai_accuracy["sample"])
+                st.caption(
+                    "Accuracy compares the saved Independent AI action at entry with the final profitable/loss outcome. "
+                    "It is descriptive and becomes more reliable as labeled sample size grows."
+                )
+
+            with perf_tabs[3]:
+                condition_cols = st.columns(2)
+                with condition_cols[0]:
+                    st.markdown("#### Market Regime")
+                    st.dataframe(group_performance(performance_frame, "market_regime", "Market Regime"), use_container_width=True, hide_index=True)
+                with condition_cols[1]:
+                    st.markdown("#### Sector")
+                    st.dataframe(group_performance(performance_frame, "sector", "Sector"), use_container_width=True, hide_index=True)
+
+            with perf_tabs[4]:
+                discipline_cols = st.columns(6)
+                discipline_cols[0].metric("Reviewed Trades", review.get("reviewed_trades", 0))
+                discipline_cols[1].metric("Plan Follow Rate", percent_text(review.get("planned_exit_follow_rate")))
+                discipline_cols[2].metric("Rule Score", f"{review.get('average_rule_score'):.1f}/100" if review.get("average_rule_score") is not None else "—")
+                discipline_cols[3].metric("Mistake Rate", percent_text(review.get("mistake_rate")))
+                discipline_cols[4].metric("T1 Hit Rate", percent_text(review.get("target_hit_rate")))
+                discipline_cols[5].metric("Stop Hit Rate", percent_text(review.get("stop_hit_rate")))
+
+                planned_table = group_performance(performance_frame, "planned_exit_followed", "Planned Exit Followed")
+                st.markdown("#### Planned vs. Actual Exit")
+                st.dataframe(planned_table, use_container_width=True, hide_index=True)
+
+                mistake_rows = performance_frame[performance_frame["mistakes"].astype(str).str.strip() != ""]
+                if not mistake_rows.empty:
+                    st.markdown("#### Documented Mistakes")
+                    st.dataframe(
+                        mistake_rows[["exit_date", "symbol", "net_pnl", "mistakes", "lessons"]].rename(columns={
+                            "exit_date": "Exit Date", "symbol": "Symbol", "net_pnl": "Net P/L",
+                            "mistakes": "Mistakes", "lessons": "Lessons",
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.caption("No post-trade mistakes have been documented yet.")
+
+            with perf_tabs[5]:
+                history_display = performance_frame[[
+                    "exit_date", "symbol", "source", "entry_price", "average_exit_price", "shares",
+                    "net_pnl", "realized_r", "outcome", "days_held", "setup", "grade",
+                ]].copy()
+                history_display = history_display.rename(columns={
+                    "exit_date": "Exit Date", "symbol": "Symbol", "source": "Source",
+                    "entry_price": "Entry", "average_exit_price": "Average Exit", "shares": "Shares",
+                    "net_pnl": "Net P/L", "realized_r": "R", "outcome": "Outcome",
+                    "days_held": "Days Held", "setup": "Setup", "grade": "Grade",
+                })
+                st.dataframe(history_display.sort_values("Exit Date", ascending=False), use_container_width=True, hide_index=True)
+
+                selected_history_id = st.selectbox(
+                    "Review trade timeline",
+                    performance_frame["trade_id"].tolist(),
+                    format_func=lambda trade_id: next(
+                        (
+                            f"{row['symbol']} · {row['exit_date'].date() if pd.notna(row['exit_date']) else 'Undated'} · {money_text(row['net_pnl'])}"
+                            for _, row in performance_frame.iterrows() if row["trade_id"] == trade_id
+                        ),
+                        trade_id,
+                    ),
+                    key="performance_timeline_trade",
+                )
+                selected_trade = next((trade for trade in performance_trades if trade.id == selected_history_id), None)
+                if selected_trade:
+                    timeline = trade_timeline(selected_trade)
+                    st.dataframe(timeline, use_container_width=True, hide_index=True)
+                    review_cols = st.columns(2)
+                    with review_cols[0]:
+                        st.markdown("**Original thesis**")
+                        st.write(selected_trade.thesis or "Not recorded.")
+                        st.markdown("**What went right**")
+                        st.write(selected_trade.strengths or "Not reviewed.")
+                    with review_cols[1]:
+                        st.markdown("**What went wrong**")
+                        st.write(selected_trade.mistakes or "Not reviewed.")
+                        st.markdown("**Lesson**")
+                        st.write(selected_trade.lessons or "Not reviewed.")
+
+            with perf_tabs[6]:
+                st.markdown("#### Webull Reconciliation")
+                quality_cols = st.columns(6)
+                quality_cols[0].metric("Closed Records", quality["closed_trade_records"])
+                quality_cols[1].metric("Broker Executions", quality["broker_executions"])
+                quality_cols[2].metric("Matched", quality["matched_executions"])
+                quality_cols[3].metric("Unmatched", quality["unmatched_executions"])
+                quality_cols[4].metric("Reconciliation", percent_text(quality["reconciliation_rate"]))
+                quality_cols[5].metric("Import Files", quality["imports"])
+
+                coverage_frame = pd.DataFrame([
+                    {"Metric": "Trades with R-multiple", "Coverage": quality["trades_with_r"], "Total": len(performance_frame)},
+                    {"Metric": "Trades with AI Confidence", "Coverage": quality["trades_with_ai"], "Total": len(performance_frame)},
+                    {"Metric": "Trades with setup labels", "Coverage": quality["trades_with_setup"], "Total": len(performance_frame)},
+                    {"Metric": "Trades with post-trade review", "Coverage": quality["trades_reviewed"], "Total": len(performance_frame)},
+                ])
+                coverage_frame["Coverage %"] = (
+                    coverage_frame["Coverage"] / coverage_frame["Total"].replace(0, pd.NA) * 100
+                ).round(2)
+                st.dataframe(coverage_frame, use_container_width=True, hide_index=True)
+
+                st.markdown("#### Measurement Availability")
+                st.write("• Scanner-to-trade conversion requires persistent historical scan snapshots, scheduled for the Learning/Data phases.")
+                st.write("• Momo Engine directional accuracy requires saving the engine decision with each trade at entry; future trades will provide this coverage.")
+                st.write("• Imported Webull history can calculate broker results immediately, but setup, AI, thesis, and rule analytics only exist where those fields were recorded.")
 
 
 # -----------------------------
