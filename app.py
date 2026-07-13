@@ -62,6 +62,12 @@ from performance_engine import (
     trade_timeline, trades_to_frame,
 )
 from performance_insights import build_performance_insights
+from learning_engine import build_learning_report, evidence_level
+from learning_insights import build_coaching
+from learning_storage import (
+    add_approved_rule, delete_rule as delete_learning_rule, load_learning_data,
+    save_snapshot as save_learning_snapshot, set_rule_enabled as set_learning_rule_enabled,
+)
 from settings_engine import (
     get_setting, get_settings, reset_settings, save_settings, settings_summary, update_section,
 )
@@ -305,6 +311,7 @@ tabs = st.tabs(
         "Trade Planner",
         "Journal",
         "Performance",
+        "Learning",
         "Settings",
     ]
 )
@@ -4020,10 +4027,267 @@ with tabs[8]:
                 st.write("• Imported Webull history can calculate broker results immediately, but setup, AI, thesis, and rule analytics only exist where those fields were recorded.")
 
 
+
+# -----------------------------
+# Learning Engine
+# -----------------------------
+with tabs[9]:
+    st.header("Learning Engine")
+    st.caption(
+        "Personalized edge detection, confidence calibration, mistake learning, and coaching from the same reconciled Journal and Webull history used by Performance Analytics."
+    )
+
+    learning_trades = load_trades()
+    learning_frame_all = trades_to_frame(learning_trades)
+
+    if learning_frame_all.empty:
+        st.info(
+            "No completed trades are available yet. Import Webull history or close Journal trades, then return here. "
+            "MomoPro will not manufacture conclusions without recorded outcomes."
+        )
+    else:
+        control_a, control_b, control_c = st.columns([1.4, 1.4, 1])
+        learning_source = control_a.selectbox(
+            "Learning source",
+            SOURCE_OPTIONS,
+            index=0,
+            key="learning_source_filter",
+        )
+        learning_symbols = control_b.multiselect(
+            "Symbols",
+            sorted(learning_frame_all["symbol"].dropna().unique().tolist()),
+            key="learning_symbol_filter",
+        )
+        minimum_samples = control_c.number_input(
+            "Minimum samples / group",
+            min_value=1,
+            max_value=100,
+            value=2,
+            step=1,
+            help="Small groups are still labeled honestly as insufficient data or early signals.",
+            key="learning_min_samples",
+        )
+
+        learning_frame = filter_performance_frame(
+            learning_frame_all,
+            source=learning_source,
+            symbols=learning_symbols,
+        )
+        report = build_learning_report(learning_frame, int(minimum_samples))
+        coaching = build_coaching(report)
+
+        sample = int(report["sample_size"])
+        evidence = report["evidence"]
+        weekly = report["weekly"]
+        monthly = report["monthly"]
+        metric_cols = st.columns(6)
+        metric_cols[0].metric("Completed Trades", sample)
+        metric_cols[1].metric("Evidence", evidence)
+        metric_cols[2].metric("Weekly P/L", money_text(weekly["net_pnl"]))
+        metric_cols[3].metric("Weekly Trades", weekly["trades"])
+        metric_cols[4].metric("Monthly P/L", money_text(monthly["net_pnl"]))
+        metric_cols[5].metric("Monthly Trades", monthly["trades"])
+
+        if evidence == "Insufficient data":
+            st.warning(coaching["disclaimer"])
+        elif evidence == "Early signal":
+            st.info(coaching["disclaimer"])
+        else:
+            st.success(coaching["disclaimer"])
+
+        learning_tabs = st.tabs([
+            "Edge Map", "Weaknesses & Mistakes", "Confidence Calibration",
+            "Weekly / Monthly Coach", "Pattern Learning", "Strategy Rules", "Learning History",
+        ])
+
+        with learning_tabs[0]:
+            st.markdown("#### Strongest Personalized Edges")
+            edges = report["edges"]
+            if edges.empty:
+                st.info("No grouped edge has enough recorded samples yet.")
+            else:
+                st.dataframe(
+                    edges[["Dimension", "Group", "Trades", "Win Rate %", "Net P/L", "Expectancy", "Average R", "Average Hold Days", "Evidence"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            st.markdown("#### Coaching: What Is Working")
+            if coaching["strengths"]:
+                for item in coaching["strengths"]:
+                    st.write(f"• {item}")
+            else:
+                st.caption("No reliable strength has emerged yet. Keep recording complete trade context.")
+
+            st.markdown("#### Detailed Edge Tables")
+            for name, table in report["tables"].items():
+                with st.expander(name, expanded=name in {"Setups", "Market Regimes"}):
+                    if table.empty:
+                        st.caption("Not enough labeled trades for this dimension.")
+                    else:
+                        st.dataframe(table, use_container_width=True, hide_index=True)
+
+        with learning_tabs[1]:
+            st.markdown("#### Weak Areas")
+            weaknesses = report["weaknesses"]
+            if weaknesses.empty:
+                st.info("No repeated weak area has enough evidence yet.")
+            else:
+                st.dataframe(
+                    weaknesses[["Dimension", "Group", "Trades", "Win Rate %", "Net P/L", "Expectancy", "Average R", "Evidence"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.markdown("#### Recorded Mistakes")
+            mistakes = report["mistakes"]
+            if mistakes.empty:
+                st.caption("No structured mistakes have been recorded in post-trade reviews yet.")
+            else:
+                st.dataframe(mistakes, use_container_width=True, hide_index=True)
+
+            st.markdown("#### Behavioral Signals")
+            signals = report["behavior"].get("signals", [])
+            if not signals:
+                st.caption("No repeated behavioral signal has enough recorded context yet.")
+            else:
+                for signal in signals:
+                    if signal.get("type") == "Strength":
+                        st.success(f"{signal.get('name')}: {signal.get('detail')}")
+                    elif signal.get("type") == "Risk":
+                        st.warning(f"{signal.get('name')}: {signal.get('detail')}")
+                    else:
+                        st.info(f"{signal.get('name')}: {signal.get('detail')}")
+
+        with learning_tabs[2]:
+            st.markdown("#### Independent AI Confidence Calibration")
+            ai_calibration = report["ai_calibration"]
+            st.dataframe(ai_calibration, use_container_width=True, hide_index=True) if not ai_calibration.empty else st.caption("AI Confidence was not saved on enough completed trades.")
+            st.markdown("#### Momo Score Calibration")
+            momo_calibration = report["momo_calibration"]
+            st.dataframe(momo_calibration, use_container_width=True, hide_index=True) if not momo_calibration.empty else st.caption("Momo Score coverage is not sufficient.")
+            st.markdown("#### Opportunity Score Calibration")
+            opportunity_calibration = report["opportunity_calibration"]
+            st.dataframe(opportunity_calibration, use_container_width=True, hide_index=True) if not opportunity_calibration.empty else st.caption("Opportunity Score coverage is not sufficient.")
+            st.caption(
+                "Calibration compares recorded score bands with actual outcomes. It does not change scanner or AI thresholds automatically. "
+                "Any strategy rule must be reviewed and approved below."
+            )
+
+        with learning_tabs[3]:
+            review_cols = st.columns(2)
+            with review_cols[0]:
+                st.markdown("#### Weekly Review")
+                st.metric("Trades", weekly["trades"])
+                st.metric("Net P/L", money_text(weekly["net_pnl"]))
+                st.metric("Win Rate", percent_text(weekly["win_rate"]))
+                st.metric("Average R", r_text(weekly["average_r"]))
+                st.caption(f"Evidence: {weekly['evidence']}")
+            with review_cols[1]:
+                st.markdown("#### Monthly Review")
+                st.metric("Trades", monthly["trades"])
+                st.metric("Net P/L", money_text(monthly["net_pnl"]))
+                st.metric("Win Rate", percent_text(monthly["win_rate"]))
+                st.metric("Average R", r_text(monthly["average_r"]))
+                st.caption(f"Evidence: {monthly['evidence']}")
+
+            st.markdown("#### Next Improvement Priority")
+            for item in coaching["priorities"]:
+                st.info(item)
+            st.markdown("#### Current Risks")
+            if coaching["risks"]:
+                for item in coaching["risks"]:
+                    st.write(f"• {item}")
+            else:
+                st.caption("No repeated risk has enough evidence yet.")
+
+            if st.button("Save Current Learning Snapshot", use_container_width=True, key="save_learning_snapshot"):
+                top_edge = None if report["edges"].empty else report["edges"].iloc[0].to_dict()
+                top_weakness = None if report["weaknesses"].empty else report["weaknesses"].iloc[0].to_dict()
+                save_learning_snapshot({
+                    "source": learning_source,
+                    "symbols": learning_symbols,
+                    "sample_size": sample,
+                    "evidence": evidence,
+                    "weekly": weekly,
+                    "monthly": monthly,
+                    "top_edge": top_edge,
+                    "top_weakness": top_weakness,
+                    "priorities": coaching["priorities"],
+                })
+                st.success("Learning snapshot saved.")
+
+        with learning_tabs[4]:
+            st.markdown("#### Expanded Pattern Library")
+            st.write(
+                "The Trading Intelligence pattern engine now recognizes EMA21 reclaims/retests, higher-low continuations, bull flags, "
+                "pennants, ascending/descending/symmetrical triangles, rising/falling wedges, volatility contractions, breakouts, cups and cup-and-handle candidates."
+            )
+            st.markdown("#### Personalized Pattern Outcomes")
+            setup_table = report["tables"].get("Setups")
+            if setup_table is None or setup_table.empty:
+                st.info("Historical Webull trades may not have setup labels. Future MomoPro-planned trades will build pattern probabilities automatically.")
+            else:
+                st.dataframe(setup_table, use_container_width=True, hide_index=True)
+            st.caption(
+                "Pattern probabilities come only from completed trades whose setup was recorded. The engine labels sample strength and never treats a small sample as a proven edge."
+            )
+
+        with learning_tabs[5]:
+            st.markdown("#### Human-Approved Strategy Rules")
+            st.warning(
+                "The Learning Engine does not silently rewrite your scanner, risk, or AI settings. It proposes evidence; you decide which rules become part of your process."
+            )
+            with st.form("new_learning_rule_form"):
+                proposed_rule = st.text_input("Rule", placeholder="Example: Avoid entries more than 6% above EMA21")
+                proposed_rationale = st.text_area("Evidence / rationale")
+                if st.form_submit_button("Add Approved Rule", use_container_width=True):
+                    try:
+                        add_approved_rule(proposed_rule, proposed_rationale)
+                        st.success("Strategy rule saved.")
+                        st.rerun()
+                    except ValueError as error:
+                        st.error(str(error))
+
+            learning_data = load_learning_data()
+            rules = learning_data.get("approved_rules", [])
+            if not rules:
+                st.caption("No personalized rules have been approved yet.")
+            for rule in rules:
+                cols = st.columns([0.8, 5, 1])
+                enabled = cols[0].checkbox("On", value=bool(rule.get("enabled", True)), key=f"learning_rule_enabled_{rule.get('id')}")
+                if enabled != bool(rule.get("enabled", True)):
+                    set_learning_rule_enabled(rule.get("id"), enabled)
+                    st.rerun()
+                cols[1].markdown(f"**{rule.get('rule')}**  \n{rule.get('rationale') or 'No rationale recorded.'}")
+                if cols[2].button("Delete", key=f"delete_learning_rule_{rule.get('id')}"):
+                    delete_learning_rule(rule.get("id"))
+                    st.rerun()
+
+        with learning_tabs[6]:
+            learning_data = load_learning_data()
+            snapshots = list(reversed(learning_data.get("snapshots", [])))
+            if not snapshots:
+                st.info("Save a weekly or monthly learning snapshot to build a history of how your edge changes over time.")
+            else:
+                rows = []
+                for snapshot in snapshots:
+                    rows.append({
+                        "Saved": snapshot.get("created_at"),
+                        "Source": snapshot.get("source"),
+                        "Trades": snapshot.get("sample_size"),
+                        "Evidence": snapshot.get("evidence"),
+                        "Weekly P/L": (snapshot.get("weekly") or {}).get("net_pnl"),
+                        "Monthly P/L": (snapshot.get("monthly") or {}).get("net_pnl"),
+                        "Top Edge": (snapshot.get("top_edge") or {}).get("Group"),
+                        "Top Weakness": (snapshot.get("top_weakness") or {}).get("Group"),
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 # -----------------------------
 # Settings & Personalization
 # -----------------------------
-with tabs[9]:
+with tabs[10]:
     st.header("Settings & Personalization")
     st.caption(
         "One persistent profile for strategy, risk, scanner, AI, dashboard, journal, performance, alerts, and integrations."
