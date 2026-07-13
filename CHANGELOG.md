@@ -252,3 +252,18 @@
 - Added Webull reconciliation and analytics-data coverage reporting.
 - Added rule-based Performance Intelligence that surfaces strengths, risks and next improvements without inventing unavailable metadata.
 - Preserved one source of truth by reading the existing Journal and reconciled broker records directly.
+
+## v0.92 — Settings & Personalization
+- Replaced the Settings placeholder with a complete persistent personalization workstation.
+- Added centralized settings models, validation, atomic JSON storage, section updates, backup, restore and reset.
+- Added strategy profile, preferred setups, sectors and universes.
+- Added risk defaults for account size, risk per trade, position limits, loss limits, minimum risk/reward, stops and partial profits.
+- Added scanner preferences for price, liquidity, RVOL, ATR, EMA21 extension, Momo Score, grade, universe and exclusions.
+- Added indicator preferences for EMA, RSI, MACD, ATR, RVOL and timeframes.
+- Added AI behavior controls, evidence weights, response depth, thesis challenge and confidence thresholds.
+- Added Dashboard widget and default-universe preferences.
+- Added Journal, Performance, Alert, cache and integration preferences.
+- Added data-provider/configuration status for Alpaca, OpenAI, Webull CSV, future Webull OpenAPI and TradingView.
+- Trade Planner now uses the saved account-size and risk-per-trade defaults.
+- Performance Analytics now uses the saved default source filter.
+- Preserved all v0.1-v0.9 functionality and persistent trading data.
