@@ -31,7 +31,7 @@ from smart_money import get_smart_money_intelligence
 from news_ai import analyze_news
 from trade_intelligence import get_trade_intelligence
 from dashboard_engine import (
-    UNIVERSE_OPTIONS, filter_scan_universe, load_open_trades,
+    UNIVERSE_OPTIONS, broker_status, filter_scan_universe, load_open_trades,
     market_index_rows, rank_scanner_candidates, recent_ai_recommendations,
     sector_rows, unread_watchlist_alerts,
 )
@@ -50,9 +50,11 @@ from alert_engine import (
 )
 from alert_rules import RULE_TYPES
 from trade_journal import (
-    add_exit, add_management_update, create_trade, delete_trade, get_trade,
-    reopen_trade, trade_summary, update_trade,
+    add_exit, add_management_update, broker_import_status, create_trade, delete_trade, get_trade,
+    import_webull_history, reopen_trade, trade_summary, update_trade,
 )
+from broker_import import preview_webull_csv
+from trade_storage import load_broker_executions, load_broker_imports
 from trade_storage import load_trades, save_attachment
 
 
@@ -451,7 +453,18 @@ with tabs[0]:
         if open_trades:
             st.dataframe(pd.DataFrame(open_trades), use_container_width=True, hide_index=True)
         else:
-            st.caption("Open trades will appear automatically after Journal & Open Trades persistence is added.")
+            st.caption("No open journal trades yet.")
+
+        st.markdown("#### Webull Import Status")
+        webull_status = broker_status()
+        if webull_status.get("connected"):
+            status_cols = st.columns(3)
+            status_cols[0].metric("Executions", webull_status.get("executions", 0))
+            status_cols[1].metric("Imports", webull_status.get("imports", 0))
+            status_cols[2].metric("Unmatched", webull_status.get("unmatched", 0))
+            st.caption(f"Last import: {webull_status.get('last_import') or '—'} · {webull_status.get('last_file') or '—'}")
+        else:
+            st.caption("Upload a Webull CSV in Journal → Broker Import & Reconcile to backfill history.")
 
     st.divider()
     news_col, ai_col = st.columns(2)
@@ -3328,8 +3341,8 @@ with tabs[7]:
     metric_cols[2].metric("Partial Positions", sum(trade.status == "partial" for trade in journal_open))
     metric_cols[3].metric("Total Journal Records", len(journal_trades))
 
-    open_tab, new_tab, manage_tab, closed_tab = st.tabs(
-        ["Open Trades", "New Trade", "Manage Trade", "Closed Trades & Review"]
+    open_tab, new_tab, manage_tab, closed_tab, broker_tab = st.tabs(
+        ["Open Trades", "New Trade", "Manage Trade", "Closed Trades & Review", "Broker Import & Reconcile"]
     )
 
     with open_tab:
@@ -3535,6 +3548,140 @@ with tabs[7]:
                     reopen_trade(closed_trade.id)
                     st.success("Trade reopened.")
                     st.rerun()
+
+
+    with broker_tab:
+        st.subheader("Webull Historical Import & Reconciliation")
+        st.caption(
+            "Upload Webull filled-order or execution history. MomoPro stores each execution once, "
+            "matches buys and sells into journal trades, and keeps unmatched rows visible instead of guessing."
+        )
+        st.info(
+            "This is the historical/backfill layer. The official read-only Webull API sync remains locked "
+            "for v0.95 Ecosystem Integration."
+        )
+
+        import_status = broker_import_status()
+        broker_metrics = st.columns(5)
+        broker_metrics[0].metric("Executions", import_status.get("executions", 0))
+        broker_metrics[1].metric("CSV Imports", import_status.get("imports", 0))
+        broker_metrics[2].metric("Unmatched", import_status.get("unmatched", 0))
+        broker_metrics[3].metric("Duplicates Skipped", import_status.get("duplicates_skipped", 0))
+        broker_metrics[4].metric("Last Import", str(import_status.get("last_import") or "—")[:10])
+
+        webull_file = st.file_uploader(
+            "Upload Webull CSV",
+            type=["csv", "txt"],
+            key="webull_history_csv",
+            help="Use a Webull order/execution-history export containing filled trades.",
+        )
+
+        if webull_file is not None:
+            csv_bytes = webull_file.getvalue()
+            preview = preview_webull_csv(csv_bytes, webull_file.name)
+            if not preview.get("ok"):
+                st.error(preview.get("error") or "This CSV could not be read.")
+                if preview.get("columns"):
+                    st.caption("Columns found: " + ", ".join(preview["columns"]))
+            else:
+                st.success(
+                    f"Detected {len(preview.get('rows', []))} filled executions from "
+                    f"{preview.get('rows_seen', 0)} CSV rows."
+                )
+                mapping_rows = [
+                    {"Required Field": key, "Detected Column": value or "Not found"}
+                    for key, value in preview.get("mapping", {}).items()
+                ]
+                with st.expander("Detected column mapping"):
+                    st.dataframe(pd.DataFrame(mapping_rows), use_container_width=True, hide_index=True)
+                preview_rows = preview.get("rows", [])[:25]
+                if preview_rows:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "Time": row.get("executed_at"),
+                                "Symbol": row.get("symbol"),
+                                "Side": row.get("side"),
+                                "Quantity": row.get("quantity"),
+                                "Price": row.get("price"),
+                                "Fees": row.get("fees"),
+                                "Order ID": row.get("order_id") or "—",
+                            }
+                            for row in preview_rows
+                        ]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                if preview.get("skipped"):
+                    with st.expander(f"Skipped rows ({len(preview['skipped'])})"):
+                        for message in preview["skipped"][:100]:
+                            st.caption(message)
+                st.warning(
+                    "Review the preview before importing. Importing the same file again is safe because "
+                    "each execution has a stable duplicate fingerprint."
+                )
+                if st.button("Import and Reconcile Webull History", type="primary", use_container_width=True, key="import_webull_csv"):
+                    try:
+                        result = import_webull_history(csv_bytes, webull_file.name)
+                        imported = result.get("import", {})
+                        reconciled = result.get("reconciliation", {})
+                        st.success(
+                            f"Imported {imported.get('rows_imported', 0)} new executions; "
+                            f"skipped {imported.get('duplicates_skipped', 0)} duplicates."
+                        )
+                        st.write(
+                            f"Created {reconciled.get('new_trades', 0)} trades, "
+                            f"updated {reconciled.get('updated_trades', 0)}, "
+                            f"closed {reconciled.get('closed_trades', 0)}, and left "
+                            f"{len(result.get('unmatched', []))} executions unmatched."
+                        )
+                        st.rerun()
+                    except Exception as error:
+                        st.error(str(error))
+
+        imports = load_broker_imports()
+        if imports:
+            st.markdown("#### Import History")
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Imported At": item.imported_at,
+                        "File": item.source_file,
+                        "Rows Seen": item.rows_seen,
+                        "Imported": item.rows_imported,
+                        "Duplicates": item.duplicates_skipped,
+                        "Skipped": item.rows_skipped,
+                    }
+                    for item in imports[:20]
+                ]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        broker_executions = load_broker_executions()
+        unmatched = [item for item in broker_executions if not item.matched_trade_id]
+        if unmatched:
+            st.markdown("#### Unmatched Broker Executions")
+            st.warning(
+                "These executions were preserved but not forced into a journal trade. This commonly happens "
+                "when the CSV begins with a sell from a position opened before the export range."
+            )
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Time": item.executed_at,
+                        "Symbol": item.symbol,
+                        "Side": item.side,
+                        "Quantity": item.quantity,
+                        "Price": item.price,
+                        "Order ID": item.order_id or "—",
+                        "File": item.source_file,
+                    }
+                    for item in unmatched
+                ]),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # -----------------------------
