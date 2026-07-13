@@ -231,3 +231,24 @@
 - Added optional chart screenshot persistence in `journal_attachments/`.
 - Activated the Morning Command Center Open Trades panel using the Journal database.
 - Preserved all completed v0.1-v0.8 systems and existing tab order.
+
+## v0.85 Package 2 — Webull Historical Import & Reconciliation
+- Added Webull CSV import with stable duplicate fingerprints.
+- Added filled-order parsing for Webull's `Filled`, `Avg Price`, `Filled Time`, EST and EDT formats.
+- Added automatic reconciliation of buys, partial exits, full exits and weighted average entries.
+- Added unmatched-execution preservation and import diagnostics.
+- Added broker import status to the Journal and Dashboard.
+
+## v0.9 — Performance Analytics
+- Replaced the Performance placeholder with a complete analytics workstation.
+- Added lifetime and filtered net P/L, win rate, average winner/loser, profit factor, expectancy, average R, hold time, fees, best/worst trades and streaks.
+- Added source filtering for all trades, Webull/broker imports, MomoPro-planned trades and manual-only records.
+- Added symbol and date-range filtering.
+- Added equity curve and monthly P/L visualizations.
+- Added performance breakdowns by setup, grade, hold time, price range, trade source, Momo Score, Opportunity Score, Independent AI Confidence, market regime and sector.
+- Added planned-versus-actual exit, rule-following, mistake, target-hit and stop-hit analytics.
+- Added Independent AI action accuracy and coverage reporting.
+- Added complete trade-history table and chronological trade timeline review.
+- Added Webull reconciliation and analytics-data coverage reporting.
+- Added rule-based Performance Intelligence that surfaces strengths, risks and next improvements without inventing unavailable metadata.
+- Preserved one source of truth by reading the existing Journal and reconciled broker records directly.
