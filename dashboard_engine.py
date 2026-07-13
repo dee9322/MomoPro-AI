@@ -194,7 +194,7 @@ def unread_watchlist_alerts(limit: int = 10) -> list[dict[str, Any]]:
 
 
 def load_open_trades(limit: int = 10) -> list[dict[str, Any]]:
-    """Read future Journal storage when present; otherwise return an empty list safely."""
+    """Load persistent v0.85 Journal positions for the Morning Command Center."""
     if not TRADE_DATA_FILE.exists():
         return []
     try:
@@ -202,35 +202,55 @@ def load_open_trades(limit: int = 10) -> list[dict[str, Any]]:
     except Exception:
         return []
 
-    candidates: list[dict[str, Any]] = []
-    if isinstance(payload, list):
-        candidates = [item for item in payload if isinstance(item, dict)]
-    elif isinstance(payload, dict):
-        raw = payload.get("trades", payload.get("items", []))
-        if isinstance(raw, dict):
-            candidates = [item for item in raw.values() if isinstance(item, dict)]
-        elif isinstance(raw, list):
-            candidates = [item for item in raw if isinstance(item, dict)]
+    raw = payload if isinstance(payload, list) else payload.get("trades", payload.get("items", [])) if isinstance(payload, dict) else []
+    if isinstance(raw, dict):
+        candidates = [item for item in raw.values() if isinstance(item, dict)]
+    else:
+        candidates = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
-    open_trades = []
+    from datetime import datetime, timezone
+    rows = []
     for trade in candidates:
         status = str(trade.get("status", "open")).lower()
         if status not in {"open", "active", "partial"}:
             continue
-        open_trades.append(
-            {
-                "Symbol": str(trade.get("symbol", "—")).upper(),
-                "Entry": trade.get("entry_price", trade.get("entry")),
-                "Current": trade.get("current_price", trade.get("last_price")),
-                "P/L": trade.get("unrealized_pnl", trade.get("pnl")),
-                "Stop": trade.get("stop", trade.get("current_stop")),
-                "Target": trade.get("t1", trade.get("target")),
-                "Days Held": trade.get("days_held"),
-                "AI Confidence": trade.get("ai_confidence"),
-                "Momo Score": trade.get("momo_score"),
-            }
-        )
-    return open_trades[:limit]
+        shares = float(trade.get("shares") or 0)
+        exits = trade.get("exits", []) if isinstance(trade.get("exits", []), list) else []
+        exited = sum(float(item.get("shares") or 0) for item in exits if isinstance(item, dict))
+        remaining = max(shares - exited, 0)
+        updates = trade.get("updates", []) if isinstance(trade.get("updates", []), list) else []
+        current = trade.get("current_price", trade.get("last_price"))
+        if current is None:
+            for update in updates:
+                if isinstance(update, dict) and update.get("current_price") not in (None, ""):
+                    current = update.get("current_price")
+                    break
+        unrealized = None
+        try:
+            if current is not None and remaining > 0:
+                multiplier = 1 if str(trade.get("direction", "long")).lower() == "long" else -1
+                unrealized = round((float(current) - float(trade.get("entry_price") or 0)) * remaining * multiplier, 2)
+        except (TypeError, ValueError):
+            pass
+        held = None
+        try:
+            start_date = datetime.fromisoformat(str(trade.get("entry_date")).replace("Z", "+00:00"))
+            held = max((datetime.now(timezone.utc).date() - start_date.date()).days, 0)
+        except (TypeError, ValueError):
+            pass
+        rows.append({
+            "Symbol": str(trade.get("symbol", "—")).upper(),
+            "Entry": trade.get("entry_price", trade.get("entry")),
+            "Current": current,
+            "P/L": unrealized,
+            "Remaining": remaining,
+            "Stop": trade.get("current_stop", trade.get("stop")),
+            "Target": trade.get("t1", trade.get("target")),
+            "Days Held": held,
+            "AI Confidence": trade.get("ai_confidence"),
+            "Momo Score": trade.get("momo_score"),
+        })
+    return rows[:limit]
 
 
 def market_index_rows(market_context: dict[str, Any] | None) -> list[dict[str, Any]]:
