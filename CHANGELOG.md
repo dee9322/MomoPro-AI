@@ -207,3 +207,16 @@
 - Added recent Independent AI recommendations.
 - Added a synthesized Today’s Trading Plan and risk posture.
 - Added dedicated dashboard modules so command-center logic remains outside the growing app.py
+
+## v0.85 — Journal & Open Trade Management
+- Added persistent trade records backed by `trade_data.json`.
+- Added manual trade creation with entry, shares, stop, targets, setup, grade, Momo Score, Dee Fit, Opportunity Score, and Independent AI Confidence.
+- Added Trade Planner-to-Journal and Watchlist-to-Journal handoffs.
+- Added open-trade dashboard with remaining shares, stops, targets, context, thesis, management updates, and partial exits.
+- Added persistent management updates, current-price snapshots, stop adjustments, and notes.
+- Added partial and final exit recording with exit reasons and automatic open/partial/closed status changes.
+- Added realized P/L, unrealized P/L support, realized R, average exit, and days-held calculations.
+- Added closed-trade post-review fields for plan adherence, rule-following score, strengths, mistakes, lessons, and AI coaching notes.
+- Added optional chart screenshot persistence in `journal_attachments/`.
+- Activated the Morning Command Center Open Trades panel using the Journal database.
+- Preserved all completed v0.1-v0.8 systems and existing tab order.
