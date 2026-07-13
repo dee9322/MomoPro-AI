@@ -14,7 +14,7 @@ from broker_models import BrokerExecution, BrokerImportRecord, stable_execution_
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "symbol": ("symbol", "ticker", "code", "instrument", "stock"),
     "side": ("side", "action", "buy/sell", "transaction type", "type"),
-    "quantity": ("filled quantity", "filled qty", "quantity", "qty", "shares", "executed quantity"),
+    "quantity": ("filled", "filled quantity", "filled qty", "executed quantity", "quantity", "qty", "shares", "total qty"),
     "price": ("average price", "avg price", "filled price", "execution price", "price", "avg. price"),
     "executed_at": ("filled time", "execution time", "filled date", "trade date", "date/time", "date", "time"),
     "order_id": ("order id", "order number", "order no", "order#"),
@@ -86,13 +86,41 @@ def _number(value: Any) -> float | None:
 
 
 def _datetime(value: Any) -> str | None:
+    """Parse Webull timestamps safely and return an ISO-8601 UTC value.
+
+    Webull exports use values such as ``06/25/2026 15:18:08 EDT``.
+    Pandas/dateutil handling of EST/EDT abbreviations varies by version, so
+    interpret those timestamps in the America/New_York timezone explicitly.
+    """
     text = str(value or "").strip()
     if not text:
         return None
-    parsed = pd.to_datetime(text, errors="coerce", utc=True)
-    if pd.isna(parsed):
+
+    # Normalize common Webull timezone suffixes. The calendar date determines
+    # the correct daylight-saving offset when localized to New York.
+    webull_eastern = bool(re.search(r"\b(?:EST|EDT)\s*$", text, flags=re.IGNORECASE))
+    cleaned = re.sub(r"\s+(?:EST|EDT)\s*$", "", text, flags=re.IGNORECASE).strip()
+
+    try:
+        parsed = pd.to_datetime(cleaned, errors="coerce")
+        if pd.isna(parsed):
+            return None
+
+        timestamp = pd.Timestamp(parsed)
+        if timestamp.tzinfo is None:
+            if webull_eastern:
+                timestamp = timestamp.tz_localize(
+                    "America/New_York",
+                    ambiguous="raise",
+                    nonexistent="shift_forward",
+                )
+            else:
+                # For exports without a timezone, preserve the previous,
+                # deterministic behavior by treating the value as UTC.
+                timestamp = timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC").to_pydatetime().isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError):
         return None
-    return parsed.to_pydatetime().astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 def _normalize_side(value: Any) -> str | None:
@@ -129,6 +157,14 @@ def preview_webull_csv(data: bytes, filename: str = "webull.csv") -> dict[str, A
 
     rows: list[dict[str, Any]] = []
     skipped: list[str] = []
+    skip_summary: dict[str, int] = {
+        "not_filled": 0,
+        "missing_symbol": 0,
+        "invalid_side": 0,
+        "invalid_quantity": 0,
+        "invalid_price": 0,
+        "invalid_timestamp": 0,
+    }
     for index, row in df.iterrows():
         raw = {str(column): row.get(column, "") for column in columns}
         symbol = str(row.get(mapping["symbol"], "")).strip().upper()
@@ -138,11 +174,30 @@ def preview_webull_csv(data: bytes, filename: str = "webull.csv") -> dict[str, A
         executed_at = _datetime(row.get(mapping["executed_at"]))
         status = str(row.get(mapping.get("status"), "Filled") if mapping.get("status") else "Filled").strip()
 
-        if mapping.get("status") and status.lower() not in FILLED_STATUSES and "fill" not in status.lower() and "execut" not in status.lower():
+        normalized_status = status.lower().strip()
+        if mapping.get("status") and normalized_status not in FILLED_STATUSES:
+            skip_summary["not_filled"] += 1
             skipped.append(f"Row {index + 2}: status '{status}' is not a filled execution.")
             continue
-        if not symbol or not side or not quantity or quantity <= 0 or not price or price <= 0 or not executed_at:
-            skipped.append(f"Row {index + 2}: missing or invalid symbol, side, quantity, price, or execution time.")
+
+        validation_errors: list[str] = []
+        if not symbol:
+            skip_summary["missing_symbol"] += 1
+            validation_errors.append("missing symbol")
+        if not side:
+            skip_summary["invalid_side"] += 1
+            validation_errors.append("invalid side")
+        if quantity is None or quantity <= 0:
+            skip_summary["invalid_quantity"] += 1
+            validation_errors.append("invalid filled quantity")
+        if price is None or price <= 0:
+            skip_summary["invalid_price"] += 1
+            validation_errors.append("invalid average price")
+        if not executed_at:
+            skip_summary["invalid_timestamp"] += 1
+            validation_errors.append("invalid execution time")
+        if validation_errors:
+            skipped.append(f"Row {index + 2}: " + ", ".join(validation_errors) + ".")
             continue
 
         order_id = str(row.get(mapping.get("order_id"), "") if mapping.get("order_id") else "").strip()
@@ -179,6 +234,7 @@ def preview_webull_csv(data: bytes, filename: str = "webull.csv") -> dict[str, A
         "columns": columns,
         "mapping": mapping,
         "skipped": skipped,
+        "skip_summary": skip_summary,
         "rows_seen": len(df),
     }
 
