@@ -1,5 +1,16 @@
 # MomoPro AI Changelog
 
+## v0.85 Package 2 — Webull Historical Import & Reconciliation
+- Added Webull CSV execution-history import with flexible column detection.
+- Added stable execution fingerprints and safe duplicate-import prevention.
+- Added broker execution and import-history persistence inside trade_data.json schema v2.
+- Added chronological FIFO reconciliation for buys, partial exits, and full exits.
+- Added safe unmatched-execution handling when historical exports begin mid-position.
+- Added Journal Broker Import & Reconcile workspace with preview, mapping, import history, and unmatched rows.
+- Added Dashboard Webull import status.
+- Preserved separate Trade Plan, Broker Execution, and Reconciled Trade layers.
+- Reserved official read-only Webull API synchronization for v0.95 Ecosystem Integration.
+
 ## v0.7 — Watchlist & Alert Intelligence
 - Added persistent living watchlist profiles and multiple named watchlists.
 - Added personal thesis, entry, stop, target, tags, notes, timeline, and research snapshots.
