@@ -193,3 +193,17 @@
 - Synced current market, smart-money, and trading-intelligence context during refresh when available.
 - Corrected AI-confidence alerts and Morning Brief confidence display.
 - Clarified automatic profile fields versus personal thesis/planning fields.
+
+## v0.8 — Dashboard / Morning Command Center
+- Rebuilt the existing Dashboard as the morning command center.
+- Added market-health, trend, risk, breadth, Fear & Greed, and sector-leadership summary metrics.
+- Added SPY, QQQ, IWM, DIA, and VIXY intelligence table.
+- Added breadth participation and sector leader/laggard panels.
+- Added required universe controls: Entire Market, Watchlist, Top Gainers, Recent IPOs, AI Stocks, Biotech, and Semiconductors.
+- Added ranked scanner highlights with Stock Report handoff.
+- Added unread watchlist-alert summary.
+- Added future-compatible open-trade panel that automatically reads Journal storage when available.
+- Added macro/breaking market news feed.
+- Added recent Independent AI recommendations.
+- Added a synthesized Today’s Trading Plan and risk posture.
+- Added dedicated dashboard modules so command-center logic remains outside the growing app.py
