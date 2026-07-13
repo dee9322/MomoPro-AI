@@ -81,6 +81,10 @@ class TradeRecord:
     strengths: str = ""
     lessons: str = ""
     ai_review: str = ""
+    source: str = "manual"
+    broker: str = ""
+    broker_execution_ids: list[str] = field(default_factory=list)
+    broker_fees: float = 0.0
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
