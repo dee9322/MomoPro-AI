@@ -72,7 +72,10 @@ from settings_engine import (
     get_setting, get_settings, reset_settings, save_settings, settings_summary, update_section,
 )
 from canonical_analysis import build_canonical_analysis, planner_prefill
-from analysis_storage import save_analysis, get_analysis
+from analysis_storage import save_analysis, get_analysis, list_analyses
+from chart_data import available_timeframes, latest_chart_snapshot, load_chart_bars
+from chart_engine import build_live_chart
+from tradingview_bridge import build_tradingview_payload, payload_json, pine_input_block, tradingview_chart_url
 
 
 st.set_page_config(
@@ -318,6 +321,7 @@ tabs = st.tabs(
         "Performance",
         "Learning",
         "Settings",
+        "Live Chart",
     ]
 )
 
@@ -4591,3 +4595,125 @@ with tabs[10]:
         st.warning("Resetting restores MomoPro defaults. It does not delete trades, watchlists, alerts, AI reports, or broker history.")
         if st.button("Reset All Settings to Defaults", type="secondary", use_container_width=True):
             reset_settings(); st.session_state.momopro_settings = get_settings(); st.session_state.dashboard_universe = get_setting("dashboard.default_universe", "Entire Market", st.session_state.momopro_settings); st.success("Settings reset."); st.rerun()
+
+
+# -----------------------------
+# v0.95B — Native Live Chart & TradingView Bridge
+# -----------------------------
+with tabs[11]:
+    st.header("Live Chart & TradingView Bridge")
+    st.caption(
+        "Review live market structure inside MomoPro, overlay the saved Official MomoPro Plan, "
+        "and hand the exact same plan to your TradingView indicator."
+    )
+
+    saved_analyses = {item.symbol: item for item in list_analyses()}
+    default_chart_symbol = str(st.session_state.get("selected_symbol") or "SPY").upper().strip()
+    controls = st.columns([2, 1, 1, 1])
+    with controls[0]:
+        chart_symbol = st.text_input("Symbol", value=default_chart_symbol, key="live_chart_symbol").upper().strip()
+    with controls[1]:
+        chart_timeframe = st.selectbox("Timeframe", available_timeframes(), key="live_chart_timeframe")
+    with controls[2]:
+        chart_candles = st.selectbox("Candles", [100, 200, 300, 500], index=2, key="live_chart_candles")
+    with controls[3]:
+        refresh_chart = st.button("Refresh Chart", use_container_width=True, key="refresh_live_chart")
+
+    analysis = saved_analyses.get(chart_symbol) or get_analysis(chart_symbol)
+    plan = analysis.plan.__dict__ if analysis else {}
+
+    if analysis:
+        plan_cols = st.columns(7)
+        plan_cols[0].metric("Setup", analysis.setup or "—")
+        plan_cols[1].metric("Grade", analysis.grade or "—")
+        plan_cols[2].metric("Momo Score", "—" if analysis.momo_score is None else f"{analysis.momo_score:.0f}")
+        plan_cols[3].metric("Opportunity", "—" if analysis.opportunity_score is None else f"{analysis.opportunity_score:.0f}")
+        plan_cols[4].metric("AI Confidence", "—" if analysis.ai_confidence is None else f"{analysis.ai_confidence:.0f}%")
+        plan_cols[5].metric("Official Entry", money_text(plan.get("reference_entry") or plan.get("entry_low")))
+        plan_cols[6].metric("Official Stop", money_text(plan.get("stop")))
+    else:
+        st.info("No saved Official MomoPro Plan exists for this ticker yet. The chart will still load without plan overlays.")
+
+    cache_key = f"chart::{chart_symbol}::{chart_timeframe}::{chart_candles}"
+    if refresh_chart:
+        st.session_state.pop(cache_key, None)
+    frame = st.session_state.get(cache_key)
+    if chart_symbol and frame is None:
+        with st.spinner(f"Loading {chart_symbol} {chart_timeframe} chart..."):
+            try:
+                frame = load_chart_bars(
+                    st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"],
+                    chart_symbol, chart_timeframe, chart_candles,
+                )
+                st.session_state[cache_key] = frame
+            except Exception as error:
+                st.error(f"Chart data could not be loaded: {error}")
+                frame = pd.DataFrame()
+
+    if frame is not None and not frame.empty:
+        latest = latest_chart_snapshot(frame)
+        snapshot_cols = st.columns(6)
+        snapshot_cols[0].metric("Last", money_text(latest.get("close")))
+        snapshot_cols[1].metric("EMA21", money_text(latest.get("ema21")))
+        snapshot_cols[2].metric("EMA50", money_text(latest.get("ema50")))
+        snapshot_cols[3].metric("EMA200", money_text(latest.get("ema200")))
+        snapshot_cols[4].metric("RSI", "—" if latest.get("rsi14") is None else f"{latest['rsi14']:.1f}")
+        snapshot_cols[5].metric("RVOL", "—" if latest.get("rvol") is None else f"{latest['rvol']:.2f}x")
+        st.plotly_chart(build_live_chart(frame, chart_symbol, chart_timeframe, plan), use_container_width=True)
+        st.caption(f"Latest available candle: {latest.get('timestamp') or 'Unavailable'} · Alpaca IEX feed")
+
+    st.divider()
+    st.subheader("TradingView Bridge")
+    if not analysis:
+        st.warning("Open the ticker in the Stock Report and generate its Official MomoPro Plan before exporting it to TradingView.")
+    else:
+        tv_payload = build_tradingview_payload(analysis, chart_timeframe)
+        bridge_cols = st.columns([1, 1, 1])
+        with bridge_cols[0]:
+            st.link_button("Open in TradingView", tradingview_chart_url(chart_symbol, chart_timeframe), use_container_width=True)
+        with bridge_cols[1]:
+            st.download_button(
+                "Download Official Plan JSON", payload_json(tv_payload),
+                file_name=f"momopro_{chart_symbol}_{tv_payload['trade_id']}.json",
+                mime="application/json", use_container_width=True,
+            )
+        with bridge_cols[2]:
+            st.download_button(
+                "Download Pine Input Block", pine_input_block(tv_payload),
+                file_name=f"momopro_{chart_symbol}_pine_inputs.txt",
+                mime="text/plain", use_container_width=True,
+            )
+
+        export_tabs = st.tabs(["Official Plan", "Pine Inputs", "JSON Payload"])
+        with export_tabs[0]:
+            official = pd.DataFrame([
+                {"Field": "Trade ID", "Value": tv_payload.get("trade_id")},
+                {"Field": "Symbol", "Value": tv_payload.get("symbol")},
+                {"Field": "Timeframe", "Value": tv_payload.get("timeframe")},
+                {"Field": "Entry Low", "Value": tv_payload.get("entry_low")},
+                {"Field": "Entry High", "Value": tv_payload.get("entry_high")},
+                {"Field": "Stop", "Value": tv_payload.get("stop")},
+                {"Field": "T1", "Value": tv_payload.get("t1")},
+                {"Field": "T2", "Value": tv_payload.get("t2")},
+                {"Field": "T3", "Value": tv_payload.get("t3")},
+                {"Field": "Setup", "Value": tv_payload.get("setup")},
+                {"Field": "Grade", "Value": tv_payload.get("grade")},
+                {"Field": "AI Confidence", "Value": tv_payload.get("ai_confidence")},
+            ])
+            st.dataframe(official, hide_index=True, use_container_width=True)
+            if analysis.thesis:
+                st.markdown("**Trade thesis**")
+                st.write(analysis.thesis)
+            if analysis.invalidation:
+                st.markdown("**Invalidation**")
+                st.write(analysis.invalidation)
+        with export_tabs[1]:
+            st.code(pine_input_block(tv_payload), language="text")
+            st.caption("v0.95C will add Linked Plan Mode to your existing Pine indicator so these official values can be entered without removing any current feature.")
+        with export_tabs[2]:
+            st.code(payload_json(tv_payload), language="json")
+
+    st.info(
+        "The Live Chart is MomoPro's research chart. Your full TradingView indicator remains the execution and trade-management companion. "
+        "No Pine feature has been removed or changed in this package."
+    )
