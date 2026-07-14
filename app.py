@@ -71,6 +71,8 @@ from learning_storage import (
 from settings_engine import (
     get_setting, get_settings, reset_settings, save_settings, settings_summary, update_section,
 )
+from canonical_analysis import build_canonical_analysis, planner_prefill
+from analysis_storage import save_analysis, get_analysis
 
 
 st.set_page_config(
@@ -266,6 +268,9 @@ if "smart_money_cache" not in st.session_state:
 
 if "trade_intelligence_cache" not in st.session_state:
     st.session_state.trade_intelligence_cache = {}
+
+if "canonical_analysis_cache" not in st.session_state:
+    st.session_state.canonical_analysis_cache = {}
 
 if "trade_plan_prefill" not in st.session_state:
     st.session_state.trade_plan_prefill = {}
@@ -1417,6 +1422,23 @@ with tabs[2]:
                     "historical_setup": {},
                 }
 
+            # v0.95A: Resolve and persist one canonical analysis object. Existing
+            # engines remain untouched; all downstream plan consumers use this
+            # single resolved plan instead of repeating fallback calculations.
+            canonical_analysis = build_canonical_analysis(
+                selected_symbol,
+                selected_stock.to_dict(),
+                trading_intelligence=trade_intelligence_context,
+                market_context=report_market or {},
+                smart_money_context=smart_money_context or {},
+                ai_report=st.session_state.ai_research_reports.get(selected_symbol, {}),
+            )
+            st.session_state.canonical_analysis_cache[selected_symbol] = canonical_analysis.to_dict()
+            try:
+                save_analysis(canonical_analysis)
+            except Exception:
+                pass
+
             ti_top = st.columns(4)
             ti_top[0].metric("Trading Intelligence", trade_intelligence_context.get("overall_score") if valid_value(trade_intelligence_context.get("overall_score")) else "—")
             ti_top[1].metric("Status", trade_intelligence_context.get("status", "—"))
@@ -1505,15 +1527,31 @@ with tabs[2]:
 
             if trade_intelligence_context.get("overall_score") is not None:
                 if st.button("Send to Trade Planner", key=f"send_to_planner_{selected_symbol}"):
-                    st.session_state.trade_plan_prefill = {
-                        "symbol": selected_symbol,
-                        "entry": selected_stock.get("Reference Entry") or selected_stock.get("Close"),
-                        "stop": stop_data.get("standard") or selected_stock.get("Risk Reference"),
-                        "t1": (trade_intelligence_context.get("targets", {}).get("targets", [{}])[0] or {}).get("price"),
-                        "t2": (trade_intelligence_context.get("targets", {}).get("targets", [{}, {}])[1] or {}).get("price") if len(trade_intelligence_context.get("targets", {}).get("targets", [])) > 1 else None,
-                        "t3": (trade_intelligence_context.get("targets", {}).get("targets", [{}, {}, {}])[2] or {}).get("price") if len(trade_intelligence_context.get("targets", {}).get("targets", [])) > 2 else None,
-                    }
+                    st.session_state.trade_plan_prefill = planner_prefill(canonical_analysis)
                     st.success("Trade plan loaded into the Trade Planner tab.")
+
+            # -------------------------
+            # Canonical MomoPro Plan
+            # -------------------------
+            st.divider()
+            st.subheader("Official MomoPro Plan")
+            st.caption("v0.95A single source of truth used by Stock Report, Trade Planner, and future integrations.")
+            canonical_plan = canonical_analysis.plan
+            cp1 = st.columns(4)
+            entry_display = canonical_plan.reference_entry
+            if valid_value(canonical_plan.entry_low) and valid_value(canonical_plan.entry_high) and canonical_plan.entry_low != canonical_plan.entry_high:
+                entry_display = f"{money_text(canonical_plan.entry_low)} – {money_text(canonical_plan.entry_high)}"
+            else:
+                entry_display = money_text(canonical_plan.reference_entry)
+            cp1[0].metric("Official Entry", entry_display)
+            cp1[1].metric("Official Stop", money_text(canonical_plan.stop))
+            cp1[2].metric("Official T1", money_text(canonical_plan.t1))
+            cp1[3].metric("Official T2", money_text(canonical_plan.t2))
+            cp2 = st.columns(4)
+            cp2[0].metric("Official T3", money_text(canonical_plan.t3))
+            cp2[1].metric("Setup", canonical_analysis.setup or "—")
+            cp2[2].metric("Grade", canonical_analysis.grade or "—")
+            cp2[3].metric("Plan Source", canonical_plan.source)
 
             # -------------------------
             # Momo Engine Confidence
@@ -3224,10 +3262,18 @@ with tabs[5]:
 # -----------------------------
 with tabs[6]:
     st.header("Trade Planner")
-    st.caption("Build a custom trade plan while keeping the objective engine plan separate.")
+    st.caption("Review the official canonical plan, then customize position sizing or personal execution notes without changing the engine plan.")
 
     prefill = st.session_state.trade_plan_prefill or {}
     planner_symbol = st.text_input("Ticker", value=str(prefill.get("symbol", "")), key="planner_symbol").upper().strip()
+    canonical_saved = st.session_state.canonical_analysis_cache.get(planner_symbol) or (get_analysis(planner_symbol).to_dict() if planner_symbol and get_analysis(planner_symbol) else None)
+    if canonical_saved:
+        saved_plan = canonical_saved.get("plan", {})
+        st.info(
+            f"Official plan loaded for {planner_symbol}: Entry {money_text(saved_plan.get('reference_entry'))}, "
+            f"Stop {money_text(saved_plan.get('stop'))}, T1 {money_text(saved_plan.get('t1'))}, "
+            f"T2 {money_text(saved_plan.get('t2'))}, T3 {money_text(saved_plan.get('t3'))}."
+        )
     account_size = st.number_input(
         "Account Size ($)",
         min_value=0.0,
