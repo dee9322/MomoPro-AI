@@ -75,7 +75,7 @@ from canonical_analysis import build_canonical_analysis, planner_prefill
 from analysis_storage import save_analysis, get_analysis, list_analyses
 from chart_data import available_timeframes, latest_chart_snapshot, load_chart_bars
 from chart_engine import build_live_chart
-from tradingview_bridge import build_tradingview_payload, payload_json, pine_input_block, tradingview_chart_url
+from tradingview_bridge import (build_tradingview_payload, official_plan_packet, packet_diagnostics, payload_json, pine_input_block, tradingview_chart_url)
 
 
 st.set_page_config(
@@ -4708,8 +4708,33 @@ with tabs[11]:
                 st.markdown("**Invalidation**")
                 st.write(analysis.invalidation)
         with export_tabs[1]:
-            st.code(pine_input_block(tv_payload), language="text")
-            st.caption("v0.95C will add Linked Plan Mode to your existing Pine indicator so these official values can be entered without removing any current feature.")
+            packet = official_plan_packet(tv_payload)
+            diagnostics = packet_diagnostics(packet)
+            st.markdown("**Step 1 — Copy only the packet below**")
+            st.text_area(
+                "Official Plan Packet",
+                value=packet,
+                height=90,
+                key=f"official_plan_packet_{chart_symbol}_{chart_timeframe}",
+                help="Click inside, press Ctrl+A, then Ctrl+C. Paste this exact one-line value into the MomoPro AI Link Companion settings.",
+            )
+            if diagnostics["valid"]:
+                st.success(f"Packet ready: {diagnostics['field_count']} of {diagnostics['expected_field_count']} required fields detected.")
+            else:
+                st.error("The packet is not ready: " + " ".join(diagnostics["errors"]))
+            st.markdown("**Step 2 — TradingView companion settings**")
+            st.code(
+                "1. Add MomoPro AI Link Companion to the same chart as your original MomoPro indicator.\n"
+                "2. Open the companion gear icon → Inputs.\n"
+                "3. Turn ON Enable Linked Plan Mode.\n"
+                "4. Paste the one-line packet into Official Plan Packet.\n"
+                "5. Leave Validate Timeframe OFF for the first test.\n"
+                "6. Click OK.",
+                language="text",
+            )
+            with st.expander("Full instruction block (the companion can also extract the packet from this)"):
+                st.code(pine_input_block(tv_payload), language="text")
+            st.caption("Your original MomoPro indicator remains unchanged. The companion only displays and monitors the official AI plan.")
         with export_tabs[2]:
             st.code(payload_json(tv_payload), language="json")
 
