@@ -48,13 +48,22 @@ def build_canonical_analysis(
     entry_quality = ti.get("entry_quality") or {}
     plan = build_canonical_trade_plan(stock, ti)
 
-    setup = str(_first(pattern, "primary_pattern", default="") or _first(stock, "Setup", "Setup Type", default=""))
-    grade = str(_first(entry_quality, "grade", default="") or _first(stock, "Grade", default=""))
+    setup = str(
+        _first(pattern, "primary_pattern", default="")
+        or _first(stock, "Setup", "Setup Type", default="")
+    )
+    grade = str(
+        _first(entry_quality, "grade", default="")
+        or _first(stock, "Grade", default="")
+    )
 
     reasons = stock.get("Reasons") or stock.get("Why") or []
     if isinstance(reasons, str):
         reasons = [part.strip() for part in reasons.split("|") if part.strip()]
+
     warnings = entry_quality.get("warnings") or []
+    if isinstance(warnings, str):
+        warnings = [part.strip() for part in warnings.split("|") if part.strip()]
 
     return MomoAnalysis(
         symbol=str(symbol or stock.get("Symbol") or "").upper().strip(),
@@ -79,11 +88,18 @@ def build_canonical_analysis(
         grade=grade,
         momo_score=_num(_first(stock, "Momo Score")),
         momo_confidence=_num(_first(stock, "Momo Confidence")),
-        opportunity_score=_num(opportunity_score if opportunity_score is not None else _first(stock, "Opportunity Score")),
+        opportunity_score=_num(
+            opportunity_score
+            if opportunity_score is not None
+            else _first(stock, "Opportunity Score")
+        ),
         ai_confidence=_num(_first(ai, "confidence", "ai_confidence")),
-        ai_action=str(_first(ai, "independent_action", "action", "recommendation", default="")),
+        ai_action=str(
+            _first(ai, "independent_action", "action", "recommendation", default="")
+        ),
         thesis=thesis or str(_first(ai, "trade_thesis", "thesis", default="")),
-        invalidation=invalidation or str(_first(ai, "invalidation", "thesis_invalidation", default="")),
+        invalidation=invalidation
+        or str(_first(ai, "invalidation", "thesis_invalidation", default="")),
         plan=plan,
         reasons=list(reasons or []),
         warnings=list(warnings or []),
@@ -95,13 +111,20 @@ def planner_prefill(analysis: MomoAnalysis | Mapping[str, Any]) -> dict[str, Any
         payload = analysis.to_dict()
     else:
         payload = dict(analysis or {})
+
     plan = payload.get("plan") or {}
+    symbol = str(payload.get("symbol") or "").upper().strip()
+    generated_at = str(payload.get("generated_at") or "")
+
     return {
-        "symbol": payload.get("symbol", ""),
+        "symbol": symbol,
         "entry": plan.get("reference_entry") or plan.get("entry_low"),
+        "entry_low": plan.get("entry_low"),
+        "entry_high": plan.get("entry_high"),
         "stop": plan.get("stop"),
         "t1": plan.get("t1"),
         "t2": plan.get("t2"),
         "t3": plan.get("t3"),
         "notes": payload.get("thesis", ""),
-        "canonical_analysis_id": f"{payload.get('symbol', '')}:{payload.get('generated_at', '')}",
+        "canonical_analysis_id": f"{symbol}:{generated_at}",
+    }
