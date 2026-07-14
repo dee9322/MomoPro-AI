@@ -60,6 +60,7 @@ def get_trade_intelligence(api_key: str, secret_key: str, symbol: str, stock: An
     ])
     overall = round(sum(v for v in [pattern.get("pattern_score"), trend.get("score"), timeframes.get("alignment_score"), entry.get("score")] if v is not None) / available) if available else None
     return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "overall_score": overall,
         "status": "High Quality" if overall is not None and overall >= 80 else "Constructive" if overall is not None and overall >= 65 else "Developing" if overall is not None else "Unavailable",
         "pattern": pattern,
