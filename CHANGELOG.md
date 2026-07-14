@@ -297,3 +297,13 @@
 - Trade Planner identifies the saved official plan while preserving personal sizing and execution notes.
 - Added persistent analysis and integration storage foundations for Live Chart, TradingView, and Webull packages.
 - Existing scanner, Trading Intelligence, AI Research, Watchlist, Journal, Performance, and Learning engines remain intact.
+
+## v0.95C — Pine Linked Plan Mode
+
+- Added an optional MomoPro AI Linked Plan layer to the existing TradingView indicator.
+- Preserved every existing indicator calculation, visual, signal, alert, lifecycle, S/R, and exit-management feature.
+- Added official entry zone, stop, T1/T2/T3, support, and resistance overlays from the canonical app plan.
+- Added official setup, grade, Momo Score, Opportunity Score, and Independent AI Confidence display.
+- Added symbol/timeframe mismatch warnings.
+- Added structured JSON webhook events for entry-zone, targets, manage, trim, exit, hard-exit, and stop events.
+- Updated the app's Pine Input Block labels to match the indicator inputs exactly.
