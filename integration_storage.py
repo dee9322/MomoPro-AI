@@ -43,3 +43,18 @@ def save_connection(connection: IntegrationConnection) -> None:
 
 def get_connection(name: str) -> dict[str, Any] | None:
     return load_integrations().get("connections", {}).get(name)
+
+
+def record_event(event: dict[str, Any], limit: int = 500) -> None:
+    payload = load_integrations()
+    events = list(payload.get("events") or [])
+    events.insert(0, dict(event or {}))
+    payload["events"] = events[: max(1, int(limit))]
+    _save(payload)
+
+
+def list_events(limit: int = 100, source: str | None = None) -> list[dict[str, Any]]:
+    events = list(load_integrations().get("events") or [])
+    if source:
+        events = [event for event in events if event.get("source") == source]
+    return events[: max(1, int(limit))]
