@@ -280,3 +280,13 @@
 - Expanded pattern recognition to pennants, descending and symmetrical triangles, rising and falling wedges, VCP and cup-and-handle candidates.
 - Added exact EMA21 reclaim freshness when detectable.
 - Preserved one source of truth by deriving learning directly from existing TradeRecord and Performance Analytics data.
+
+## v0.95A — Canonical Analysis & Trade Plan
+
+- Added a persistent `MomoAnalysis` model as the official single analysis record for each ticker.
+- Added one canonical trade-plan resolver for entry zone, stop, targets, support/resistance, and risk references.
+- Stock Report now displays an **Official MomoPro Plan** sourced from that canonical object.
+- Stock Report → Trade Planner handoff now uses the canonical plan rather than repeating fallback logic.
+- Trade Planner identifies the saved official plan while preserving personal sizing and execution notes.
+- Added persistent analysis and integration storage foundations for Live Chart, TradingView, and Webull packages.
+- Existing scanner, Trading Intelligence, AI Research, Watchlist, Journal, Performance, and Learning engines remain intact.
