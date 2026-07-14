@@ -55,30 +55,46 @@ def payload_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(dict(payload or {}), indent=2, default=str)
 
 
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _number(value: Any) -> str:
+    if value in (None, ""):
+        return "0.0"
+    try:
+        return str(round(float(value), 4))
+    except (TypeError, ValueError):
+        return "0.0"
+
+
 def pine_input_block(payload: Mapping[str, Any]) -> str:
+    """Return labels that exactly match the v0.95C Pine Linked Plan inputs."""
     p = dict(payload or {})
-    def value(key: str) -> str:
-        item = p.get(key)
-        return "na" if item in (None, "") else str(item)
-    return "\n".join([
-        "MOMOPRO LINKED PLAN",
-        f"Trade ID: {value('trade_id')}",
-        f"Symbol: {value('symbol')}",
-        f"Timeframe: {value('timeframe')}",
-        f"Entry Low: {value('entry_low')}",
-        f"Entry High: {value('entry_high')}",
-        f"Stop: {value('stop')}",
-        f"T1: {value('t1')}",
-        f"T2: {value('t2')}",
-        f"T3: {value('t3')}",
-        f"Support: {value('support')}",
-        f"Resistance: {value('resistance')}",
-        f"Setup: {value('setup')}",
-        f"Grade: {value('grade')}",
-        f"Momo Score: {value('momo_score')}",
-        f"Opportunity Score: {value('opportunity_score')}",
-        f"AI Confidence: {value('ai_confidence')}",
-    ])
+    return "\n".join(
+        [
+            "MOMOPRO AI LINKED PLAN — COPY INTO INDICATOR SETTINGS",
+            "Enable Linked Plan Mode: ON",
+            f"Official Trade ID: {_text(p.get('trade_id'))}",
+            f"Official Symbol: {_text(p.get('symbol'))}",
+            f"Official Timeframe: {_text(p.get('timeframe') or '1D')}",
+            f"Official Setup: {_text(p.get('setup'))}",
+            f"Official Grade: {_text(p.get('grade'))}",
+            f"Official Entry Low: {_number(p.get('entry_low'))}",
+            f"Official Entry High: {_number(p.get('entry_high'))}",
+            f"Official Stop: {_number(p.get('stop'))}",
+            f"Official T1: {_number(p.get('t1'))}",
+            f"Official T2: {_number(p.get('t2'))}",
+            f"Official T3: {_number(p.get('t3'))}",
+            f"Official Support: {_number(p.get('support'))}",
+            f"Official Resistance: {_number(p.get('resistance'))}",
+            f"Official Momo Score: {_number(p.get('momo_score'))}",
+            f"Official Opportunity Score: {_number(p.get('opportunity_score'))}",
+            f"Official Independent AI Confidence: {_number(p.get('ai_confidence'))}",
+            f"Official Thesis: {_text(p.get('thesis'))}",
+            f"Official Invalidation: {_text(p.get('invalidation'))}",
+        ]
+    )
 
 
 def tradingview_chart_url(symbol: str, timeframe: str = "1D") -> str:
