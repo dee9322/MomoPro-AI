@@ -68,31 +68,44 @@ def _number(value: Any) -> str:
         return "0.0"
 
 
-def pine_input_block(payload: Mapping[str, Any]) -> str:
-    """Return labels that exactly match the v0.95C Pine Linked Plan inputs."""
+def _packet_text(value: Any) -> str:
+    return _text(value).replace("|", "/").replace("\n", " ").strip()
+
+
+def official_plan_packet(payload: Mapping[str, Any]) -> str:
+    """Return the compact pipe-delimited packet used by the Pine hotfix."""
     p = dict(payload or {})
+    fields = [
+        _packet_text(p.get("trade_id")),
+        _packet_text(p.get("symbol")),
+        _packet_text(p.get("timeframe") or "1D"),
+        _packet_text(p.get("setup")),
+        _packet_text(p.get("grade")),
+        _number(p.get("entry_low")),
+        _number(p.get("entry_high")),
+        _number(p.get("stop")),
+        _number(p.get("t1")),
+        _number(p.get("t2")),
+        _number(p.get("t3")),
+        _number(p.get("support")),
+        _number(p.get("resistance")),
+        _number(p.get("momo_score")),
+        _number(p.get("opportunity_score")),
+        _number(p.get("ai_confidence")),
+    ]
+    return "|".join(fields)
+
+
+def pine_input_block(payload: Mapping[str, Any]) -> str:
+    """Return the compact Linked Plan packet that avoids Pine's main-body limit."""
     return "\n".join(
         [
             "MOMOPRO AI LINKED PLAN — COPY INTO INDICATOR SETTINGS",
             "Enable Linked Plan Mode: ON",
-            f"Official Trade ID: {_text(p.get('trade_id'))}",
-            f"Official Symbol: {_text(p.get('symbol'))}",
-            f"Official Timeframe: {_text(p.get('timeframe') or '1D')}",
-            f"Official Setup: {_text(p.get('setup'))}",
-            f"Official Grade: {_text(p.get('grade'))}",
-            f"Official Entry Low: {_number(p.get('entry_low'))}",
-            f"Official Entry High: {_number(p.get('entry_high'))}",
-            f"Official Stop: {_number(p.get('stop'))}",
-            f"Official T1: {_number(p.get('t1'))}",
-            f"Official T2: {_number(p.get('t2'))}",
-            f"Official T3: {_number(p.get('t3'))}",
-            f"Official Support: {_number(p.get('support'))}",
-            f"Official Resistance: {_number(p.get('resistance'))}",
-            f"Official Momo Score: {_number(p.get('momo_score'))}",
-            f"Official Opportunity Score: {_number(p.get('opportunity_score'))}",
-            f"Official Independent AI Confidence: {_number(p.get('ai_confidence'))}",
-            f"Official Thesis: {_text(p.get('thesis'))}",
-            f"Official Invalidation: {_text(p.get('invalidation'))}",
+            f"Official Plan Packet: {official_plan_packet(payload)}",
+            "Show Official Entry / Stop / Targets: ON",
+            "Show Official Support / Resistance: ON",
+            "Show Official Plan Panel: ON",
         ]
     )
 
