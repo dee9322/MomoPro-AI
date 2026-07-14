@@ -114,3 +114,36 @@ def tradingview_chart_url(symbol: str, timeframe: str = "1D") -> str:
     interval_map = {"1D": "D", "4H": "240", "1H": "60", "15m": "15", "5m": "5"}
     interval = interval_map.get(timeframe, "D")
     return f"https://www.tradingview.com/chart/?symbol={quote(str(symbol).upper().strip())}&interval={interval}"
+
+
+PACKET_FIELDS = (
+    "trade_id", "symbol", "timeframe", "setup", "grade",
+    "entry_low", "entry_high", "stop", "t1", "t2", "t3",
+    "support", "resistance", "momo_score", "opportunity_score", "ai_confidence",
+)
+
+
+def packet_diagnostics(packet: str) -> dict[str, Any]:
+    """Validate the exact companion-indicator packet before the user copies it."""
+    raw = str(packet or "").strip()
+    parts = raw.split("|") if raw else []
+    values = dict(zip(PACKET_FIELDS, parts)) if len(parts) == len(PACKET_FIELDS) else {}
+    errors: list[str] = []
+    if len(parts) != len(PACKET_FIELDS):
+        errors.append(f"Expected {len(PACKET_FIELDS)} fields but found {len(parts)}.")
+    if values:
+        if not values.get("symbol"):
+            errors.append("Symbol is missing.")
+        for name in ("entry_low", "entry_high", "stop"):
+            try:
+                if float(values.get(name) or 0) <= 0:
+                    errors.append(f"{name.replace('_', ' ').title()} must be greater than zero.")
+            except (TypeError, ValueError):
+                errors.append(f"{name.replace('_', ' ').title()} is not numeric.")
+    return {
+        "valid": not errors,
+        "field_count": len(parts),
+        "expected_field_count": len(PACKET_FIELDS),
+        "errors": errors,
+        "values": values,
+    }
