@@ -1,3 +1,10 @@
+## v0.95B — Native Live Chart & TradingView Bridge
+
+- Added a native multi-timeframe candlestick workspace using Alpaca market data.
+- Added EMA21/50/200, volume, RSI, MACD, RVOL, and Official MomoPro Plan overlays.
+- Added TradingView chart launch, canonical plan JSON export, Pine input export, and stable trade IDs.
+- Preserved all existing TradingView indicator functionality; Pine changes remain deferred to v0.95C.
+- Added integration-event storage helpers for the upcoming webhook phase.
 # MomoPro AI Changelog
 
 ## v0.85 Package 2 — Webull Historical Import & Reconciliation
