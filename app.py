@@ -55,6 +55,7 @@ from trade_journal import (
 )
 from broker_import import preview_webull_csv
 from trade_storage import load_broker_executions, load_broker_imports
+from webull_sync import load_webull_snapshot, sync_webull, webull_connection_status
 from trade_storage import load_trades, save_attachment
 from performance_engine import (
     SOURCE_OPTIONS, calculate_summary, data_quality_report, decision_accuracy, equity_curve,
@@ -3628,10 +3629,111 @@ with tabs[7]:
             "matches buys and sells into journal trades, and keeps unmatched rows visible instead of guessing."
         )
         st.info(
-            "This is the historical/backfill layer. The official read-only Webull API sync remains locked "
-            "for v0.95 Ecosystem Integration."
+            "Webull OpenAPI is the normal daily read-only sync. CSV import remains available for historical "
+            "backfill, recovery, and reconciliation. MomoPro never places, modifies, or cancels orders."
         )
 
+        st.markdown("#### Official Webull OpenAPI — Read Only")
+        webull_api_key = _secret("WEBULL_APP_KEY")
+        webull_api_secret = _secret("WEBULL_APP_SECRET")
+        try:
+            webull_section = st.secrets.get("webull", {})
+            webull_api_key = webull_api_key or webull_section.get("app_key")
+            webull_api_secret = webull_api_secret or webull_section.get("app_secret")
+            webull_environment = str(webull_section.get("environment", "production"))
+        except Exception:
+            webull_environment = "production"
+
+        api_status = webull_connection_status()
+        status_label = str(api_status.get("status") or "not_connected").replace("_", " ").title()
+        api_metrics = st.columns(5)
+        api_metrics[0].metric("Connection", status_label)
+        api_metrics[1].metric("Mode", "Read Only")
+        api_metrics[2].metric("Accounts", api_status.get("accounts", 0))
+        api_metrics[3].metric("Live Positions", api_status.get("positions", 0))
+        api_metrics[4].metric("Last Sync", str(api_status.get("last_sync") or "—")[:19].replace("T", " "))
+
+        if not webull_api_key or not webull_api_secret:
+            st.warning(
+                "Webull credentials are missing. In Streamlit Secrets use either "
+                "[webull] app_key/app_secret or WEBULL_APP_KEY/WEBULL_APP_SECRET."
+            )
+        sync_cols = st.columns([1, 1, 2])
+        history_days = sync_cols[0].number_input("Order history days", 30, 3650, 730, step=30, key="webull_history_days")
+        sync_clicked = sync_cols[1].button(
+            "Sync Webull Now",
+            type="primary",
+            use_container_width=True,
+            disabled=not bool(webull_api_key and webull_api_secret),
+            key="sync_webull_openapi",
+        )
+        sync_cols[2].caption(
+            "Pulls accounts, balances, current positions, open/filled orders and executions, then reconciles "
+            "new fills into Journal and Performance with duplicate protection."
+        )
+        if sync_clicked:
+            with st.spinner("Synchronizing Webull in read-only mode..."):
+                sync_output = sync_webull(
+                    str(webull_api_key),
+                    str(webull_api_secret),
+                    environment=webull_environment,
+                    history_days=int(history_days),
+                )
+            sync_result = sync_output.get("result", {})
+            if sync_result.get("ok"):
+                st.success(
+                    f"Webull sync complete: {sync_result.get('accounts', 0)} account(s), "
+                    f"{sync_result.get('positions', 0)} position(s), {sync_result.get('orders', 0)} order(s), "
+                    f"and {sync_result.get('new_executions', 0)} new execution(s)."
+                )
+                if sync_result.get("errors"):
+                    st.warning("Sync completed with warnings: " + " | ".join(sync_result["errors"]))
+                st.rerun()
+            else:
+                st.error("Webull sync failed: " + " | ".join(sync_result.get("errors") or ["Unknown error"]))
+
+        webull_snapshot = load_webull_snapshot()
+        balances = list((webull_snapshot.get("balances") or {}).values())
+        if balances:
+            st.markdown("##### Account Snapshot")
+            st.dataframe(pd.DataFrame([{
+                "Account": next((a.get("masked_account") for a in webull_snapshot.get("accounts", []) if a.get("account_id") == item.get("account_id")), "—"),
+                "Net Liquidation": item.get("net_liquidation"),
+                "Cash": item.get("cash_balance"),
+                "Buying Power": item.get("buying_power"),
+                "Market Value": item.get("market_value"),
+                "Unrealized P/L": item.get("unrealized_pnl"),
+                "Realized P/L": item.get("realized_pnl"),
+            } for item in balances]), use_container_width=True, hide_index=True)
+
+        live_positions = [item for item in webull_snapshot.get("positions", []) if item.get("symbol")]
+        if live_positions:
+            st.markdown("##### Current Webull Positions")
+            st.dataframe(pd.DataFrame([{
+                "Symbol": item.get("symbol"),
+                "Quantity": item.get("quantity"),
+                "Average Cost": item.get("average_cost"),
+                "Last Price": item.get("last_price"),
+                "Market Value": item.get("market_value"),
+                "Unrealized P/L": item.get("unrealized_pnl"),
+            } for item in live_positions]), use_container_width=True, hide_index=True)
+
+        recent_orders = webull_snapshot.get("orders", [])[:100]
+        if recent_orders:
+            with st.expander(f"Recent Webull Orders ({len(webull_snapshot.get('orders', []))})"):
+                st.dataframe(pd.DataFrame([{
+                    "Updated": item.get("updated_at"),
+                    "Symbol": item.get("symbol"),
+                    "Side": item.get("side"),
+                    "Status": item.get("status"),
+                    "Quantity": item.get("quantity"),
+                    "Filled": item.get("filled_quantity"),
+                    "Average Price": item.get("average_price"),
+                    "Order ID": item.get("order_id"),
+                } for item in recent_orders]), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("#### Webull CSV Backfill & Reconciliation")
         import_status = broker_import_status()
         broker_metrics = st.columns(5)
         broker_metrics[0].metric("Executions", import_status.get("executions", 0))
@@ -4565,7 +4667,7 @@ with tabs[10]:
             {"Integration": "Alpaca Market Data", "Status": "Configured" if _secret("ALPACA_API_KEY") and _secret("ALPACA_SECRET_KEY") else "Missing secrets", "Role": "Market data"},
             {"Integration": "OpenAI", "Status": "Configured" if _secret("OPENAI_API_KEY") else "Missing secret", "Role": "AI research"},
             {"Integration": "Webull CSV", "Status": "Enabled" if data.get("webull_csv_enabled", True) else "Disabled", "Role": "Historical import"},
-            {"Integration": "Webull OpenAPI", "Status": data.get("webull_api_mode", "Not Connected"), "Role": "Read-only sync planned for v0.95"},
+            {"Integration": "Webull OpenAPI", "Status": str(webull_connection_status().get("status", "Not Connected")).replace("_", " ").title(), "Role": "Official read-only daily sync"},
             {"Integration": "TradingView", "Status": data.get("tradingview_status", "Planned for v0.95"), "Role": "Execution ecosystem"},
         ]
         st.dataframe(pd.DataFrame(provider_rows), use_container_width=True, hide_index=True)
