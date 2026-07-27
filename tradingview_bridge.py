@@ -40,6 +40,7 @@ def build_tradingview_payload(analysis: Any, timeframe: str = "1D") -> dict[str,
         "entry_low": plan.get("entry_low"),
         "entry_high": plan.get("entry_high"),
         "reference_entry": plan.get("reference_entry"),
+        "max_chase": plan.get("max_chase"),
         "stop": plan.get("stop"),
         "t1": plan.get("t1"),
         "t2": plan.get("t2"),
@@ -73,7 +74,7 @@ def _packet_text(value: Any) -> str:
 
 
 def official_plan_packet(payload: Mapping[str, Any]) -> str:
-    """Return the compact pipe-delimited packet used by the Pine hotfix."""
+    """Return the compact v2 packet used by Official Plan Validation Mode."""
     p = dict(payload or {})
     fields = [
         _packet_text(p.get("trade_id")),
@@ -83,6 +84,8 @@ def official_plan_packet(payload: Mapping[str, Any]) -> str:
         _packet_text(p.get("grade")),
         _number(p.get("entry_low")),
         _number(p.get("entry_high")),
+        _number(p.get("reference_entry")),
+        _number(p.get("max_chase")),
         _number(p.get("stop")),
         _number(p.get("t1")),
         _number(p.get("t2")),
@@ -97,15 +100,15 @@ def official_plan_packet(payload: Mapping[str, Any]) -> str:
 
 
 def pine_input_block(payload: Mapping[str, Any]) -> str:
-    """Return the compact Linked Plan packet that avoids Pine's main-body limit."""
+    """Return the Official Plan Validation input block."""
     return "\n".join(
         [
-            "MOMOPRO AI LINKED PLAN — COPY INTO INDICATOR SETTINGS",
-            "Enable Linked Plan Mode: ON",
+            "MOMOPRO AI OFFICIAL PLAN VALIDATION — COPY INTO COMPANION SETTINGS",
+            "Enable Official Plan Mode: ON",
             f"Official Plan Packet: {official_plan_packet(payload)}",
             "Show Official Entry / Stop / Targets: ON",
             "Show Official Support / Resistance: ON",
-            "Show Official Plan Panel: ON",
+            "Show Validation Panel: ON",
         ]
     )
 
@@ -118,13 +121,13 @@ def tradingview_chart_url(symbol: str, timeframe: str = "1D") -> str:
 
 PACKET_FIELDS = (
     "trade_id", "symbol", "timeframe", "setup", "grade",
-    "entry_low", "entry_high", "stop", "t1", "t2", "t3",
+    "entry_low", "entry_high", "reference_entry", "max_chase", "stop", "t1", "t2", "t3",
     "support", "resistance", "momo_score", "opportunity_score", "ai_confidence",
 )
 
 
 def packet_diagnostics(packet: str) -> dict[str, Any]:
-    """Validate the exact companion-indicator packet before the user copies it."""
+    """Validate the Official Plan Validation packet before copying."""
     raw = str(packet or "").strip()
     parts = raw.split("|") if raw else []
     values = dict(zip(PACKET_FIELDS, parts)) if len(parts) == len(PACKET_FIELDS) else {}
