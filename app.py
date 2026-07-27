@@ -4684,7 +4684,7 @@ with tabs[11]:
                 mime="text/plain", use_container_width=True,
             )
 
-        export_tabs = st.tabs(["Official Plan", "Pine Inputs", "JSON Payload"])
+        export_tabs = st.tabs(["Official Plan", "Official Plan Mode", "JSON Payload"])
         with export_tabs[0]:
             official = pd.DataFrame([
                 {"Field": "Trade ID", "Value": tv_payload.get("trade_id")},
@@ -4692,6 +4692,8 @@ with tabs[11]:
                 {"Field": "Timeframe", "Value": tv_payload.get("timeframe")},
                 {"Field": "Entry Low", "Value": tv_payload.get("entry_low")},
                 {"Field": "Entry High", "Value": tv_payload.get("entry_high")},
+                {"Field": "Reference Entry", "Value": tv_payload.get("reference_entry")},
+                {"Field": "Maximum Chase", "Value": tv_payload.get("max_chase")},
                 {"Field": "Stop", "Value": tv_payload.get("stop")},
                 {"Field": "T1", "Value": tv_payload.get("t1")},
                 {"Field": "T2", "Value": tv_payload.get("t2")},
@@ -4716,17 +4718,17 @@ with tabs[11]:
                 value=packet,
                 height=90,
                 key=f"official_plan_packet_{chart_symbol}_{chart_timeframe}",
-                help="Click inside, press Ctrl+A, then Ctrl+C. Paste this exact one-line value into the MomoPro AI Link Companion settings.",
+                help="Click inside, press Ctrl+A, then Ctrl+C. Paste this exact one-line value into the MomoPro Official Plan Validation settings.",
             )
             if diagnostics["valid"]:
                 st.success(f"Packet ready: {diagnostics['field_count']} of {diagnostics['expected_field_count']} required fields detected.")
             else:
                 st.error("The packet is not ready: " + " ".join(diagnostics["errors"]))
-            st.markdown("**Step 2 — TradingView companion settings**")
+            st.markdown("**Step 2 — TradingView Official Plan Mode settings**")
             st.code(
-                "1. Add MomoPro AI Link Companion to the same chart as your original MomoPro indicator.\n"
-                "2. Open the companion gear icon → Inputs.\n"
-                "3. Turn ON Enable Linked Plan Mode.\n"
+                "1. Add MomoPro Official Plan Validation to the same chart as your original MomoPro indicator.\n"
+                "2. Open the Official Plan Validation gear icon → Inputs.\n"
+                "3. Turn ON Enable Official Plan Mode.\n"
                 "4. Paste the one-line packet into Official Plan Packet.\n"
                 "5. Leave Validate Timeframe OFF for the first test.\n"
                 "6. Click OK.",
@@ -4734,7 +4736,7 @@ with tabs[11]:
             )
             with st.expander("Full instruction block (the companion can also extract the packet from this)"):
                 st.code(pine_input_block(tv_payload), language="text")
-            st.caption("Your original MomoPro indicator remains unchanged. The companion only displays and monitors the official AI plan.")
+            st.caption("Your original MomoPro indicator remains unchanged. The validation layer reads the official strategic plan while your original MomoPro indicator keeps all of its normal signals, visuals, lifecycle, and exit logic active.")
         with export_tabs[2]:
             st.code(payload_json(tv_payload), language="json")
 
