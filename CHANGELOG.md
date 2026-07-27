@@ -1,3 +1,13 @@
+## v0.95C2 — Official Plan Validation Foundation
+
+- Replaced the obsolete Linked Plan wording with Official Plan Mode.
+- Added a versioned 18-field Official Plan packet with reference entry and maximum chase.
+- Added `MomoPro_Official_Plan_Validation_v0.95C2.pine` as a lightweight companion that runs beside the unchanged Phase 5.6 indicator.
+- Added live validation for entry-zone location, maximum chase, EMA21/50/200 structure, EMA slopes, RSI, MACD, RVOL, candle confirmation, parent timeframe, SPY/QQQ market context, resistance proximity, tactical stop, targets, and invalidation.
+- Added clear states: packet required, plan loaded, waiting for entry, entry area/wait, entry confirmed, too extended, target reached, and plan invalidated.
+- Preserved the original MomoPro indicator as the complete standalone execution and trade-management engine.
+- Removed old UI instructions referring to MomoPro AI Link Companion and Enable Linked Plan Mode.
+
 ## v0.95B — Native Live Chart & TradingView Bridge
 
 - Added a native multi-timeframe candlestick workspace using Alpaca market data.
@@ -306,4 +316,4 @@
 - Added official setup, grade, Momo Score, Opportunity Score, and Independent AI Confidence display.
 - Added symbol/timeframe mismatch warnings.
 - Added structured JSON webhook events for entry-zone, targets, manage, trim, exit, hard-exit, and stop events.
-- Updated the app's Pine Input Block labels to match the indicator inputs exactly.
+- Updated the app's Pine Input Block labels to match the indicator inputs exactly
