@@ -283,4 +283,17 @@ def sector_rows(market_context: dict[str, Any] | None, limit: int = 6) -> tuple[
 
 
 def broker_status() -> dict[str, Any]:
-    return broker_import_status()
+    csv_status = broker_import_status()
+    try:
+        from webull_sync import webull_connection_status
+        api_status = webull_connection_status()
+    except Exception:
+        api_status = {"status": "not_connected", "last_sync": None, "positions": 0, "accounts": 0}
+    return {
+        **csv_status,
+        "connected": api_status.get("status") in {"connected", "connected_with_warnings"} or csv_status.get("connected", False),
+        "api_status": api_status.get("status", "not_connected"),
+        "last_sync": api_status.get("last_sync"),
+        "live_positions": api_status.get("positions", 0),
+        "accounts": api_status.get("accounts", 0),
+    }
