@@ -4619,6 +4619,31 @@ with tabs[11]:
     with controls[3]:
         refresh_chart = st.button("Refresh Chart", use_container_width=True, key="refresh_live_chart")
 
+    with st.expander("Chart display controls", expanded=False):
+        overlay_choices = st.multiselect(
+            "Visible overlays",
+            ["EMA21", "EMA50", "EMA200", "Entry", "Max Chase", "Stop", "T1", "T2", "T3", "Support", "Resistance", "RSI", "MACD", "RVOL"],
+            default=["EMA21", "EMA50", "EMA200", "Entry", "Max Chase", "Stop", "T1", "T2", "T3", "Support", "Resistance", "RSI", "MACD", "RVOL"],
+            key="live_chart_overlays",
+            help="Turn off any plan level or indicator panel that is crowding the chart. Level details remain available through hoverable symbols.",
+        )
+    chart_display_options = {
+        "ema21": "EMA21" in overlay_choices,
+        "ema50": "EMA50" in overlay_choices,
+        "ema200": "EMA200" in overlay_choices,
+        "entry": "Entry" in overlay_choices,
+        "max_chase": "Max Chase" in overlay_choices,
+        "stop": "Stop" in overlay_choices,
+        "t1": "T1" in overlay_choices,
+        "t2": "T2" in overlay_choices,
+        "t3": "T3" in overlay_choices,
+        "support": "Support" in overlay_choices,
+        "resistance": "Resistance" in overlay_choices,
+        "rsi": "RSI" in overlay_choices,
+        "macd": "MACD" in overlay_choices,
+        "rvol": "RVOL" in overlay_choices,
+    }
+
     analysis = saved_analyses.get(chart_symbol) or get_analysis(chart_symbol)
     plan = analysis.plan.__dict__ if analysis else {}
 
@@ -4659,7 +4684,16 @@ with tabs[11]:
         snapshot_cols[3].metric("EMA200", money_text(latest.get("ema200")))
         snapshot_cols[4].metric("RSI", "—" if latest.get("rsi14") is None else f"{latest['rsi14']:.1f}")
         snapshot_cols[5].metric("RVOL", "—" if latest.get("rvol") is None else f"{latest['rvol']:.2f}x")
-        st.plotly_chart(build_live_chart(frame, chart_symbol, chart_timeframe, plan), use_container_width=True)
+        st.plotly_chart(
+            build_live_chart(frame, chart_symbol, chart_timeframe, plan, chart_display_options),
+            use_container_width=True,
+            config={
+                "displaylogo": False,
+                "scrollZoom": True,
+                "responsive": True,
+                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+            },
+        )
         st.caption(f"Latest available candle: {latest.get('timestamp') or 'Unavailable'} · Alpaca IEX feed")
 
     st.divider()
@@ -4742,5 +4776,5 @@ with tabs[11]:
 
     st.info(
         "The Live Chart is MomoPro's research chart. Your full TradingView indicator remains the execution and trade-management companion. "
-        "No Pine feature has been removed or changed in this package."
+        "The original MomoPro indicator remains unchanged. The Official Plan indicator and this research chart now use hover-first visuals and independent display controls to reduce clutter."
     )
