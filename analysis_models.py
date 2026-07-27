@@ -14,6 +14,7 @@ class CanonicalTradePlan:
     entry_low: float | None = None
     entry_high: float | None = None
     reference_entry: float | None = None
+    max_chase: float | None = None
     stop: float | None = None
     t1: float | None = None
     t2: float | None = None
