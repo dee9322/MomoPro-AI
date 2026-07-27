@@ -69,6 +69,11 @@ def build_canonical_trade_plan(
     if stop is None:
         stop = _num(_pick(stock, "Risk Reference", "Stop"))
 
+    risk = reference_entry - stop if reference_entry is not None and stop is not None and reference_entry > stop else None
+    max_chase = None
+    if entry_high is not None:
+        max_chase = entry_high + (min(risk * 0.25, entry_high * 0.02) if risk is not None else entry_high * 0.01)
+
     t1 = target_prices[0] or _num(_pick(stock, "T1", "Reward Reference"))
     t2 = target_prices[1] or _num(_pick(stock, "T2"))
     t3 = target_prices[2] or _num(_pick(stock, "T3"))
@@ -79,6 +84,7 @@ def build_canonical_trade_plan(
         entry_low=entry_low,
         entry_high=entry_high,
         reference_entry=reference_entry,
+        max_chase=max_chase,
         stop=stop,
         t1=t1,
         t2=t2,
