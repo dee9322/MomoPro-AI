@@ -1,4 +1,5 @@
 import math
+from uuid import uuid4
 
 import pandas as pd
 from position_sizing import calculate_position_size
@@ -54,7 +55,7 @@ from trade_journal import (
     import_webull_history, reopen_trade, trade_summary, update_trade,
 )
 from broker_import import preview_webull_csv
-from trade_storage import load_broker_executions, load_broker_imports
+from trade_storage import load_broker_executions, load_broker_imports, load_broker_orders
 from webull_sync import load_webull_snapshot, sync_webull, webull_connection_status
 from trade_storage import load_trades, save_attachment
 from performance_engine import (
@@ -76,6 +77,8 @@ from canonical_analysis import build_canonical_analysis, planner_prefill
 from analysis_storage import save_analysis, get_analysis, list_analyses
 from chart_data import available_timeframes, latest_chart_snapshot, load_chart_bars
 from chart_engine import build_live_chart
+from trade_classification import classification_label
+from historical_reconstruction import reconstruct_trade
 from tradingview_bridge import (build_tradingview_payload, official_plan_packet, packet_diagnostics, payload_json, pine_input_block, tradingview_chart_url)
 
 
@@ -3466,10 +3469,15 @@ with tabs[6]:
         st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
         st.success("Trade plan saved in this session.")
     if planner_action_2.button("Send Plan to Journal", use_container_width=True):
+        plan_id = f"MP-{planner_symbol}-{uuid4().hex[:10].upper()}"
+        plan_created_at = utc_now()
+        plan_snapshot = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "shares": shares, "thesis": plan_notes, "created_at": plan_created_at}
         st.session_state.journal_prefill = {
             "symbol": planner_symbol, "entry_price": entry, "shares": shares,
             "initial_stop": stop, "t1": t1, "t2": t2, "t3": t3,
-            "thesis": plan_notes,
+            "thesis": plan_notes, "plan_id": plan_id, "plan_created_at": plan_created_at,
+            "plan_snapshot": plan_snapshot, "plan_completeness": 100.0 if all([planner_symbol, entry, stop, t1, shares]) else 65.0,
+            "source": "momopro_plan",
         }
         st.success("Trade plan loaded into the Journal. Open the Journal tab to review and save it.")
 
@@ -3683,6 +3691,37 @@ with tabs[7]:
             )
             closed_trade = get_trade(closed_id)
             if closed_trade:
+                mode_label = classification_label(closed_trade.review_mode)
+                st.markdown(f"### Trade Intelligence: {mode_label}")
+                st.caption(closed_trade.classification_reason or "Classification is based on the evidence attached to this trade.")
+                intel_cols = st.columns(3)
+                intel_cols[0].metric("Review Mode", mode_label)
+                intel_cols[1].metric("Intelligence Score", f"{closed_trade.intelligence_score:.0f}/100")
+                intel_cols[2].metric("Evidence Items", len(closed_trade.evidence))
+                if closed_trade.evidence:
+                    with st.expander("Broker & Plan Evidence", expanded=False):
+                        st.dataframe(pd.DataFrame([{"Evidence": e.get("label"), "Source": e.get("source"), "Confidence": e.get("confidence"), "Observed": e.get("observed_at")} for e in closed_trade.evidence]), use_container_width=True, hide_index=True)
+                if closed_trade.timeline:
+                    with st.expander("Complete Trade Timeline", expanded=False):
+                        st.dataframe(pd.DataFrame([{"Time": e.get("event_at"), "Event": e.get("title"), "Details": e.get("description"), "Source": e.get("source"), "Confidence": e.get("confidence")} for e in closed_trade.timeline]), use_container_width=True, hide_index=True)
+                if closed_trade.review_mode == "historical_reconstruction":
+                    st.markdown("#### Historical Reconstruction")
+                    if st.button("Reconstruct Historical Entry", key=f"reconstruct_{closed_trade.id}"):
+                        try:
+                            reconstruction = reconstruct_trade(closed_trade, st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"])
+                            update_trade(closed_trade.id, reconstruction=reconstruction)
+                            st.success("Historical entry reconstructed without hindsight contamination.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"Reconstruction failed: {error}")
+                    if closed_trade.reconstruction:
+                        rc=closed_trade.reconstruction
+                        rc_cols=st.columns(4)
+                        rc_cols[0].metric("Objective Entry Grade", rc.get("objective_entry_grade","—"))
+                        rc_cols[1].metric("Entry Score", rc.get("objective_entry_score","—"))
+                        rc_cols[2].metric("Likely Setup", rc.get("likely_setup","—"))
+                        rc_cols[3].metric("Setup Confidence", f"{rc.get('setup_confidence',0):.0f}%")
+                        st.json(rc)
                 review_1, review_2 = st.columns(2)
                 followed = review_1.selectbox("Did you follow the planned exit?", ["Not Reviewed", "Yes", "Mostly", "No"], index=["Not Reviewed", "Yes", "Mostly", "No"].index(closed_trade.planned_exit_followed if closed_trade.planned_exit_followed in ["Not Reviewed", "Yes", "Mostly", "No"] else "Not Reviewed"), key=f"review_followed_{closed_trade.id}")
                 rule_score = review_2.slider("Plan / Rule Following Score", 0, 100, int(closed_trade.rule_following_score or 0), key=f"review_score_{closed_trade.id}")
@@ -3824,8 +3863,16 @@ with tabs[7]:
                     "Quantity": item.get("quantity"),
                     "Filled": item.get("filled_quantity"),
                     "Average Price": item.get("average_price"),
+                    "Stop Price": item.get("stop_price"),
                     "Order ID": item.get("order_id"),
                 } for item in recent_orders]), use_container_width=True, hide_index=True)
+
+        permanent_orders = load_broker_orders()
+        canceled_orders = [o for o in permanent_orders if o.status.upper().replace(" ", "_") in {"CANCELED", "CANCELLED"}]
+        if canceled_orders:
+            with st.expander(f"Canceled-Order Intelligence ({len(canceled_orders)})"):
+                st.caption("Canceled orders are preserved permanently and used as evidence. They never change shares or realized P/L.")
+                st.dataframe(pd.DataFrame([{"Updated": o.updated_at, "Symbol": o.symbol, "Side": o.side, "Type": o.order_type, "Quantity": o.quantity, "Stop": o.stop_price or None, "Limit": o.limit_price or None, "Classification": o.purpose, "Confidence": o.purpose_confidence, "Trade ID": o.matched_trade_id or "—"} for o in sorted(canceled_orders, key=lambda x:x.updated_at, reverse=True)[:250]]), use_container_width=True, hide_index=True)
 
         sync_summary = webull_snapshot.get("sync_summary") or {}
         sync_warnings = sync_summary.get("errors") or []
