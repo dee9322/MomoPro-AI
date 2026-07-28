@@ -22,6 +22,7 @@ from trade_storage import (
 )
 from broker_order_intelligence import merge_orders, link_and_classify_orders
 from trade_evidence import refresh_trade_evidence
+from trade_classification import classify_trade
 from trade_timeline import build_trade_timeline
 from webull_api import WebullCredentials, WebullReadOnlyClient, safe_shape
 
@@ -517,6 +518,7 @@ def sync_webull(
         trades = refresh_trade_evidence(trades, broker_orders, all_executions)
         for trade in trades:
             build_trade_timeline(trade, broker_orders, all_executions)
+            classify_trade(trade)
         save_broker_state(trades, all_executions, imports, broker_orders)
 
         completed = utc_now()
