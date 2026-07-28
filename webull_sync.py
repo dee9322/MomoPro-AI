@@ -124,7 +124,7 @@ def _number(value: Any, default: float = 0.0) -> float:
 
 def _time(value: Any) -> str:
     if value in (None, ""):
-        return utc_now()
+        return ""
     text = str(value).strip()
     if text.isdigit():
         raw = int(text)
@@ -207,7 +207,53 @@ def normalize_order(account_id: str, order: dict[str, Any]) -> dict[str, Any]:
     broker_order_id = str(_deep_first(order, ("order_id", "orderId"), ""))
     order_id = client_order_id or broker_order_id
     status = str(_deep_first(order, ("status", "order_status", "orderStatus"), "Unknown"))
+    normalized_status = status.upper().replace(" ", "_").replace("-", "_")
     side = str(_deep_first(order, ("side", "action"), "")).upper()
+    order_type = str(_deep_first(order, ("order_type", "orderType", "type"), ""))
+    normalized_type = order_type.upper().replace(" ", "_").replace("-", "_")
+    quantity = _number(_deep_first(order, ("quantity", "qty", "total_quantity", "totalQuantity", "order_quantity", "orderQuantity")))
+    filled_quantity = _number(_deep_first(order, ("filled_quantity", "filledQuantity", "filled_qty", "filledQty", "executed_quantity", "executedQuantity", "cumulative_quantity", "cumulativeQuantity")))
+
+    average_price = _number(_deep_first(order, ("average_price", "averagePrice", "avg_price", "avgPrice", "filled_price", "filledPrice", "average_filled_price", "averageFilledPrice", "execution_price", "executionPrice")))
+    limit_price = _number(_deep_first(order, ("limit_price", "limitPrice")))
+    raw_stop_price = _number(_deep_first(order, ("stop_price", "stopPrice", "aux_price", "auxPrice", "trigger_price", "triggerPrice")))
+
+    fills = _nested_execution_rows(order)
+    if average_price <= 0 and fills:
+        weighted_value = 0.0
+        weighted_qty = 0.0
+        for fill in fills:
+            fill_qty = _number(_deep_first(fill, ("quantity", "qty", "filled_quantity", "filledQuantity", "executed_quantity", "executedQuantity", "filled_qty", "filledQty")))
+            fill_price = _number(_deep_first(fill, ("price", "filled_price", "filledPrice", "execution_price", "executionPrice", "average_price", "averagePrice", "avg_price", "avgPrice")))
+            if fill_qty > 0 and fill_price > 0:
+                weighted_value += fill_qty * fill_price
+                weighted_qty += fill_qty
+        if weighted_qty > 0:
+            average_price = weighted_value / weighted_qty
+
+    generic_price = _number(_deep_first(order, ("price",)))
+    if "LIMIT" in normalized_type and limit_price <= 0:
+        limit_price = generic_price
+    if filled_quantity > 0 and average_price <= 0 and generic_price > 0 and "STOP" not in normalized_type:
+        average_price = generic_price
+
+    # Webull response objects can expose a generic price through stop-like fields.
+    # A price is only a protective stop when the broker order type itself is a stop order.
+    stop_price = raw_stop_price if "STOP" in normalized_type else 0.0
+    if filled_quantity > 0 and average_price <= 0 and raw_stop_price > 0 and "STOP" not in normalized_type:
+        average_price = raw_stop_price
+
+    submitted_at = _time(_deep_first(order, ("submitted_at", "submittedAt", "created_at", "createdAt", "create_time", "createTime", "placed_time", "placedTime", "order_time", "orderTime")))
+    filled_at = _time(_deep_first(order, ("filled_at", "filledAt", "filled_time", "filledTime", "executed_at", "executedAt", "execution_time", "executionTime", "trade_time", "tradeTime")))
+    cancelled_at = _time(_deep_first(order, ("cancelled_at", "cancelledAt", "canceled_at", "canceledAt", "cancel_time", "cancelTime", "cancelled_time", "cancelledTime")))
+    explicit_updated_at = _time(_deep_first(order, ("updated_at", "updatedAt", "update_time", "updateTime", "last_updated_time", "lastUpdatedTime", "modified_at", "modifiedAt")))
+    if normalized_status in {"CANCELED", "CANCELLED"}:
+        updated_at = cancelled_at or explicit_updated_at or submitted_at
+    elif filled_quantity > 0 or normalized_status in FILLED_WORDS:
+        updated_at = filled_at or explicit_updated_at or submitted_at
+    else:
+        updated_at = explicit_updated_at or submitted_at
+
     return {
         "account_id": account_id,
         "order_id": order_id,
@@ -216,14 +262,18 @@ def normalize_order(account_id: str, order: dict[str, Any]) -> dict[str, Any]:
         "symbol": _symbol(order),
         "side": side,
         "status": status,
-        "order_type": str(_deep_first(order, ("order_type", "orderType", "type"), "")),
-        "quantity": _number(_deep_first(order, ("quantity", "qty", "total_quantity", "totalQuantity", "order_quantity", "orderQuantity"))),
-        "filled_quantity": _number(_deep_first(order, ("filled_quantity", "filledQuantity", "filled_qty", "filledQty", "executed_quantity", "executedQuantity", "cumulative_quantity", "cumulativeQuantity"))),
-        "average_price": _number(_deep_first(order, ("average_price", "averagePrice", "avg_price", "avgPrice", "filled_price", "filledPrice", "average_filled_price", "averageFilledPrice"))),
-        "limit_price": _number(_deep_first(order, ("limit_price", "limitPrice", "price"))),
-        "stop_price": _number(_deep_first(order, ("stop_price", "stopPrice", "aux_price", "auxPrice", "trigger_price", "triggerPrice"))),
-        "created_at": _time(_deep_first(order, ("created_at", "createdAt", "create_time", "createTime", "placed_time", "placedTime", "order_time", "orderTime"))),
-        "updated_at": _time(_deep_first(order, ("updated_at", "updatedAt", "update_time", "updateTime", "filled_time", "filledTime", "last_updated_time", "lastUpdatedTime"))),
+        "order_type": order_type,
+        "quantity": quantity,
+        "filled_quantity": filled_quantity,
+        "average_price": average_price,
+        "limit_price": limit_price,
+        "stop_price": stop_price,
+        "submitted_at": submitted_at,
+        "filled_at": filled_at,
+        "cancelled_at": cancelled_at,
+        "created_at": submitted_at,
+        "updated_at": updated_at,
+        "synced_at": utc_now(),
         "raw": order,
     }
 
@@ -403,7 +453,13 @@ def sync_webull(
 
                 for item in normalized_orders:
                     detail_id = str(item.get("client_order_id") or "")
-                    needs_detail = bool(detail_id and _is_filled_or_partial(item) and not _has_execution_data(item))
+                    needs_execution_detail = bool(detail_id and _is_filled_or_partial(item) and not _has_execution_data(item))
+                    normalized_status = str(item.get("status") or "").upper().replace(" ", "_").replace("-", "_")
+                    needs_cancel_detail = bool(
+                        detail_id and normalized_status in {"CANCELED", "CANCELLED"}
+                        and not item.get("cancelled_at")
+                    )
+                    needs_detail = needs_execution_detail or needs_cancel_detail
                     cache_key = _detail_cache_key(account_id, detail_id) if detail_id else ""
 
                     if needs_detail and cache_key and cache_key in detail_cache:
