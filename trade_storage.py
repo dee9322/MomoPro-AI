@@ -5,26 +5,50 @@ from pathlib import Path
 from typing import Any
 
 from broker_models import BrokerExecution, BrokerImportRecord, BrokerOrder
+from cloud_storage import cloud_available, load_document, save_document
 from trade_models import TradeRecord, utc_now
 
 TRADE_DATA_FILE = Path(__file__).with_name("trade_data.json")
 ATTACHMENT_DIR = Path(__file__).with_name("journal_attachments")
-DEFAULT_PAYLOAD = {"schema_version": 3, "updated_at": None, "trades": [], "broker_executions": [], "broker_orders": [], "broker_imports": []}
+BUCKET = "trade_data"
+DEFAULT_PAYLOAD = {
+    "schema_version": 3,
+    "updated_at": None,
+    "trades": [],
+    "broker_executions": [],
+    "broker_orders": [],
+    "broker_imports": [],
+}
 
 
 def _ensure_storage() -> None:
     if not TRADE_DATA_FILE.exists():
-        save_payload(DEFAULT_PAYLOAD)
+        _save_local(DEFAULT_PAYLOAD)
 
 
-def load_payload() -> dict[str, Any]:
+def _load_local() -> dict[str, Any]:
     _ensure_storage()
     try:
         payload = json.loads(TRADE_DATA_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return dict(DEFAULT_PAYLOAD)
+    return payload if isinstance(payload, dict) else dict(DEFAULT_PAYLOAD)
+
+
+def _save_local(payload: dict[str, Any]) -> None:
+    TRADE_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    clean = dict(payload)
+    clean["updated_at"] = utc_now()
+    temp = TRADE_DATA_FILE.with_suffix(".tmp")
+    temp.write_text(json.dumps(clean, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp.replace(TRADE_DATA_FILE)
+
+
+def load_payload() -> dict[str, Any]:
+    local = _load_local()
+    payload = load_document(BUCKET, local) if cloud_available() else local
     if not isinstance(payload, dict):
-        return dict(DEFAULT_PAYLOAD)
+        payload = dict(DEFAULT_PAYLOAD)
     payload.setdefault("schema_version", 3)
     payload.setdefault("trades", [])
     payload.setdefault("broker_executions", [])
@@ -34,12 +58,11 @@ def load_payload() -> dict[str, Any]:
 
 
 def save_payload(payload: dict[str, Any]) -> None:
-    TRADE_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     clean = dict(payload)
     clean["updated_at"] = utc_now()
-    temp = TRADE_DATA_FILE.with_suffix(".tmp")
-    temp.write_text(json.dumps(clean, indent=2, ensure_ascii=False), encoding="utf-8")
-    temp.replace(TRADE_DATA_FILE)
+    _save_local(clean)
+    if cloud_available():
+        save_document(BUCKET, clean)
 
 
 def load_trades() -> list[TradeRecord]:
@@ -82,9 +105,9 @@ def save_broker_imports(imports: list[BrokerImportRecord]) -> None:
     save_payload(payload)
 
 
-
 def load_broker_orders() -> list[BrokerOrder]:
     return [BrokerOrder.from_dict(item) for item in load_payload().get("broker_orders", []) if isinstance(item, dict)]
+
 
 def save_broker_orders(orders: list[BrokerOrder]) -> None:
     payload = load_payload()
@@ -92,7 +115,12 @@ def save_broker_orders(orders: list[BrokerOrder]) -> None:
     save_payload(payload)
 
 
-def save_broker_state(trades: list[TradeRecord], executions: list[BrokerExecution], imports: list[BrokerImportRecord], orders: list[BrokerOrder] | None = None) -> None:
+def save_broker_state(
+    trades: list[TradeRecord],
+    executions: list[BrokerExecution],
+    imports: list[BrokerImportRecord],
+    orders: list[BrokerOrder] | None = None,
+) -> None:
     payload = load_payload()
     payload["schema_version"] = 3
     payload["trades"] = [trade.to_dict() for trade in trades]
