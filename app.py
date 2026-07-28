@@ -81,6 +81,10 @@ from trade_classification import classification_label
 from historical_reconstruction import reconstruct_trade
 from broker_order_intelligence import has_reliable_broker_time
 from tradingview_bridge import (build_tradingview_payload, official_plan_packet, packet_diagnostics, payload_json, pine_input_block, tradingview_chart_url)
+from auth_manager import require_auth, sign_out
+from migration_manager import migrate_local_json_once
+from workspace_storage import load_workspace, save_workspace
+from supabase_backend import is_supabase_configured
 
 
 st.set_page_config(
@@ -166,6 +170,26 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+auth_state = require_auth()
+
+if is_supabase_configured():
+    migration_result = migrate_local_json_once()
+else:
+    migration_result = {"completed": False, "buckets": [], "skipped": []}
+
+with st.sidebar:
+    st.markdown("### MomoPro AI")
+    st.caption(auth_state.email or "Local development mode")
+    if is_supabase_configured():
+        st.success("Cloud workspace connected")
+        if migration_result.get("buckets"):
+            st.caption(f"Imported {len(migration_result['buckets'])} local data areas into your private workspace.")
+        if st.button("Sign out", use_container_width=True, key="momopro_sign_out"):
+            sign_out()
+            st.rerun()
+    else:
+        st.warning("Local fallback mode: add Supabase secrets before public release.")
 
 st.title("📈 MomoPro AI")
 st.subheader(
@@ -331,11 +355,14 @@ def load_comparison_research(query):
     )
 
 
+if "momopro_workspace" not in st.session_state:
+    st.session_state.momopro_workspace = load_workspace()
+
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 
 if "selected_symbol" not in st.session_state:
-    st.session_state.selected_symbol = None
+    st.session_state.selected_symbol = st.session_state.momopro_workspace.get("selected_symbol")
 
 if "ai_commentary_cache" not in st.session_state:
     st.session_state.ai_commentary_cache = {}
@@ -347,7 +374,7 @@ if "news_ai_cache" not in st.session_state:
     st.session_state.news_ai_cache = {}
 
 if "news_search_symbol" not in st.session_state:
-    st.session_state.news_search_symbol = ""
+    st.session_state.news_search_symbol = st.session_state.momopro_workspace.get("news_search_symbol", "")
 
 if "smart_money_cache" not in st.session_state:
     st.session_state.smart_money_cache = {}
@@ -5147,3 +5174,18 @@ with tabs[11]:
         "The Live Chart is MomoPro's research chart. Your full TradingView indicator remains the execution and trade-management companion. "
         "The original MomoPro indicator remains unchanged. The Official Plan indicator and this research chart now use hover-first visuals and independent display controls to reduce clutter."
     )
+
+
+# Persist lightweight workspace state on every successful rerun. Large dataframes
+# and provider responses remain in cache/database records rather than this object.
+try:
+    _workspace = dict(st.session_state.get("momopro_workspace") or {})
+    _workspace.update({
+        "selected_symbol": st.session_state.get("selected_symbol"),
+        "news_search_symbol": st.session_state.get("news_search_symbol", ""),
+        "active_watchlist": st.session_state.get("active_watchlist", "Main Watchlist"),
+        "dashboard_universe": st.session_state.get("dashboard_universe", "Entire Market"),
+    })
+    st.session_state.momopro_workspace = save_workspace(_workspace)
+except Exception:
+    pass
