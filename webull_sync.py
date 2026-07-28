@@ -20,7 +20,7 @@ from trade_storage import (
     load_trades,
     save_broker_state,
 )
-from webull_api import WebullCredentials, WebullReadOnlyClient
+from webull_api import WebullCredentials, WebullReadOnlyClient, safe_shape
 
 
 SNAPSHOT_PATH = Path(__file__).with_name("webull_sync_data.json")
@@ -48,7 +48,7 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
 def load_webull_snapshot() -> dict[str, Any]:
     if not SNAPSHOT_PATH.exists():
         return {
-            "schema_version": "0.95-WEBULL-1",
+            "schema_version": "0.95-WEBULL-2",
             "last_sync": None,
             "accounts": [],
             "balances": {},
@@ -72,6 +72,25 @@ def _first(data: dict[str, Any], names: Iterable[str], default: Any = None) -> A
         if value not in (None, ""):
             return value
     return default
+
+
+def _deep_values(data: Any, names: Iterable[str]) -> list[Any]:
+    wanted = {name.lower().replace("_", "") for name in names}
+    found: list[Any] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if str(key).lower().replace("_", "") in wanted and value not in (None, ""):
+                found.append(value)
+            found.extend(_deep_values(value, names))
+    elif isinstance(data, list):
+        for item in data:
+            found.extend(_deep_values(item, names))
+    return found
+
+
+def _deep_first(data: Any, names: Iterable[str], default: Any = None) -> Any:
+    values = _deep_values(data, names)
+    return values[0] if values else default
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -125,25 +144,27 @@ def normalize_account(account: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_balance(account_id: str, balance: dict[str, Any]) -> dict[str, Any]:
+    # Webull may nest monetary values under currency/account/category objects.
+    # Search the complete payload rather than assuming one flat response shape.
     return {
         "account_id": account_id,
-        "net_liquidation": _number(_first(balance, ("net_liquidation", "netLiquidation", "net_account_value", "netAccountValue", "total_assets", "totalAssets"))),
-        "cash_balance": _number(_first(balance, ("cash_balance", "cashBalance", "cash", "settled_cash", "settledCash"))),
-        "buying_power": _number(_first(balance, ("buying_power", "buyingPower", "day_buying_power", "dayBuyingPower"))),
-        "market_value": _number(_first(balance, ("market_value", "marketValue", "positions_market_value", "positionsMarketValue"))),
-        "unrealized_pnl": _number(_first(balance, ("unrealized_pnl", "unrealizedPnl", "unrealized_profit_loss", "unrealizedProfitLoss"))),
-        "realized_pnl": _number(_first(balance, ("realized_pnl", "realizedPnl", "realized_profit_loss", "realizedProfitLoss"))),
-        "currency": str(_first(balance, ("currency", "base_currency", "baseCurrency"), "USD")),
+        "net_liquidation": _number(_deep_first(balance, ("net_liquidation", "netLiquidation", "net_account_value", "netAccountValue", "total_assets", "totalAssets", "total_asset", "totalAsset", "net_value", "netValue"))),
+        "cash_balance": _number(_deep_first(balance, ("cash_balance", "cashBalance", "cash", "settled_cash", "settledCash", "cash_available_for_withdrawal", "cashAvailableForWithdrawal", "cash_value", "cashValue"))),
+        "buying_power": _number(_deep_first(balance, ("buying_power", "buyingPower", "day_buying_power", "dayBuyingPower", "overnight_buying_power", "overnightBuyingPower", "cash_available_for_trade", "cashAvailableForTrade"))),
+        "market_value": _number(_deep_first(balance, ("market_value", "marketValue", "positions_market_value", "positionsMarketValue", "position_market_value", "positionMarketValue", "stock_market_value", "stockMarketValue"))),
+        "unrealized_pnl": _number(_deep_first(balance, ("unrealized_pnl", "unrealizedPnl", "unrealized_profit_loss", "unrealizedProfitLoss", "unrealized_profit", "unrealizedProfit"))),
+        "realized_pnl": _number(_deep_first(balance, ("realized_pnl", "realizedPnl", "realized_profit_loss", "realizedProfitLoss", "realized_profit", "realizedProfit"))),
+        "currency": str(_deep_first(balance, ("currency", "base_currency", "baseCurrency"), "USD")),
         "raw": balance,
     }
 
 
 def normalize_position(account_id: str, position: dict[str, Any]) -> dict[str, Any]:
-    quantity = _number(_first(position, ("quantity", "qty", "position", "total_quantity", "totalQuantity")))
-    average_cost = _number(_first(position, ("average_cost", "averageCost", "avg_cost", "avgCost", "cost_price", "costPrice")))
-    last_price = _number(_first(position, ("last_price", "lastPrice", "market_price", "marketPrice", "current_price", "currentPrice")))
-    market_value = _number(_first(position, ("market_value", "marketValue")), quantity * last_price)
-    unrealized = _number(_first(position, ("unrealized_pnl", "unrealizedPnl", "unrealized_profit_loss", "unrealizedProfitLoss")), market_value - quantity * average_cost)
+    quantity = _number(_deep_first(position, ("quantity", "qty", "position", "total_quantity", "totalQuantity", "position_qty", "positionQty")))
+    average_cost = _number(_deep_first(position, ("average_cost", "averageCost", "avg_cost", "avgCost", "cost_price", "costPrice", "cost_basis", "costBasis")))
+    last_price = _number(_deep_first(position, ("last_price", "lastPrice", "market_price", "marketPrice", "current_price", "currentPrice", "mark_price", "markPrice")))
+    market_value = _number(_deep_first(position, ("market_value", "marketValue", "position_market_value", "positionMarketValue")), quantity * last_price)
+    unrealized = _number(_deep_first(position, ("unrealized_pnl", "unrealizedPnl", "unrealized_profit_loss", "unrealizedProfitLoss", "unrealized_profit", "unrealizedProfit")), market_value - quantity * average_cost)
     return {
         "account_id": account_id,
         "symbol": _symbol(position),
@@ -152,32 +173,44 @@ def normalize_position(account_id: str, position: dict[str, Any]) -> dict[str, A
         "last_price": last_price,
         "market_value": market_value,
         "unrealized_pnl": unrealized,
-        "unrealized_pnl_pct": _number(_first(position, ("unrealized_pnl_ratio", "unrealizedPnlRatio", "unrealized_return", "unrealizedReturn"))),
-        "side": str(_first(position, ("side", "position_side", "positionSide"), "LONG")),
-        "currency": str(_first(position, ("currency",), "USD")),
+        "unrealized_pnl_pct": _number(_deep_first(position, ("unrealized_pnl_ratio", "unrealizedPnlRatio", "unrealized_return", "unrealizedReturn", "unrealized_profit_rate", "unrealizedProfitRate"))),
+        "side": str(_deep_first(position, ("side", "position_side", "positionSide"), "LONG")),
+        "currency": str(_deep_first(position, ("currency",), "USD")),
         "raw": position,
     }
 
 
 def normalize_order(account_id: str, order: dict[str, Any]) -> dict[str, Any]:
-    order_id = str(_first(order, ("order_id", "orderId", "client_order_id", "clientOrderId", "id"), ""))
-    status = str(_first(order, ("status", "order_status", "orderStatus"), "Unknown"))
-    side = str(_first(order, ("side", "action"), "")).upper()
+    client_order_id = str(_deep_first(order, ("client_order_id", "clientOrderId"), ""))
+    broker_order_id = str(_deep_first(order, ("order_id", "orderId"), ""))
+    order_id = client_order_id or broker_order_id
+    status = str(_deep_first(order, ("status", "order_status", "orderStatus"), "Unknown"))
+    side = str(_deep_first(order, ("side", "action"), "")).upper()
     return {
         "account_id": account_id,
         "order_id": order_id,
+        "client_order_id": client_order_id,
+        "broker_order_id": broker_order_id,
         "symbol": _symbol(order),
         "side": side,
         "status": status,
-        "order_type": str(_first(order, ("order_type", "orderType", "type"), "")),
-        "quantity": _number(_first(order, ("quantity", "qty", "total_quantity", "totalQuantity"))),
-        "filled_quantity": _number(_first(order, ("filled_quantity", "filledQuantity", "filled_qty", "filledQty", "executed_quantity", "executedQuantity"))),
-        "average_price": _number(_first(order, ("average_price", "averagePrice", "avg_price", "avgPrice", "filled_price", "filledPrice"))),
-        "limit_price": _number(_first(order, ("limit_price", "limitPrice"))),
-        "created_at": _time(_first(order, ("created_at", "createdAt", "create_time", "createTime", "placed_time", "placedTime"))),
-        "updated_at": _time(_first(order, ("updated_at", "updatedAt", "update_time", "updateTime", "filled_time", "filledTime"))),
+        "order_type": str(_deep_first(order, ("order_type", "orderType", "type"), "")),
+        "quantity": _number(_deep_first(order, ("quantity", "qty", "total_quantity", "totalQuantity", "order_quantity", "orderQuantity"))),
+        "filled_quantity": _number(_deep_first(order, ("filled_quantity", "filledQuantity", "filled_qty", "filledQty", "executed_quantity", "executedQuantity", "cumulative_quantity", "cumulativeQuantity"))),
+        "average_price": _number(_deep_first(order, ("average_price", "averagePrice", "avg_price", "avgPrice", "filled_price", "filledPrice", "average_filled_price", "averageFilledPrice"))),
+        "limit_price": _number(_deep_first(order, ("limit_price", "limitPrice", "price"))),
+        "created_at": _time(_deep_first(order, ("created_at", "createdAt", "create_time", "createTime", "placed_time", "placedTime", "order_time", "orderTime"))),
+        "updated_at": _time(_deep_first(order, ("updated_at", "updatedAt", "update_time", "updateTime", "filled_time", "filledTime", "last_updated_time", "lastUpdatedTime"))),
         "raw": order,
     }
+
+
+def _valid_order(order: dict[str, Any]) -> bool:
+    # Reject metadata/request IDs and empty rows. A genuine order must have an
+    # order identifier plus at least one business field.
+    has_id = bool(order.get("order_id"))
+    has_business_data = bool(order.get("symbol") or order.get("side") or order.get("quantity") or order.get("filled_quantity"))
+    return has_id and has_business_data
 
 
 def _nested_execution_rows(order: dict[str, Any]) -> list[dict[str, Any]]:
@@ -299,15 +332,20 @@ def sync_webull(
             try:
                 account_orders = client.get_orders(account_id, start_time=start_dt)
                 normalized_orders = [normalize_order(account_id, item) for item in account_orders]
-                # Fetch detail only when list data lacks fills and an order ID is available.
+                normalized_orders = [item for item in normalized_orders if _valid_order(item)]
                 for item in normalized_orders:
-                    if item["filled_quantity"] <= 0 and item["order_id"]:
+                    # Detail endpoint uses client_order_id. Only request detail
+                    # for genuine orders whose list row lacks fill information.
+                    detail_id = item.get("client_order_id")
+                    if item["filled_quantity"] <= 0 and detail_id:
                         try:
-                            detail = client.get_order_detail(account_id, item["order_id"])
+                            detail = client.get_order_detail(account_id, str(detail_id))
                             if detail:
-                                item = normalize_order(account_id, {**item["raw"], **detail})
-                        except Exception:
-                            pass
+                                detailed = normalize_order(account_id, {"list_row": item["raw"], "detail": detail})
+                                if _valid_order(detailed):
+                                    item = detailed
+                        except Exception as detail_error:
+                            errors.append(f"Order detail {account['masked_account']}: {detail_error}")
                     orders.append(item)
             except Exception as error:
                 errors.append(f"Orders {account['masked_account']}: {error}")
@@ -342,7 +380,7 @@ def sync_webull(
         result.errors = errors
 
         snapshot = {
-            "schema_version": "0.95-WEBULL-1",
+            "schema_version": "0.95-WEBULL-2",
             "mode": "read_only",
             "environment": environment,
             "last_sync": completed,
@@ -351,6 +389,7 @@ def sync_webull(
             "positions": positions,
             "orders": orders,
             "sync_summary": result.to_dict(),
+            "diagnostics": client.diagnostics,
             "unmatched_executions": len(unmatched_executions(all_executions)),
         }
         _atomic_json_write(SNAPSHOT_PATH, snapshot)
