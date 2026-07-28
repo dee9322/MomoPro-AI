@@ -79,8 +79,6 @@ def load_broker_imports() -> list[BrokerImportRecord]:
 def save_broker_imports(imports: list[BrokerImportRecord]) -> None:
     payload = load_payload()
     payload["broker_imports"] = [item.to_dict() for item in imports]
-    if orders is not None:
-        payload["broker_orders"] = [item.to_dict() for item in orders]
     save_payload(payload)
 
 
