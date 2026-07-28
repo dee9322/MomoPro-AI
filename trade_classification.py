@@ -21,27 +21,40 @@ def plan_completeness(trade: TradeRecord) -> float:
     return round(100 * completed / len(fields), 1)
 
 
+def _confidence(evidence: dict) -> float:
+    try:
+        return max(0.0, min(100.0, float(evidence.get("confidence") or 0)))
+    except Exception:
+        return 0.0
+
+
 def _intelligence_score(trade: TradeRecord, mode: str) -> float:
-    evidence_types = {str(item.get("evidence_type") or "") for item in trade.evidence}
+    by_type = {str(item.get("evidence_type") or ""): item for item in trade.evidence}
     score = 0.0
-    if "broker_execution" in evidence_types:
+
+    if "broker_execution" in by_type:
+        score += 35 * (_confidence(by_type["broker_execution"]) / 100)
+    if "protective_stop" in by_type:
+        score += 20 * (_confidence(by_type["protective_stop"]) / 100)
+    if "historical_daily_chart" in by_type:
+        score += 20 * (_confidence(by_type["historical_daily_chart"]) / 100)
+    if "historical_intraday_chart" in by_type:
+        score += 10 * (_confidence(by_type["historical_intraday_chart"]) / 100)
+    if "official_plan" in by_type or trade.plan_id:
         score += 35
-    if "protective_stop" in evidence_types:
-        score += 18
-    if "historical_chart" in evidence_types or trade.reconstruction:
-        score += 22
-    if "official_plan" in evidence_types or trade.plan_id:
-        score += 35
-    if trade.timeline:
-        score += min(15, 3 + len(trade.timeline) * 2)
+
+    timeline_count = len(trade.timeline or [])
+    if timeline_count:
+        score += min(15, 5 + timeline_count * 2)
+
     if mode == "partial_plan":
-        score = max(score, 55)
+        score = max(score, 60)
     elif mode == "verified_plan":
-        score = max(score, 85)
+        score = max(score, 88)
     elif mode == "live_managed":
-        score = max(score, 92)
+        score = max(score, 94)
     elif mode == "historical_reconstruction":
-        score = max(score, 45)
+        score = max(score, 50)
     elif mode == "imported_only":
         score = min(score, 45)
     return round(min(100, score), 1)
