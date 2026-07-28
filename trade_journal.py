@@ -6,9 +6,11 @@ from typing import Any
 from trade_models import TradeExit, TradeRecord, TradeUpdate, utc_now
 from broker_import import build_import
 from trade_classification import classify_trade
+from trade_evidence import refresh_trade_evidence
+from trade_timeline import build_trade_timeline
 from broker_reconciliation import reconcile_executions, unmatched_executions
 from trade_storage import (
-    load_broker_executions, load_broker_imports, load_trades, save_broker_state, save_trades,
+    load_broker_executions, load_broker_imports, load_broker_orders, load_trades, save_broker_state, save_trades,
 )
 
 
@@ -74,10 +76,16 @@ def update_trade(trade_id: str, **changes: Any) -> TradeRecord:
             if hasattr(trade, key) and key not in {"id", "created_at"}:
                 setattr(trade, key, value)
         trade.updated_at = utc_now()
-        classify_trade(trade)
         trades[index] = trade
+
+        orders = load_broker_orders()
+        executions = load_broker_executions()
+        refresh_trade_evidence(trades, orders, executions)
+        for item in trades:
+            build_trade_timeline(item, orders, executions)
+            classify_trade(item)
         save_trades(trades)
-        return trade
+        return next(item for item in trades if item.id == trade_id)
     raise KeyError("Trade not found.")
 
 
