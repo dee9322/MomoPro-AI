@@ -79,6 +79,7 @@ from chart_data import available_timeframes, latest_chart_snapshot, load_chart_b
 from chart_engine import build_live_chart
 from trade_classification import classification_label
 from historical_reconstruction import reconstruct_trade
+from broker_order_intelligence import has_reliable_broker_time
 from tradingview_bridge import (build_tradingview_payload, official_plan_packet, packet_diagnostics, payload_json, pine_input_block, tradingview_chart_url)
 
 
@@ -3703,7 +3704,13 @@ with tabs[7]:
                         st.dataframe(pd.DataFrame([{"Evidence": e.get("label"), "Source": e.get("source"), "Confidence": e.get("confidence"), "Observed": e.get("observed_at")} for e in closed_trade.evidence]), use_container_width=True, hide_index=True)
                 if closed_trade.timeline:
                     with st.expander("Complete Trade Timeline", expanded=False):
-                        st.dataframe(pd.DataFrame([{"Time": e.get("event_at"), "Event": e.get("title"), "Details": e.get("description"), "Source": e.get("source"), "Confidence": e.get("confidence")} for e in closed_trade.timeline]), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame([{
+                            "Time": e.get("time_label") or e.get("event_at") or "Time unavailable",
+                            "Event": e.get("title"),
+                            "Details": e.get("description"),
+                            "Source": e.get("source"),
+                            "Confidence": e.get("confidence"),
+                        } for e in closed_trade.timeline]), use_container_width=True, hide_index=True)
                 if closed_trade.review_mode == "historical_reconstruction":
                     st.markdown("#### Historical Reconstruction")
                     if st.button("Reconstruct Historical Entry", key=f"reconstruct_{closed_trade.id}"):
@@ -3721,7 +3728,12 @@ with tabs[7]:
                         rc_cols[1].metric("Entry Quality Score", rc.get("objective_entry_score", "—"))
                         rc_cols[2].metric("Likely Setup", rc.get("likely_setup", "—"))
                         rc_cols[3].metric("Setup Confidence", f"{rc.get('setup_confidence', 0):.0f}%")
-                        rc_cols[4].metric("Evidence Confidence", f"{rc.get('evidence_confidence', 0):.0f}%")
+                        reconstruction_confidence = rc.get("evidence_confidence")
+                        if reconstruction_confidence in (None, "", 0, 0.0):
+                            reconstruction_confidence = 96 if rc.get("intraday_execution_context") else 78 if (rc.get("daily_context") or rc.get("entry_context")) else 0
+                        rc_cols[4].metric("Evidence Confidence", f"{float(reconstruction_confidence):.0f}%")
+                        quality_label = rc.get("reconstruction_quality") or ("Excellent" if float(reconstruction_confidence) >= 90 else "Good" if float(reconstruction_confidence) >= 75 else "Limited")
+                        st.caption(f"Reconstruction Quality: {quality_label}")
 
                         st.caption(
                             f"Broker entry: {str(rc.get('entry_execution_time') or '—').replace('T', ' ')} · "
@@ -3930,8 +3942,9 @@ with tabs[7]:
             with st.expander(f"Canceled-Order Intelligence ({len(canceled_orders)})"):
                 st.caption("Canceled orders are preserved permanently and used as evidence. They never change shares or realized P/L.")
                 st.dataframe(pd.DataFrame([{
-                    "Submitted": o.submitted_at or o.created_at or "Unavailable",
-                    "Canceled": o.cancelled_at or o.updated_at or "Unavailable",
+                    "Submitted": (o.submitted_at or o.created_at) if has_reliable_broker_time(o) else "Unavailable from historical API",
+                    "Canceled": (o.cancelled_at or o.updated_at) if has_reliable_broker_time(o) else "Unavailable from historical API",
+                    "Observed by Sync": o.synced_at or "—",
                     "Symbol": o.symbol,
                     "Side": o.side,
                     "Type": o.order_type,
