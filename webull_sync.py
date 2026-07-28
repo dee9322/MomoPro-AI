@@ -11,6 +11,7 @@ import tempfile
 from typing import Any, Iterable
 
 from broker_models import BrokerExecution, stable_execution_id
+from cloud_storage import cloud_available, load_document, save_document
 from broker_reconciliation import reconcile_executions, unmatched_executions
 from integration_models import IntegrationConnection
 from integration_storage import get_connection, record_event, save_connection
@@ -30,6 +31,8 @@ from webull_api import WebullCredentials, WebullReadOnlyClient, safe_shape
 SNAPSHOT_PATH = Path(__file__).with_name("webull_sync_data.json")
 DETAIL_CACHE_PATH = Path(__file__).with_name("webull_order_detail_cache.json")
 MAX_DETAIL_CALLS_PER_SYNC = 24
+SNAPSHOT_BUCKET = "webull_snapshot"
+DETAIL_CACHE_BUCKET = "webull_order_detail_cache"
 FILLED_WORDS = {"FILLED", "PARTIALLY_FILLED", "PARTIAL_FILLED", "EXECUTED", "COMPLETED", "COMPLETE"}
 BUY_WORDS = {"BUY", "BUY_TO_COVER", "BUYTOCOVER"}
 SELL_WORDS = {"SELL", "SELL_SHORT", "SELLSHORT", "SHORT"}
@@ -52,36 +55,41 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
 
 
 
-def _load_detail_cache() -> dict[str, Any]:
-    if not DETAIL_CACHE_PATH.exists():
-        return {}
+def _load_local_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return dict(default)
     try:
-        value = json.loads(DETAIL_CACHE_PATH.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else dict(default)
     except (OSError, json.JSONDecodeError):
-        return {}
+        return dict(default)
+
+
+def _load_detail_cache() -> dict[str, Any]:
+    local = _load_local_json(DETAIL_CACHE_PATH, {})
+    value = load_document(DETAIL_CACHE_BUCKET, local) if cloud_available() else local
+    return value if isinstance(value, dict) else {}
 
 
 def _save_detail_cache(cache: dict[str, Any]) -> None:
     _atomic_json_write(DETAIL_CACHE_PATH, cache)
+    if cloud_available():
+        save_document(DETAIL_CACHE_BUCKET, cache)
 
 
 def load_webull_snapshot() -> dict[str, Any]:
-    if not SNAPSHOT_PATH.exists():
-        return {
-            "schema_version": "0.95-WEBULL-3",
-            "last_sync": None,
-            "accounts": [],
-            "balances": {},
-            "positions": [],
-            "orders": [],
-            "sync_summary": {},
-        }
-    try:
-        value = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    default = {
+        "schema_version": "0.95-WEBULL-3",
+        "last_sync": None,
+        "accounts": [],
+        "balances": {},
+        "positions": [],
+        "orders": [],
+        "sync_summary": {},
+    }
+    local = _load_local_json(SNAPSHOT_PATH, default)
+    value = load_document(SNAPSHOT_BUCKET, local) if cloud_available() else local
+    return value if isinstance(value, dict) else dict(default)
 
 
 def _first(data: dict[str, Any], names: Iterable[str], default: Any = None) -> Any:
@@ -546,6 +554,8 @@ def sync_webull(
             "unmatched_executions": len(unmatched_executions(all_executions)),
         }
         _atomic_json_write(SNAPSHOT_PATH, snapshot)
+        if cloud_available():
+            save_document(SNAPSHOT_BUCKET, snapshot)
         pending_detail_count = sum(
             1 for error in errors
             if "order detail" in str(error).lower() or "retried on the next sync" in str(error).lower()
