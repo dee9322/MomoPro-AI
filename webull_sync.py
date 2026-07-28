@@ -15,11 +15,14 @@ from broker_reconciliation import reconcile_executions, unmatched_executions
 from integration_models import IntegrationConnection
 from integration_storage import get_connection, record_event, save_connection
 from trade_storage import (
-    load_broker_executions,
+    load_broker_executions, load_broker_orders,
     load_broker_imports,
     load_trades,
     save_broker_state,
 )
+from broker_order_intelligence import merge_orders, link_and_classify_orders
+from trade_evidence import refresh_trade_evidence
+from trade_timeline import build_trade_timeline
 from webull_api import WebullCredentials, WebullReadOnlyClient, safe_shape
 
 
@@ -218,6 +221,7 @@ def normalize_order(account_id: str, order: dict[str, Any]) -> dict[str, Any]:
         "filled_quantity": _number(_deep_first(order, ("filled_quantity", "filledQuantity", "filled_qty", "filledQty", "executed_quantity", "executedQuantity", "cumulative_quantity", "cumulativeQuantity"))),
         "average_price": _number(_deep_first(order, ("average_price", "averagePrice", "avg_price", "avgPrice", "filled_price", "filledPrice", "average_filled_price", "averageFilledPrice"))),
         "limit_price": _number(_deep_first(order, ("limit_price", "limitPrice", "price"))),
+        "stop_price": _number(_deep_first(order, ("stop_price", "stopPrice", "aux_price", "auxPrice", "trigger_price", "triggerPrice"))),
         "created_at": _time(_deep_first(order, ("created_at", "createdAt", "create_time", "createTime", "placed_time", "placedTime", "order_time", "orderTime"))),
         "updated_at": _time(_deep_first(order, ("updated_at", "updatedAt", "update_time", "updateTime", "filled_time", "filledTime", "last_updated_time", "lastUpdatedTime"))),
         "raw": order,
@@ -452,7 +456,12 @@ def sync_webull(
         trades = load_trades()
         imports = load_broker_imports()
         trades, all_executions, reconciliation = reconcile_executions(trades, all_executions)
-        save_broker_state(trades, all_executions, imports)
+        broker_orders = merge_orders(load_broker_orders(), orders)
+        broker_orders = link_and_classify_orders(broker_orders, trades)
+        trades = refresh_trade_evidence(trades, broker_orders, all_executions)
+        for trade in trades:
+            build_trade_timeline(trade, broker_orders, all_executions)
+        save_broker_state(trades, all_executions, imports, broker_orders)
 
         completed = utc_now()
         result.ok = True
