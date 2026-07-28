@@ -6,18 +6,29 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from cloud_storage import cloud_available, load_document, save_document
 from integration_models import IntegrationConnection
 
 DATA_PATH = Path(__file__).with_name("integration_data.json")
+BUCKET = "integrations"
+DEFAULT = {"schema_version": "0.95A", "connections": {}, "events": []}
 
 
-def load_integrations() -> dict[str, Any]:
+def _load_local() -> dict[str, Any]:
     if not DATA_PATH.exists():
-        return {"schema_version": "0.95A", "connections": {}, "events": []}
+        return dict(DEFAULT)
     try:
         payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"schema_version": "0.95A", "connections": {}, "events": []}
+        return dict(DEFAULT)
+    return payload if isinstance(payload, dict) else dict(DEFAULT)
+
+
+def load_integrations() -> dict[str, Any]:
+    local = _load_local()
+    payload = load_document(BUCKET, local) if cloud_available() else local
+    if not isinstance(payload, dict):
+        payload = dict(DEFAULT)
     payload.setdefault("schema_version", "0.95A")
     payload.setdefault("connections", {})
     payload.setdefault("events", [])
@@ -25,6 +36,7 @@ def load_integrations() -> dict[str, Any]:
 
 
 def _save(payload: dict[str, Any]) -> None:
+    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="integration_", suffix=".json", dir=DATA_PATH.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -33,6 +45,8 @@ def _save(payload: dict[str, Any]) -> None:
     finally:
         if os.path.exists(name):
             os.unlink(name)
+    if cloud_available():
+        save_document(BUCKET, payload)
 
 
 def save_connection(connection: IntegrationConnection) -> None:
