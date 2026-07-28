@@ -168,7 +168,8 @@ def reconstruct_trade(trade: TradeRecord, api_key: str, secret_key: str) -> dict
         setup = "Pullback / Reversal Candidate"
         setup_confidence = 68
 
-    evidence_confidence = 98 if not intraday.empty else 78
+    evidence_confidence = 96 if not intraday.empty else 78
+    reconstruction_quality = "Excellent" if evidence_confidence >= 90 else "Good" if evidence_confidence >= 75 else "Limited"
     result = {
         "entry_execution_time": entry.astimezone(timezone.utc).isoformat(timespec="seconds"),
         "daily_context_as_of": pd.Timestamp(daily_row["timestamp"]).isoformat(),
@@ -179,6 +180,7 @@ def reconstruct_trade(trade: TradeRecord, api_key: str, secret_key: str) -> dict
         "likely_setup": setup,
         "setup_confidence": float(setup_confidence),
         "evidence_confidence": float(evidence_confidence),
+        "reconstruction_quality": reconstruction_quality,
         "daily_context": daily_context,
         "intraday_execution_context": intraday_context,
         "personal_thesis": "Unknown — not recorded",
