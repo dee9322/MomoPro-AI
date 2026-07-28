@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from cloud_storage import cloud_available, load_document, save_document
 
 DEFAULT_PATH = Path(__file__).with_name("learning_data.json")
+BUCKET = "learning"
 
 
 def _now() -> str:
@@ -19,14 +21,20 @@ def _default() -> dict[str, Any]:
     return {"version": 1, "snapshots": [], "approved_rules": [], "updated_at": _now()}
 
 
-def load_learning_data(path: str | Path = DEFAULT_PATH) -> dict[str, Any]:
-    target = Path(path)
-    if not target.exists():
-        save_learning_data(_default(), target)
+def _load_local(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return _default()
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         payload = _default()
+    return payload if isinstance(payload, dict) else _default()
+
+
+def load_learning_data(path: str | Path = DEFAULT_PATH) -> dict[str, Any]:
+    target = Path(path)
+    local = _load_local(target)
+    payload = load_document(BUCKET, local) if cloud_available() and target == DEFAULT_PATH else local
     base = _default()
     base.update(payload if isinstance(payload, dict) else {})
     base["snapshots"] = base.get("snapshots") if isinstance(base.get("snapshots"), list) else []
@@ -42,6 +50,8 @@ def save_learning_data(data: dict[str, Any], path: str | Path = DEFAULT_PATH) ->
     temporary = target.with_suffix(target.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(temporary, target)
+    if cloud_available() and target == DEFAULT_PATH:
+        save_document(BUCKET, payload)
 
 
 def save_snapshot(summary: dict[str, Any], path: str | Path = DEFAULT_PATH) -> dict[str, Any]:
