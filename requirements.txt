@@ -9,3 +9,4 @@ supabase==2.31.0
 plotly==6.9.0
 requests==2.34.2
 webull-openapi-python-sdk
+extra-streamlit-components==0.1.81
