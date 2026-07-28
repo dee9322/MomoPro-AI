@@ -3698,7 +3698,7 @@ with tabs[7]:
                 intel_cols = st.columns(3)
                 intel_cols[0].metric("Review Mode", mode_label)
                 intel_cols[1].metric("Intelligence Score", f"{closed_trade.intelligence_score:.0f}/100")
-                intel_cols[2].metric("Evidence Items", len(closed_trade.evidence))
+                intel_cols[2].metric("Evidence Categories", len(closed_trade.evidence))
                 if closed_trade.evidence:
                     with st.expander("Broker & Plan Evidence", expanded=False):
                         st.dataframe(pd.DataFrame([{"Evidence": e.get("label"), "Source": e.get("source"), "Confidence": e.get("confidence"), "Observed": e.get("observed_at")} for e in closed_trade.evidence]), use_container_width=True, hide_index=True)
@@ -3831,6 +3831,12 @@ with tabs[7]:
 
         api_status = webull_connection_status()
         status_label = str(api_status.get("status") or "not_connected").replace("_", " ").title()
+        sync_status_value = str(api_status.get("sync_status") or "not_synced")
+        sync_status_label = {
+            "complete": "Complete",
+            "partial_history": "History still importing",
+            "not_synced": "Not synced yet",
+        }.get(sync_status_value, sync_status_value.replace("_", " ").title())
         last_sync_text = str(api_status.get("last_sync") or "Not synced yet").replace("T", " ")
         if len(last_sync_text) > 19 and last_sync_text != "Not synced yet":
             last_sync_text = last_sync_text[:19] + " UTC"
@@ -3838,6 +3844,7 @@ with tabs[7]:
             f"""
             <div class="momo-status-grid">
                 <div class="momo-status-card"><div class="momo-status-label">Connection status</div><div class="momo-status-value">{status_label}</div></div>
+                <div class="momo-status-card"><div class="momo-status-label">Sync status</div><div class="momo-status-value">{sync_status_label}</div></div>
                 <div class="momo-status-card"><div class="momo-status-label">Access mode</div><div class="momo-status-value">Read only</div></div>
                 <div class="momo-status-card"><div class="momo-status-label">Accounts discovered</div><div class="momo-status-value">{api_status.get("accounts", 0)}</div></div>
                 <div class="momo-status-card"><div class="momo-status-label">Live positions</div><div class="momo-status-value">{api_status.get("positions", 0)}</div></div>
@@ -3848,6 +3855,14 @@ with tabs[7]:
         )
         if api_status.get("message"):
             st.caption(f"Connection message: {api_status.get('message')}")
+        pending_details = int(api_status.get("pending_detail_count") or 0)
+        if sync_status_value == "partial_history":
+            pending_text = (
+                f"{pending_details} historical order detail request(s) remain pending and will retry safely on the next sync."
+                if pending_details
+                else "Some historical order details remain pending and will retry safely on the next sync."
+            )
+            st.info(pending_text)
 
         if not webull_api_key or not webull_api_secret:
             st.warning(
