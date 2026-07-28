@@ -3715,13 +3715,69 @@ with tabs[7]:
                         except Exception as error:
                             st.error(f"Reconstruction failed: {error}")
                     if closed_trade.reconstruction:
-                        rc=closed_trade.reconstruction
-                        rc_cols=st.columns(4)
-                        rc_cols[0].metric("Objective Entry Grade", rc.get("objective_entry_grade","—"))
-                        rc_cols[1].metric("Entry Score", rc.get("objective_entry_score","—"))
-                        rc_cols[2].metric("Likely Setup", rc.get("likely_setup","—"))
-                        rc_cols[3].metric("Setup Confidence", f"{rc.get('setup_confidence',0):.0f}%")
-                        st.json(rc)
+                        rc = closed_trade.reconstruction
+                        rc_cols = st.columns(5)
+                        rc_cols[0].metric("Objective Entry Grade", rc.get("objective_entry_grade", "—"))
+                        rc_cols[1].metric("Entry Quality Score", rc.get("objective_entry_score", "—"))
+                        rc_cols[2].metric("Likely Setup", rc.get("likely_setup", "—"))
+                        rc_cols[3].metric("Setup Confidence", f"{rc.get('setup_confidence', 0):.0f}%")
+                        rc_cols[4].metric("Evidence Confidence", f"{rc.get('evidence_confidence', 0):.0f}%")
+
+                        st.caption(
+                            f"Broker entry: {str(rc.get('entry_execution_time') or '—').replace('T', ' ')} · "
+                            f"Daily context: {str(rc.get('daily_context_as_of') or '—').replace('T', ' ')} · "
+                            f"Intraday context: {str(rc.get('intraday_context_as_of') or 'Unavailable').replace('T', ' ')} "
+                            f"({rc.get('intraday_timeframe', '—')})"
+                        )
+
+                        matched_stops = [
+                            order for order in load_broker_orders()
+                            if order.matched_trade_id == closed_trade.id and "Stop" in str(order.purpose or "")
+                        ]
+                        if matched_stops:
+                            matched_stops = sorted(
+                                matched_stops,
+                                key=lambda order: order.submitted_at or order.created_at or order.cancelled_at or order.updated_at or "",
+                            )
+                            stop_prices = [float(order.stop_price or order.limit_price or 0) for order in matched_stops if (order.stop_price or order.limit_price)]
+                            if stop_prices:
+                                stop_cols = st.columns(3)
+                                stop_cols[0].metric("Broker-Observed Initial Stop", f"${stop_prices[0]:.2f}")
+                                stop_cols[1].metric("Broker-Observed Final Stop", f"${stop_prices[-1]:.2f}")
+                                stop_cols[2].metric("Stop Evidence Confidence", f"{max(order.purpose_confidence for order in matched_stops):.0f}%")
+                                st.caption("These stops come from Webull order evidence. They are separate from any saved MomoPro Official Plan stop.")
+
+                        daily_context = rc.get("daily_context") or rc.get("entry_context") or {}
+                        intraday_context = rc.get("intraday_execution_context") or {}
+                        st.markdown("##### Daily Setup Context")
+                        daily_cols = st.columns(6)
+                        daily_cols[0].metric("Entry", f"${float(daily_context.get('entry_price') or closed_trade.entry_price):.2f}")
+                        daily_cols[1].metric("EMA21", f"${float(daily_context.get('ema21') or 0):.2f}")
+                        daily_cols[2].metric("EMA50", f"${float(daily_context.get('ema50') or 0):.2f}")
+                        daily_cols[3].metric("EMA200", f"${float(daily_context.get('ema200') or 0):.2f}")
+                        daily_cols[4].metric("RSI14", f"{float(daily_context.get('rsi14') or 0):.1f}")
+                        daily_cols[5].metric("RVOL", f"{float(daily_context.get('rvol') or 0):.2f}")
+                        st.caption(
+                            f"Distance from EMA21: {float(daily_context.get('distance_from_ema21_pct') or 0):.2f}% · "
+                            f"ATR%: {float(daily_context.get('atr_pct') or 0):.2f}%"
+                        )
+
+                        if intraday_context:
+                            st.markdown("##### Intraday Execution Context")
+                            intra_cols = st.columns(5)
+                            intra_cols[0].metric("Entry", f"${float(intraday_context.get('entry_price') or closed_trade.entry_price):.2f}")
+                            intra_cols[1].metric("EMA21", f"${float(intraday_context.get('ema21') or 0):.2f}")
+                            intra_cols[2].metric("EMA50", f"${float(intraday_context.get('ema50') or 0):.2f}")
+                            intra_cols[3].metric("RSI14", f"{float(intraday_context.get('rsi14') or 0):.1f}")
+                            intra_cols[4].metric("RVOL", f"{float(intraday_context.get('rvol') or 0):.2f}")
+                            st.caption(f"Distance from intraday EMA21: {float(intraday_context.get('distance_from_ema21_pct') or 0):.2f}%")
+
+                        st.info(rc.get("hindsight_guard", "Historical reconstruction uses only information available before entry."))
+                        st.caption(
+                            f"Personal thesis: {rc.get('personal_thesis', 'Unknown — not recorded')} · "
+                            f"Planned targets: {rc.get('planned_targets', 'Unknown — not recorded')} · "
+                            f"Rule following: {rc.get('rule_following', 'Not gradable')}"
+                        )
                 review_1, review_2 = st.columns(2)
                 followed = review_1.selectbox("Did you follow the planned exit?", ["Not Reviewed", "Yes", "Mostly", "No"], index=["Not Reviewed", "Yes", "Mostly", "No"].index(closed_trade.planned_exit_followed if closed_trade.planned_exit_followed in ["Not Reviewed", "Yes", "Mostly", "No"] else "Not Reviewed"), key=f"review_followed_{closed_trade.id}")
                 rule_score = review_2.slider("Plan / Rule Following Score", 0, 100, int(closed_trade.rule_following_score or 0), key=f"review_score_{closed_trade.id}")
@@ -3856,7 +3912,8 @@ with tabs[7]:
         if recent_orders:
             with st.expander(f"Recent Webull Orders ({len(webull_snapshot.get('orders', []))})"):
                 st.dataframe(pd.DataFrame([{
-                    "Updated": item.get("updated_at"),
+                    "Submitted": item.get("submitted_at") or item.get("created_at") or "—",
+                    "Updated / Event Time": item.get("updated_at") or "—",
                     "Symbol": item.get("symbol"),
                     "Side": item.get("side"),
                     "Status": item.get("status"),
@@ -3872,7 +3929,19 @@ with tabs[7]:
         if canceled_orders:
             with st.expander(f"Canceled-Order Intelligence ({len(canceled_orders)})"):
                 st.caption("Canceled orders are preserved permanently and used as evidence. They never change shares or realized P/L.")
-                st.dataframe(pd.DataFrame([{"Updated": o.updated_at, "Symbol": o.symbol, "Side": o.side, "Type": o.order_type, "Quantity": o.quantity, "Stop": o.stop_price or None, "Limit": o.limit_price or None, "Classification": o.purpose, "Confidence": o.purpose_confidence, "Trade ID": o.matched_trade_id or "—"} for o in sorted(canceled_orders, key=lambda x:x.updated_at, reverse=True)[:250]]), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame([{
+                    "Submitted": o.submitted_at or o.created_at or "Unavailable",
+                    "Canceled": o.cancelled_at or o.updated_at or "Unavailable",
+                    "Symbol": o.symbol,
+                    "Side": o.side,
+                    "Type": o.order_type,
+                    "Quantity": o.quantity,
+                    "Stop": o.stop_price or None,
+                    "Limit": o.limit_price or None,
+                    "Classification": o.purpose,
+                    "Confidence": o.purpose_confidence,
+                    "Trade ID": o.matched_trade_id or "—",
+                } for o in sorted(canceled_orders, key=lambda x: x.cancelled_at or x.updated_at or x.submitted_at or "", reverse=True)[:250]]), use_container_width=True, hide_index=True)
 
         sync_summary = webull_snapshot.get("sync_summary") or {}
         sync_warnings = sync_summary.get("errors") or []
