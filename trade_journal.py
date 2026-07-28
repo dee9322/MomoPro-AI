@@ -74,6 +74,7 @@ def update_trade(trade_id: str, **changes: Any) -> TradeRecord:
             if hasattr(trade, key) and key not in {"id", "created_at"}:
                 setattr(trade, key, value)
         trade.updated_at = utc_now()
+        classify_trade(trade)
         trades[index] = trade
         save_trades(trades)
         return trade
