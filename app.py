@@ -85,6 +85,84 @@ st.set_page_config(
     layout="wide",
 )
 
+# App-wide readability guardrails. Important labels, values, tabs, buttons,
+# alerts, and table cells must wrap instead of being hidden behind ellipses.
+st.markdown(
+    """
+    <style>
+    [data-testid="stMetric"] {
+        min-width: 0;
+        overflow: visible;
+    }
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricLabel"] *,
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricValue"] * {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: break-word !important;
+        line-height: 1.2 !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: clamp(1.15rem, 2.2vw, 2rem) !important;
+    }
+    button, button *, [role="tab"], [role="tab"] *,
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] * {
+        text-overflow: clip !important;
+    }
+    [role="tab"] {
+        white-space: normal !important;
+        height: auto !important;
+        min-height: 2.5rem;
+        line-height: 1.2 !important;
+    }
+    button, button * {
+        white-space: normal !important;
+        overflow: visible !important;
+        word-break: break-word !important;
+    }
+    [data-testid="stAlert"] p, [data-testid="stCaptionContainer"],
+    [data-testid="stCaptionContainer"] * {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: break-word !important;
+    }
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+    }
+    .momo-status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 0.75rem;
+        margin: 0.5rem 0 1rem 0;
+    }
+    .momo-status-card {
+        border: 1px solid rgba(128,128,128,0.35);
+        border-radius: 0.7rem;
+        padding: 0.8rem 0.9rem;
+        min-width: 0;
+    }
+    .momo-status-label {
+        font-size: 0.78rem;
+        opacity: 0.75;
+        margin-bottom: 0.25rem;
+        overflow-wrap: anywhere;
+    }
+    .momo-status-value {
+        font-size: 1.05rem;
+        font-weight: 700;
+        line-height: 1.25;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("📈 MomoPro AI")
 st.subheader(
     "Your AI Swing Trading Partner"
@@ -3646,12 +3724,23 @@ with tabs[7]:
 
         api_status = webull_connection_status()
         status_label = str(api_status.get("status") or "not_connected").replace("_", " ").title()
-        api_metrics = st.columns(5)
-        api_metrics[0].metric("Connection", status_label)
-        api_metrics[1].metric("Mode", "Read Only")
-        api_metrics[2].metric("Accounts", api_status.get("accounts", 0))
-        api_metrics[3].metric("Live Positions", api_status.get("positions", 0))
-        api_metrics[4].metric("Last Sync", str(api_status.get("last_sync") or "—")[:19].replace("T", " "))
+        last_sync_text = str(api_status.get("last_sync") or "Not synced yet").replace("T", " ")
+        if len(last_sync_text) > 19 and last_sync_text != "Not synced yet":
+            last_sync_text = last_sync_text[:19] + " UTC"
+        st.markdown(
+            f"""
+            <div class="momo-status-grid">
+                <div class="momo-status-card"><div class="momo-status-label">Connection status</div><div class="momo-status-value">{status_label}</div></div>
+                <div class="momo-status-card"><div class="momo-status-label">Access mode</div><div class="momo-status-value">Read only</div></div>
+                <div class="momo-status-card"><div class="momo-status-label">Accounts discovered</div><div class="momo-status-value">{api_status.get("accounts", 0)}</div></div>
+                <div class="momo-status-card"><div class="momo-status-label">Live positions</div><div class="momo-status-value">{api_status.get("positions", 0)}</div></div>
+                <div class="momo-status-card"><div class="momo-status-label">Last synchronization</div><div class="momo-status-value">{last_sync_text}</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if api_status.get("message"):
+            st.caption(f"Connection message: {api_status.get('message')}")
 
         if not webull_api_key or not webull_api_secret:
             st.warning(
@@ -3718,7 +3807,10 @@ with tabs[7]:
                 "Unrealized P/L": item.get("unrealized_pnl"),
             } for item in live_positions]), use_container_width=True, hide_index=True)
 
-        recent_orders = webull_snapshot.get("orders", [])[:100]
+        recent_orders = [
+            item for item in (webull_snapshot.get("orders", []) or [])
+            if item.get("order_id") and (item.get("symbol") or item.get("side") or item.get("quantity") or item.get("filled_quantity"))
+        ][:100]
         if recent_orders:
             with st.expander(f"Recent Webull Orders ({len(webull_snapshot.get('orders', []))})"):
                 st.dataframe(pd.DataFrame([{
@@ -3731,6 +3823,20 @@ with tabs[7]:
                     "Average Price": item.get("average_price"),
                     "Order ID": item.get("order_id"),
                 } for item in recent_orders]), use_container_width=True, hide_index=True)
+
+        sync_summary = webull_snapshot.get("sync_summary") or {}
+        sync_warnings = sync_summary.get("errors") or []
+        if sync_warnings:
+            st.warning("Webull connected, but some sections need attention:\n\n" + "\n\n".join(f"• {item}" for item in sync_warnings))
+
+        diagnostics = webull_snapshot.get("diagnostics") or {}
+        if diagnostics:
+            with st.expander("Safe Webull response diagnostics"):
+                st.caption(
+                    "This shows response field names and container sizes only. It does not display your API key, "
+                    "API secret, account balances, order values, or other credential values."
+                )
+                st.json(diagnostics)
 
         st.divider()
         st.markdown("#### Webull CSV Backfill & Reconciliation")
