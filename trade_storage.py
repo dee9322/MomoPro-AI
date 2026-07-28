@@ -4,12 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from broker_models import BrokerExecution, BrokerImportRecord
+from broker_models import BrokerExecution, BrokerImportRecord, BrokerOrder
 from trade_models import TradeRecord, utc_now
 
 TRADE_DATA_FILE = Path(__file__).with_name("trade_data.json")
 ATTACHMENT_DIR = Path(__file__).with_name("journal_attachments")
-DEFAULT_PAYLOAD = {"schema_version": 2, "updated_at": None, "trades": [], "broker_executions": [], "broker_imports": []}
+DEFAULT_PAYLOAD = {"schema_version": 3, "updated_at": None, "trades": [], "broker_executions": [], "broker_orders": [], "broker_imports": []}
 
 
 def _ensure_storage() -> None:
@@ -25,10 +25,11 @@ def load_payload() -> dict[str, Any]:
         return dict(DEFAULT_PAYLOAD)
     if not isinstance(payload, dict):
         return dict(DEFAULT_PAYLOAD)
-    payload.setdefault("schema_version", 2)
+    payload.setdefault("schema_version", 3)
     payload.setdefault("trades", [])
     payload.setdefault("broker_executions", [])
     payload.setdefault("broker_imports", [])
+    payload.setdefault("broker_orders", [])
     return payload
 
 
@@ -78,13 +79,27 @@ def load_broker_imports() -> list[BrokerImportRecord]:
 def save_broker_imports(imports: list[BrokerImportRecord]) -> None:
     payload = load_payload()
     payload["broker_imports"] = [item.to_dict() for item in imports]
+    if orders is not None:
+        payload["broker_orders"] = [item.to_dict() for item in orders]
     save_payload(payload)
 
 
-def save_broker_state(trades: list[TradeRecord], executions: list[BrokerExecution], imports: list[BrokerImportRecord]) -> None:
+
+def load_broker_orders() -> list[BrokerOrder]:
+    return [BrokerOrder.from_dict(item) for item in load_payload().get("broker_orders", []) if isinstance(item, dict)]
+
+def save_broker_orders(orders: list[BrokerOrder]) -> None:
     payload = load_payload()
-    payload["schema_version"] = 2
+    payload["broker_orders"] = [item.to_dict() for item in orders]
+    save_payload(payload)
+
+
+def save_broker_state(trades: list[TradeRecord], executions: list[BrokerExecution], imports: list[BrokerImportRecord], orders: list[BrokerOrder] | None = None) -> None:
+    payload = load_payload()
+    payload["schema_version"] = 3
     payload["trades"] = [trade.to_dict() for trade in trades]
     payload["broker_executions"] = [item.to_dict() for item in executions]
     payload["broker_imports"] = [item.to_dict() for item in imports]
+    if orders is not None:
+        payload["broker_orders"] = [item.to_dict() for item in orders]
     save_payload(payload)
