@@ -65,6 +65,15 @@ def get_trade(trade_id: str) -> TradeRecord | None:
     return next((trade for trade in load_trades() if trade.id == trade_id), None)
 
 
+def _refresh_trade_intelligence(trades, orders, executions):
+    """Refresh evidence, timeline, then score in the only safe order."""
+    refresh_trade_evidence(trades, orders, executions)
+    for item in trades:
+        build_trade_timeline(item, orders, executions)
+        classify_trade(item)
+    return trades
+
+
 def update_trade(trade_id: str, **changes: Any) -> TradeRecord:
     trades = load_trades()
     for index, trade in enumerate(trades):
@@ -80,10 +89,7 @@ def update_trade(trade_id: str, **changes: Any) -> TradeRecord:
 
         orders = load_broker_orders()
         executions = load_broker_executions()
-        refresh_trade_evidence(trades, orders, executions)
-        for item in trades:
-            build_trade_timeline(item, orders, executions)
-            classify_trade(item)
+        _refresh_trade_intelligence(trades, orders, executions)
         save_trades(trades)
         return next(item for item in trades if item.id == trade_id)
     raise KeyError("Trade not found.")
