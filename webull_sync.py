@@ -24,6 +24,8 @@ from webull_api import WebullCredentials, WebullReadOnlyClient, safe_shape
 
 
 SNAPSHOT_PATH = Path(__file__).with_name("webull_sync_data.json")
+DETAIL_CACHE_PATH = Path(__file__).with_name("webull_order_detail_cache.json")
+MAX_DETAIL_CALLS_PER_SYNC = 24
 FILLED_WORDS = {"FILLED", "PARTIALLY_FILLED", "PARTIAL_FILLED", "EXECUTED", "COMPLETED", "COMPLETE"}
 BUY_WORDS = {"BUY", "BUY_TO_COVER", "BUYTOCOVER"}
 SELL_WORDS = {"SELL", "SELL_SHORT", "SELLSHORT", "SHORT"}
@@ -45,10 +47,25 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(name)
 
 
+
+def _load_detail_cache() -> dict[str, Any]:
+    if not DETAIL_CACHE_PATH.exists():
+        return {}
+    try:
+        value = json.loads(DETAIL_CACHE_PATH.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_detail_cache(cache: dict[str, Any]) -> None:
+    _atomic_json_write(DETAIL_CACHE_PATH, cache)
+
+
 def load_webull_snapshot() -> dict[str, Any]:
     if not SNAPSHOT_PATH.exists():
         return {
-            "schema_version": "0.95-WEBULL-2",
+            "schema_version": "0.95-WEBULL-3",
             "last_sync": None,
             "accounts": [],
             "balances": {},
@@ -125,9 +142,11 @@ def _account_id(account: dict[str, Any]) -> str:
 
 
 def _symbol(data: dict[str, Any]) -> str:
-    symbol = _first(data, ("symbol", "ticker", "instrument_symbol", "instrumentSymbol"), "")
-    if not symbol and isinstance(data.get("instrument"), dict):
-        symbol = _first(data["instrument"], ("symbol", "ticker"), "")
+    symbol = _deep_first(
+        data,
+        ("symbol", "ticker", "instrument_symbol", "instrumentSymbol", "security_symbol", "securitySymbol"),
+        "",
+    )
     return str(symbol or "").strip().upper()
 
 
@@ -213,15 +232,33 @@ def _valid_order(order: dict[str, Any]) -> bool:
     return has_id and has_business_data
 
 
-def _nested_execution_rows(order: dict[str, Any]) -> list[dict[str, Any]]:
+def _nested_execution_rows(order: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for key in ("executions", "fills", "filled_details", "filledDetails", "trades", "transactions"):
-        value = order.get(key)
-        if isinstance(value, list):
-            rows.extend(item for item in value if isinstance(item, dict))
-        elif isinstance(value, dict):
-            rows.append(value)
-    return rows
+    execution_keys = {
+        "executions", "execution", "fills", "fill", "filleddetails",
+        "trades", "trade", "transactions", "transaction", "orderexecutions",
+    }
+    if isinstance(order, dict):
+        for key, value in order.items():
+            normalized = str(key).lower().replace("_", "")
+            if normalized in execution_keys:
+                if isinstance(value, list):
+                    rows.extend(item for item in value if isinstance(item, dict))
+                elif isinstance(value, dict):
+                    rows.append(value)
+            rows.extend(_nested_execution_rows(value))
+    elif isinstance(order, list):
+        for item in order:
+            rows.extend(_nested_execution_rows(item))
+
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        marker = repr(sorted((str(k), str(v)) for k, v in row.items()))
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(row)
+    return unique
 
 
 def order_to_executions(order: dict[str, Any]) -> list[BrokerExecution]:
@@ -244,13 +281,13 @@ def order_to_executions(order: dict[str, Any]) -> list[BrokerExecution]:
 
     results: list[BrokerExecution] = []
     for index, fill in enumerate(fills):
-        quantity = _number(_first(fill, ("quantity", "qty", "filled_quantity", "filledQuantity", "executed_quantity", "executedQuantity")), float(order.get("filled_quantity") or 0))
-        price = _number(_first(fill, ("price", "filled_price", "filledPrice", "execution_price", "executionPrice", "average_price", "averagePrice")), float(order.get("average_price") or 0))
+        quantity = _number(_deep_first(fill, ("quantity", "qty", "filled_quantity", "filledQuantity", "executed_quantity", "executedQuantity", "filled_qty", "filledQty")), float(order.get("filled_quantity") or 0))
+        price = _number(_deep_first(fill, ("price", "filled_price", "filledPrice", "execution_price", "executionPrice", "average_price", "averagePrice", "avg_price", "avgPrice")), float(order.get("average_price") or 0))
         if quantity <= 0 or price <= 0 or not symbol:
             continue
-        executed_at = _time(_first(fill, ("executed_at", "executedAt", "filled_time", "filledTime", "trade_time", "tradeTime", "time", "timestamp"), order.get("updated_at")))
-        execution_id = str(_first(fill, ("execution_id", "executionId", "trade_id", "tradeId", "fill_id", "fillId", "id"), f"{order_id}-{index}"))
-        fees = _number(_first(fill, ("fees", "fee", "commission", "commissions")))
+        executed_at = _time(_deep_first(fill, ("executed_at", "executedAt", "filled_time", "filledTime", "trade_time", "tradeTime", "time", "timestamp"), order.get("updated_at")))
+        execution_id = str(_deep_first(fill, ("execution_id", "executionId", "trade_id", "tradeId", "fill_id", "fillId", "id"), f"{order_id}-{index}"))
+        fees = _number(_deep_first(fill, ("fees", "fee", "commission", "commissions")))
         fingerprint = stable_execution_id(
             "Webull", account_id, execution_id, order_id, symbol,
             normalized_side, quantity, price, executed_at,
@@ -274,6 +311,27 @@ def order_to_executions(order: dict[str, Any]) -> list[BrokerExecution]:
             raw={"order": raw_order, "fill": fill},
         ))
     return results
+
+
+def _is_filled_or_partial(order: dict[str, Any]) -> bool:
+    status = str(order.get("status") or "").upper().replace(" ", "_").replace("-", "_")
+    return status in FILLED_WORDS or float(order.get("filled_quantity") or 0) > 0
+
+
+def _has_execution_data(order: dict[str, Any]) -> bool:
+    if order_to_executions(order):
+        return True
+    return bool(
+        order.get("symbol")
+        and order.get("side")
+        and float(order.get("filled_quantity") or 0) > 0
+        and float(order.get("average_price") or 0) > 0
+    )
+
+
+def _detail_cache_key(account_id: str, client_order_id: str) -> str:
+    return f"{account_id}:{client_order_id}"
+
 
 
 @dataclass
@@ -333,20 +391,48 @@ def sync_webull(
                 account_orders = client.get_orders(account_id, start_time=start_dt)
                 normalized_orders = [normalize_order(account_id, item) for item in account_orders]
                 normalized_orders = [item for item in normalized_orders if _valid_order(item)]
+
+                detail_cache = _load_detail_cache()
+                detail_calls = 0
+                deferred_details = 0
+                detail_failures = 0
+
                 for item in normalized_orders:
-                    # Detail endpoint uses client_order_id. Only request detail
-                    # for genuine orders whose list row lacks fill information.
-                    detail_id = item.get("client_order_id")
-                    if item["filled_quantity"] <= 0 and detail_id:
+                    detail_id = str(item.get("client_order_id") or "")
+                    needs_detail = bool(detail_id and _is_filled_or_partial(item) and not _has_execution_data(item))
+                    cache_key = _detail_cache_key(account_id, detail_id) if detail_id else ""
+
+                    if needs_detail and cache_key and cache_key in detail_cache:
+                        detailed = normalize_order(account_id, {"list_row": item.get("raw"), "detail": detail_cache[cache_key]})
+                        if _valid_order(detailed):
+                            item = detailed
+                            needs_detail = not _has_execution_data(item)
+
+                    if needs_detail and detail_calls < MAX_DETAIL_CALLS_PER_SYNC:
                         try:
-                            detail = client.get_order_detail(account_id, str(detail_id))
+                            detail = client.get_order_detail(account_id, detail_id)
+                            detail_calls += 1
                             if detail:
-                                detailed = normalize_order(account_id, {"list_row": item["raw"], "detail": detail})
+                                detail_cache[cache_key] = detail
+                                detailed = normalize_order(account_id, {"list_row": item.get("raw"), "detail": detail})
                                 if _valid_order(detailed):
                                     item = detailed
-                        except Exception as detail_error:
-                            errors.append(f"Order detail {account['masked_account']}: {detail_error}")
+                        except Exception:
+                            detail_failures += 1
+                    elif needs_detail:
+                        deferred_details += 1
+
                     orders.append(item)
+
+                _save_detail_cache(detail_cache)
+                if deferred_details:
+                    errors.append(
+                        f"{deferred_details} filled order detail(s) were safely deferred to the next sync to stay within Webull's rate limit."
+                    )
+                if detail_failures:
+                    errors.append(
+                        f"{detail_failures} order detail request(s) could not be completed and will be retried on the next sync."
+                    )
             except Exception as error:
                 errors.append(f"Orders {account['masked_account']}: {error}")
 
@@ -380,7 +466,7 @@ def sync_webull(
         result.errors = errors
 
         snapshot = {
-            "schema_version": "0.95-WEBULL-2",
+            "schema_version": "0.95-WEBULL-3",
             "mode": "read_only",
             "environment": environment,
             "last_sync": completed,
