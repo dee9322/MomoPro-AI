@@ -546,18 +546,25 @@ def sync_webull(
             "unmatched_executions": len(unmatched_executions(all_executions)),
         }
         _atomic_json_write(SNAPSHOT_PATH, snapshot)
+        pending_detail_count = sum(
+            1 for error in errors
+            if "order detail" in str(error).lower() or "retried on the next sync" in str(error).lower()
+        )
+        sync_status = "complete" if not errors else "partial_history"
         save_connection(IntegrationConnection(
             integration="webull",
-            status="connected" if not errors else "connected_with_warnings",
+            status="connected",
             mode="read_only",
             last_sync=completed,
-            message="Webull read-only synchronization completed." if not errors else "Sync completed with warnings.",
+            message="Webull read-only connection is healthy.",
             metadata={
                 "environment": environment,
                 "accounts": len(accounts),
                 "positions": result.positions,
                 "orders": result.orders,
                 "new_executions": result.new_executions,
+                "sync_status": sync_status,
+                "pending_detail_count": pending_detail_count,
                 "warnings": errors,
             },
         ))
@@ -592,12 +599,20 @@ def sync_webull(
 def webull_connection_status() -> dict[str, Any]:
     connection = get_connection("webull") or {}
     snapshot = load_webull_snapshot()
+    metadata = connection.get("metadata", {}) or {}
+    raw_status = str(connection.get("status", "not_connected") or "not_connected")
+    # Migrate older successful records that used connected_with_warnings.
+    connection_status = "connected" if raw_status in {"connected", "connected_with_warnings"} else raw_status
+    warnings = metadata.get("warnings") or []
+    sync_status = metadata.get("sync_status") or ("partial_history" if warnings else "complete")
     return {
-        "status": connection.get("status", "not_connected"),
+        "status": connection_status,
+        "sync_status": sync_status,
+        "pending_detail_count": int(metadata.get("pending_detail_count") or 0),
         "mode": connection.get("mode", "read_only"),
         "last_sync": connection.get("last_sync") or snapshot.get("last_sync"),
         "message": connection.get("message", ""),
-        "metadata": connection.get("metadata", {}),
+        "metadata": metadata,
         "accounts": len(snapshot.get("accounts") or []),
         "positions": len(snapshot.get("positions") or []),
         "orders": len(snapshot.get("orders") or []),
