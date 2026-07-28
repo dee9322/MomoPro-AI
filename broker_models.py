@@ -65,3 +65,38 @@ class BrokerImportRecord:
     def from_dict(cls, data: dict[str, Any]) -> "BrokerImportRecord":
         allowed = {name for name in cls.__dataclass_fields__}
         return cls(**{key: value for key, value in (data or {}).items() if key in allowed})
+
+
+@dataclass
+class BrokerOrder:
+    id: str = field(default_factory=lambda: uuid4().hex)
+    fingerprint: str = ""
+    broker: str = "Webull"
+    account_id: str = ""
+    order_id: str = ""
+    client_order_id: str = ""
+    broker_order_id: str = ""
+    symbol: str = ""
+    side: str = ""
+    status: str = "Unknown"
+    order_type: str = ""
+    quantity: float = 0.0
+    filled_quantity: float = 0.0
+    average_price: float = 0.0
+    limit_price: float = 0.0
+    stop_price: float = 0.0
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    matched_trade_id: str = ""
+    purpose: str = "Unclassified"
+    purpose_confidence: float = 0.0
+    relationship_group: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BrokerOrder":
+        allowed = {name for name in cls.__dataclass_fields__}
+        return cls(**{key: value for key, value in (data or {}).items() if key in allowed})
