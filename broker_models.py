@@ -85,8 +85,12 @@ class BrokerOrder:
     average_price: float = 0.0
     limit_price: float = 0.0
     stop_price: float = 0.0
-    created_at: str = field(default_factory=utc_now)
-    updated_at: str = field(default_factory=utc_now)
+    submitted_at: str = ""
+    filled_at: str = ""
+    cancelled_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    synced_at: str = field(default_factory=utc_now)
     matched_trade_id: str = ""
     purpose: str = "Unclassified"
     purpose_confidence: float = 0.0
@@ -98,5 +102,21 @@ class BrokerOrder:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BrokerOrder":
+        payload = dict(data or {})
+        # v0.96 stored utc_now() whenever Webull omitted an order timestamp.
+        # Do not treat those legacy sync timestamps as proven broker events.
+        has_explicit_event_fields = any(
+            key in payload for key in ("submitted_at", "filled_at", "cancelled_at", "synced_at")
+        )
+        if not has_explicit_event_fields:
+            status = str(payload.get("status") or "").upper().replace(" ", "_").replace("-", "_")
+            if status in {"CANCELED", "CANCELLED"}:
+                payload["submitted_at"] = ""
+                payload["cancelled_at"] = ""
+                payload["created_at"] = ""
+                payload["updated_at"] = ""
+            elif float(payload.get("filled_quantity") or 0) > 0:
+                payload["submitted_at"] = str(payload.get("created_at") or "")
+                payload["filled_at"] = str(payload.get("updated_at") or "")
         allowed = {name for name in cls.__dataclass_fields__}
-        return cls(**{key: value for key, value in (data or {}).items() if key in allowed})
+        return cls(**{key: value for key, value in payload.items() if key in allowed})
