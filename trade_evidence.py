@@ -3,6 +3,17 @@ from __future__ import annotations
 from trade_classification import classify_trade
 
 
+def _reconstruction_confidence(reconstruction: dict) -> float:
+    explicit = reconstruction.get("evidence_confidence")
+    if explicit not in (None, "", 0, 0.0):
+        return float(explicit)
+    if reconstruction.get("intraday_execution_context"):
+        return 96.0
+    if reconstruction.get("daily_context") or reconstruction.get("entry_context"):
+        return 78.0
+    return 0.0
+
+
 def _stop_details(stops):
     ordered = sorted(
         stops,
@@ -70,18 +81,32 @@ def refresh_trade_evidence(trades, orders, executions):
                 "details": details,
             })
 
-        if trade.reconstruction:
-            evidence.append({
-                "evidence_type": "historical_chart",
-                "label": "Historical chart reconstruction",
-                "source": "Alpaca / MomoPro AI",
-                "observed_at": trade.reconstruction.get("entry_execution_time") or trade.entry_date,
-                "confidence": trade.reconstruction.get("evidence_confidence", 0),
-                "details": {
-                    "daily_as_of": trade.reconstruction.get("daily_context_as_of"),
-                    "intraday_as_of": trade.reconstruction.get("intraday_context_as_of"),
-                },
-            })
+        reconstruction = trade.reconstruction or {}
+        if reconstruction:
+            confidence = _reconstruction_confidence(reconstruction)
+            daily_context = reconstruction.get("daily_context") or reconstruction.get("entry_context") or {}
+            if daily_context:
+                evidence.append({
+                    "evidence_type": "historical_daily_chart",
+                    "label": "Historical daily setup context",
+                    "source": "Alpaca / MomoPro AI",
+                    "observed_at": reconstruction.get("daily_context_as_of") or trade.entry_date,
+                    "confidence": min(confidence, 92) if confidence else 78,
+                    "details": {"daily_as_of": reconstruction.get("daily_context_as_of")},
+                })
+            intraday_context = reconstruction.get("intraday_execution_context") or {}
+            if intraday_context:
+                evidence.append({
+                    "evidence_type": "historical_intraday_chart",
+                    "label": "Historical intraday execution context",
+                    "source": "Alpaca / MomoPro AI",
+                    "observed_at": reconstruction.get("intraday_context_as_of") or trade.entry_date,
+                    "confidence": confidence or 96,
+                    "details": {
+                        "intraday_as_of": reconstruction.get("intraday_context_as_of"),
+                        "timeframe": reconstruction.get("intraday_timeframe"),
+                    },
+                })
 
         trade.evidence = evidence
         classify_trade(trade)
