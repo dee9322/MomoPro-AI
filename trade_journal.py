@@ -5,6 +5,7 @@ from typing import Any
 
 from trade_models import TradeExit, TradeRecord, TradeUpdate, utc_now
 from broker_import import build_import
+from trade_classification import classify_trade
 from broker_reconciliation import reconcile_executions, unmatched_executions
 from trade_storage import (
     load_broker_executions, load_broker_imports, load_trades, save_broker_state, save_trades,
@@ -51,6 +52,7 @@ def create_trade(**values: Any) -> TradeRecord:
     payload = {key: value for key, value in values.items() if key in allowed}
     payload.update(symbol=symbol, entry_price=entry_price, shares=shares, initial_stop=stop, current_stop=stop)
     trade = TradeRecord(**payload)
+    classify_trade(trade)
     trade.status = "open"
     trades.append(trade)
     save_trades(trades)
@@ -190,6 +192,8 @@ def trade_summary(trade: TradeRecord, current_price: float | None = None) -> dic
         "AI Confidence": trade.ai_confidence,
         "Momo Score": trade.momo_score,
         "Days Held": days_held(trade),
+        "Review Mode": trade.review_mode.replace("_", " ").title(),
+        "Intelligence": trade.intelligence_score,
     }
 
 
