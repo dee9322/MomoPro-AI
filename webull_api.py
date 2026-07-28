@@ -10,6 +10,7 @@ cancellation functions are implemented.
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
+import time
 
 PRODUCTION_ENDPOINT = "api.webull.com"
 SANDBOX_ENDPOINT = "api.sandbox.webull.com"
@@ -160,6 +161,31 @@ class WebullReadOnlyClient:
         self.api_client.add_endpoint(credentials.region.strip() or "us", credentials.endpoint)
         self.trade_client = TradeClient(self.api_client)
         self.diagnostics: dict[str, Any] = {}
+        self._last_call_at: dict[str, float] = {}
+
+    def _rate_limited_json(self, bucket: str, func: Any, *args: Any, **kwargs: Any) -> Any:
+        """Call a Webull query endpoint without exceeding its documented 2-per-2-second limit."""
+        minimum_interval = 1.10
+        previous = self._last_call_at.get(bucket, 0.0)
+        remaining = minimum_interval - (time.monotonic() - previous)
+        if remaining > 0:
+            time.sleep(remaining)
+
+        last_error: Exception | None = None
+        for attempt in range(4):
+            try:
+                response = func(*args, **kwargs)
+                self._last_call_at[bucket] = time.monotonic()
+                return _json_response(response)
+            except WebullAPIError as error:
+                last_error = error
+                if error.status_code != 429 or attempt == 3:
+                    raise
+                time.sleep(2.2 * (attempt + 1))
+                self._last_call_at[bucket] = time.monotonic()
+        if last_error:
+            raise last_error
+        raise WebullAPIError("Webull request failed.")
 
     def _record(self, name: str, payload: Any) -> None:
         self.diagnostics[name] = safe_shape(payload)
@@ -181,7 +207,7 @@ class WebullReadOnlyClient:
         return extract_rows(payload, "position")
 
     def get_order_detail(self, account_id: str, client_order_id: str) -> dict[str, Any]:
-        payload = _json_response(self.trade_client.order_v2.get_order_detail(account_id, client_order_id))
+        payload = self._rate_limited_json("order_query", self.trade_client.order_v2.get_order_detail, account_id, client_order_id)
         self._record(f"order_detail_{client_order_id[-8:]}", payload)
         return payload if isinstance(payload, dict) else {"data": payload}
 
@@ -204,8 +230,7 @@ class WebullReadOnlyClient:
         seen_cursors: set[tuple[str | None, str | None]] = set()
 
         for page in range(max_pages):
-            payload = _json_response(
-                self.trade_client.order_v2.get_order_history(
+            payload = self._rate_limited_json("order_query", self.trade_client.order_v2.get_order_history,
                     account_id,
                     page_size=page_size,
                     start_date=start_date,
@@ -213,7 +238,6 @@ class WebullReadOnlyClient:
                     last_client_order_id=last_client_order_id,
                     last_order_id=last_order_id,
                 )
-            )
             self._record(f"orders_{account_id[-4:]}_page_{page + 1}", payload)
             page_rows = extract_rows(payload, "order")
             if not page_rows:
