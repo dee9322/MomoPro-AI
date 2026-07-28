@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-"""Thin, read-only wrapper around Webull's official OpenAPI Python SDK.
+"""Strictly read-only wrapper around Webull's official OpenAPI Python SDK.
 
-This module intentionally exposes only GET/query operations. No place, replace,
-or cancel order methods are implemented anywhere in MomoPro AI.
+Only account-list, balance, position, historical-order, open-order, and
+order-detail query methods are exposed. No order-placement, modification, or
+cancellation functions are implemented.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import inspect
-from typing import Any, Callable, Iterable
-
+from typing import Any, Iterable
 
 PRODUCTION_ENDPOINT = "api.webull.com"
 SANDBOX_ENDPOINT = "api.sandbox.webull.com"
@@ -44,15 +43,13 @@ class WebullCredentials:
 
     def validate(self) -> None:
         if not self.app_key.strip() or not self.app_secret.strip():
-            raise WebullConfigurationError(
-                "Webull App Key and App Secret are required in Streamlit Secrets."
-            )
+            raise WebullConfigurationError("Webull App Key and App Secret are required in Streamlit Secrets.")
 
 
 def _json_response(response: Any) -> Any:
     status = getattr(response, "status_code", None)
+    text = str(getattr(response, "text", "") or "")
     if status is not None and not 200 <= int(status) < 300:
-        text = str(getattr(response, "text", "") or "")
         raise WebullAPIError(
             f"Webull returned HTTP {status}. {text[:500]}",
             status_code=int(status),
@@ -61,63 +58,91 @@ def _json_response(response: Any) -> Any:
     try:
         return response.json()
     except Exception as error:
-        text = str(getattr(response, "text", "") or "")
+        if isinstance(response, (dict, list)):
+            return response
         if text:
             raise WebullAPIError(f"Webull returned a non-JSON response: {text[:500]}") from error
         return response
 
 
-def _call_with_supported_kwargs(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Call a changing SDK method while passing only parameters it supports."""
-    try:
-        signature = inspect.signature(func)
-        accepts_kwargs = any(
-            item.kind == inspect.Parameter.VAR_KEYWORD
-            for item in signature.parameters.values()
-        )
-        clean_kwargs = kwargs if accepts_kwargs else {
-            key: value for key, value in kwargs.items() if key in signature.parameters
+def safe_shape(value: Any, depth: int = 0) -> Any:
+    """Return keys and container sizes only; never return values or credentials."""
+    if depth >= 4:
+        return type(value).__name__
+    if isinstance(value, dict):
+        return {str(key): safe_shape(item, depth + 1) for key, item in list(value.items())[:80]}
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "count": len(value),
+            "sample_shape": safe_shape(value[0], depth + 1) if value else None,
         }
-    except (TypeError, ValueError):
-        clean_kwargs = kwargs
-    return func(*args, **clean_kwargs)
+    return type(value).__name__
 
 
+def _dict_list_candidates(value: Any) -> list[list[dict[str, Any]]]:
+    candidates: list[list[dict[str, Any]]] = []
+    if isinstance(value, list):
+        rows = [item for item in value if isinstance(item, dict)]
+        if rows:
+            candidates.append(rows)
+        for item in value:
+            candidates.extend(_dict_list_candidates(item))
+    elif isinstance(value, dict):
+        for item in value.values():
+            candidates.extend(_dict_list_candidates(item))
+    return candidates
 
 
-def _call_account_method(func: Callable[..., Any], account_id: str, **kwargs: Any) -> Any:
-    try:
-        return _call_with_supported_kwargs(func, account_id, **kwargs)
-    except TypeError as positional_error:
-        try:
-            return _call_with_supported_kwargs(func, account_id=account_id, **kwargs)
-        except TypeError:
-            raise positional_error
+def _has_any(row: dict[str, Any], names: Iterable[str]) -> bool:
+    keys = {str(key).lower().replace("_", "") for key in row}
+    return any(name.lower().replace("_", "") in keys for name in names)
 
 
-def _call_order_detail_method(func: Callable[..., Any], account_id: str, order_id: str) -> Any:
-    try:
-        return _call_with_supported_kwargs(func, account_id, order_id)
-    except TypeError as positional_error:
-        try:
-            return _call_with_supported_kwargs(func, account_id=account_id, order_id=order_id)
-        except TypeError:
-            raise positional_error
+def extract_rows(payload: Any, kind: str) -> list[dict[str, Any]]:
+    """Select only genuine business rows, never arbitrary response metadata."""
+    if isinstance(payload, list):
+        candidates = [[item for item in payload if isinstance(item, dict)]]
+    else:
+        candidates = _dict_list_candidates(payload)
 
-def _resolve_method(objects: Iterable[Any], names: Iterable[str]) -> Callable[..., Any] | None:
-    for obj in objects:
-        if obj is None:
-            continue
-        for name in names:
-            method = getattr(obj, name, None)
-            if callable(method):
-                return method
+    signatures = {
+        "account": ("account_id", "accountId", "account_type", "accountType"),
+        "position": ("symbol", "instrument", "quantity", "qty", "position"),
+        "order": ("client_order_id", "clientOrderId", "order_id", "orderId", "symbol", "side", "status"),
+    }
+    required = signatures.get(kind, ())
+    scored: list[tuple[int, list[dict[str, Any]]]] = []
+    for rows in candidates:
+        valid = [row for row in rows if _has_any(row, required)] if required else rows
+        if valid:
+            score = sum(sum(1 for name in required if _has_any(row, (name,))) for row in valid)
+            scored.append((score, valid))
+    if not scored:
+        return []
+    scored.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
+    return scored[0][1]
+
+
+def _find_cursor(payload: Any, names: Iterable[str]) -> str | None:
+    normalized = {name.lower().replace("_", "") for name in names}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).lower().replace("_", "") in normalized and value not in (None, ""):
+                return str(value)
+        for value in payload.values():
+            found = _find_cursor(value, names)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _find_cursor(value, names)
+            if found:
+                return found
     return None
 
 
 class WebullReadOnlyClient:
-    """Official Webull SDK client restricted to account-query operations."""
-
     def __init__(self, credentials: WebullCredentials):
         credentials.validate()
         self.credentials = credentials
@@ -126,56 +151,39 @@ class WebullReadOnlyClient:
             from webull.trade.trade_client import TradeClient
         except ImportError as error:
             raise WebullSDKError(
-                "The official Webull SDK is not installed. Add "
-                "'webull-openapi-python-sdk' to requirements.txt and redeploy."
+                "The official Webull SDK is not installed. Add webull-openapi-python-sdk to requirements.txt."
             ) from error
 
         self.api_client = ApiClient(
-            credentials.app_key.strip(),
-            credentials.app_secret.strip(),
-            credentials.region.strip() or "us",
+            credentials.app_key.strip(), credentials.app_secret.strip(), credentials.region.strip() or "us"
         )
-        self.api_client.add_endpoint(
-            credentials.region.strip() or "us",
-            credentials.endpoint,
-        )
+        self.api_client.add_endpoint(credentials.region.strip() or "us", credentials.endpoint)
         self.trade_client = TradeClient(self.api_client)
+        self.diagnostics: dict[str, Any] = {}
 
-    def _modules(self, *names: str) -> list[Any]:
-        modules = [self.trade_client]
-        modules.extend(getattr(self.trade_client, name, None) for name in names)
-        return modules
+    def _record(self, name: str, payload: Any) -> None:
+        self.diagnostics[name] = safe_shape(payload)
 
     def get_accounts(self) -> list[dict[str, Any]]:
-        method = _resolve_method(
-            self._modules("account_v2", "account"),
-            ("get_account_list", "account_list", "get_accounts"),
-        )
-        if method is None:
-            raise WebullSDKError("The installed Webull SDK does not expose account-list queries.")
-        payload = _json_response(method())
-        return _extract_rows(payload, preferred=("accounts", "account_list", "data"))
+        payload = _json_response(self.trade_client.account_v2.get_account_list())
+        self._record("accounts", payload)
+        return extract_rows(payload, "account")
 
     def get_balance(self, account_id: str) -> dict[str, Any]:
-        method = _resolve_method(
-            self._modules("account_v2", "account", "asset_v2", "asset"),
-            ("get_account_balance", "get_balance", "account_balance"),
-        )
-        if method is None:
-            raise WebullSDKError("The installed Webull SDK does not expose account-balance queries.")
-        payload = _json_response(_call_account_method(method, account_id))
-        rows = _extract_rows(payload, preferred=("balances", "assets", "data"))
-        return rows[0] if len(rows) == 1 else (payload if isinstance(payload, dict) else {"items": rows})
+        payload = _json_response(self.trade_client.account_v2.get_account_balance(account_id))
+        self._record(f"balance_{account_id[-4:]}", payload)
+        return payload if isinstance(payload, dict) else {"data": payload}
 
     def get_positions(self, account_id: str) -> list[dict[str, Any]]:
-        method = _resolve_method(
-            self._modules("account_v2", "account", "asset_v2", "asset"),
-            ("get_account_positions", "get_positions", "account_positions"),
-        )
-        if method is None:
-            raise WebullSDKError("The installed Webull SDK does not expose account-position queries.")
-        payload = _json_response(_call_account_method(method, account_id))
-        return _extract_rows(payload, preferred=("positions", "holdings", "data"))
+        # Official SDK method name is singular: get_account_position.
+        payload = _json_response(self.trade_client.account_v2.get_account_position(account_id))
+        self._record(f"positions_{account_id[-4:]}", payload)
+        return extract_rows(payload, "position")
+
+    def get_order_detail(self, account_id: str, client_order_id: str) -> dict[str, Any]:
+        payload = _json_response(self.trade_client.order_v2.get_order_detail(account_id, client_order_id))
+        self._record(f"order_detail_{client_order_id[-8:]}", payload)
+        return payload if isinstance(payload, dict) else {"data": payload}
 
     def get_orders(
         self,
@@ -183,76 +191,58 @@ class WebullReadOnlyClient:
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         page_size: int = 100,
+        max_pages: int = 100,
     ) -> list[dict[str, Any]]:
-        """Fetch order history using the newest compatible read method in the SDK.
-
-        Webull has renamed order-query methods across SDK revisions. This uses
-        introspection and several official naming generations without ever
-        invoking write methods.
-        """
-        method = _resolve_method(
-            self._modules("order_v3", "order_v2", "order"),
-            (
-                "get_order_list",
-                "get_orders",
-                "query_orders",
-                "get_order_history",
-                "order_list",
-            ),
-        )
-        if method is None:
-            raise WebullSDKError("The installed Webull SDK does not expose order-list queries.")
-
         end_time = end_time or datetime.now(timezone.utc)
         start_time = start_time or (end_time - timedelta(days=730))
-        formats = {
-            "start_time": start_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
-            "end_time": end_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
-            "start_date": start_time.strftime("%Y-%m-%d"),
-            "end_date": end_time.strftime("%Y-%m-%d"),
-            "page_size": page_size,
-            "limit": page_size,
-        }
-        response = _call_account_method(method, account_id, **formats)
-        payload = _json_response(response)
-        return _extract_rows(payload, preferred=("orders", "order_list", "data", "items"))
+        start_date = start_time.strftime("%Y-%m-%d")
+        end_date = end_time.strftime("%Y-%m-%d")
 
-    def get_order_detail(self, account_id: str, order_id: str) -> dict[str, Any]:
-        method = _resolve_method(
-            self._modules("order_v3", "order_v2", "order"),
-            ("get_order_detail", "order_detail", "get_detail"),
-        )
-        if method is None:
-            return {}
-        response = _call_order_detail_method(method, account_id, order_id)
-        payload = _json_response(response)
-        return payload if isinstance(payload, dict) else {"data": payload}
+        rows: list[dict[str, Any]] = []
+        last_client_order_id: str | None = None
+        last_order_id: str | None = None
+        seen_cursors: set[tuple[str | None, str | None]] = set()
 
+        for page in range(max_pages):
+            payload = _json_response(
+                self.trade_client.order_v2.get_order_history(
+                    account_id,
+                    page_size=page_size,
+                    start_date=start_date,
+                    end_date=end_date,
+                    last_client_order_id=last_client_order_id,
+                    last_order_id=last_order_id,
+                )
+            )
+            self._record(f"orders_{account_id[-4:]}_page_{page + 1}", payload)
+            page_rows = extract_rows(payload, "order")
+            if not page_rows:
+                break
+            rows.extend(page_rows)
 
-def _extract_rows(payload: Any, preferred: Iterable[str] = ()) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if not isinstance(payload, dict):
-        return []
+            next_client = _find_cursor(payload, ("last_client_order_id", "lastClientOrderId", "next_client_order_id"))
+            next_order = _find_cursor(payload, ("last_order_id", "lastOrderId", "next_order_id"))
+            cursor = (next_client, next_order)
+            if cursor == (None, None) or cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            last_client_order_id, last_order_id = cursor
+            if len(page_rows) < page_size:
+                break
 
-    for key in preferred:
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-        if isinstance(value, dict):
-            nested = _extract_rows(value, preferred=preferred)
-            if nested:
-                return nested
-            return [value]
-
-    for key in ("data", "result", "items", "list", "rows"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-        if isinstance(value, dict):
-            nested = _extract_rows(value, preferred=preferred)
-            if nested:
-                return nested
-
-    # A single-object response is still a valid row.
-    return [payload] if payload else []
+        # De-duplicate while preserving order.
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            key = str(
+                row.get("client_order_id")
+                or row.get("clientOrderId")
+                or row.get("order_id")
+                or row.get("orderId")
+                or repr(sorted(row.items()))
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        return unique
