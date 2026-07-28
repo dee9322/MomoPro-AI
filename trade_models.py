@@ -85,6 +85,17 @@ class TradeRecord:
     broker: str = ""
     broker_execution_ids: list[str] = field(default_factory=list)
     broker_fees: float = 0.0
+    plan_id: str = ""
+    plan_created_at: str | None = None
+    plan_snapshot: dict[str, Any] = field(default_factory=dict)
+    plan_completeness: float = 0.0
+    review_mode: str = "imported_only"
+    intelligence_score: float = 0.0
+    classification_reason: str = ""
+    broker_order_ids: list[str] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    timeline: list[dict[str, Any]] = field(default_factory=list)
+    reconstruction: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
