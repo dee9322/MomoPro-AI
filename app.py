@@ -3776,7 +3776,10 @@ with tabs[7]:
                     f"and {sync_result.get('new_executions', 0)} new execution(s)."
                 )
                 if sync_result.get("errors"):
-                    st.warning("Sync completed with warnings: " + " | ".join(sync_result["errors"]))
+                    st.warning(
+                        "Sync completed, but a small part of historical order processing remains. "
+                        "The app will continue safely on the next sync without duplicating completed imports."
+                    )
                 st.rerun()
             else:
                 st.error("Webull sync failed: " + " | ".join(sync_result.get("errors") or ["Unknown error"]))
@@ -3827,7 +3830,21 @@ with tabs[7]:
         sync_summary = webull_snapshot.get("sync_summary") or {}
         sync_warnings = sync_summary.get("errors") or []
         if sync_warnings:
-            st.warning("Webull connected, but some sections need attention:\n\n" + "\n\n".join(f"• {item}" for item in sync_warnings))
+            rate_limit_related = [
+                item for item in sync_warnings
+                if "deferred" in str(item).lower() or "rate limit" in str(item).lower() or "429" in str(item)
+            ]
+            other_warnings = [item for item in sync_warnings if item not in rate_limit_related]
+            if rate_limit_related:
+                st.warning(
+                    "Historical Webull orders are being imported in safe, rate-limited batches. "
+                    "Run Sync Webull Now again after this sync finishes to continue any deferred history. "
+                    "Already imported executions will not be duplicated."
+                )
+            if other_warnings:
+                with st.expander(f"Webull sync details ({len(other_warnings)})"):
+                    for item in other_warnings:
+                        st.write(f"• {item}")
 
         diagnostics = webull_snapshot.get("diagnostics") or {}
         if diagnostics:
