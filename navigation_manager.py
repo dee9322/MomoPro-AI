@@ -272,7 +272,11 @@ def close_tab(tab_id: str, *, rerun: bool = True) -> None:
         # The universal search is only a launcher. Clear the closed value so a
         # later widget callback cannot silently reopen it.
         if normalize_symbol(st.session_state.get("global_symbol_search")) == closed_symbol:
-            st.session_state.global_symbol_search = ""
+            # The search widget has already been instantiated by the time a
+            # top workspace close button runs. Streamlit forbids mutating that
+            # widget key during the same script run, so defer the clear until
+            # the next run before render_navigation creates the widget.
+            st.session_state._clear_global_symbol_search = True
 
     _write_query(
         st.session_state.get("active_page", DEFAULT_PAGE),
@@ -301,7 +305,7 @@ def close_active_stock_tab(*, rerun: bool = True) -> None:
     # its stock workspace tab is already missing.
     st.session_state.selected_symbol = None
     if selected_symbol and normalize_symbol(st.session_state.get("global_symbol_search")) == selected_symbol:
-        st.session_state.global_symbol_search = ""
+        st.session_state._clear_global_symbol_search = True
     _write_query(st.session_state.get("active_page", DEFAULT_PAGE), "")
     persist_session_workspace()
     if rerun:
@@ -345,7 +349,10 @@ def sync_symbol_widget(widget_key: str) -> None:
 def render_navigation() -> None:
     active_page = normalize_page(st.session_state.get("active_page"))
     pending_page = normalize_page(st.session_state.pop("_navigation_sync_page", active_page))
-    # This assignment occurs before the widget is instantiated on this run.
+    # Apply deferred widget-state changes before either widget is instantiated
+    # on this run. This is the only safe time to mutate Streamlit widget keys.
+    if st.session_state.pop("_clear_global_symbol_search", False):
+        st.session_state.global_symbol_search = ""
     if st.session_state.get("navigation_page_picker") != pending_page:
         st.session_state.navigation_page_picker = pending_page
 

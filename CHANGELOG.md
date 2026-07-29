@@ -679,3 +679,8 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - News now renders the automatic-loading snapshot instead of issuing a second synchronous provider request on every rerun.
 - Manual controls remain force-refresh actions only.
 - Added legacy combined-cache migration so existing saved data can be restored once and rewritten into the separated resource documents.
+
+## v0.98.3 — Streamlit-safe global stock close hotfix
+- Deferred universal ticker widget clearing until the next rerun, before widget creation.
+- Prevented StreamlitAPIException when closing a stock workspace from any page.
+- Preserved global tab removal, selected-symbol clearing, and URL cleanup behavior.
