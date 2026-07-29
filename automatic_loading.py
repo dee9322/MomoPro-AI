@@ -197,6 +197,11 @@ def render_automatic_loading_worker() -> None:
     force = bool(job.get("force"))
     label = str(job.get("loading_label") or "Loading data")
     status_box = st.empty()
+    st.session_state[STATUS_KEY][resource] = {
+        "status": "loading",
+        "updated_at": _now(),
+        "label": label,
+    }
     status_box.info(f"{label}…")
 
     try:
@@ -253,6 +258,29 @@ def render_automatic_loading_worker() -> None:
 
     st.rerun(scope="app")
 
+
+
+def render_loading_skeleton(resource: str, *, rows: int = 3, label: str = "Loading") -> None:
+    """Render a lightweight shimmer only while a resource has no usable value."""
+    initialize_automatic_loading()
+    status = (st.session_state.get(STATUS_KEY) or {}).get(resource, {}).get("status")
+    if status not in {"queued", "loading"}:
+        return
+    row_count = max(1, min(int(rows), 6))
+    bars = "".join(
+        f'<div class="momopro-skeleton-line" style="width:{94 - (index % 3) * 9}%"></div>'
+        for index in range(row_count)
+    )
+    html = (
+        "<style>"
+        "@keyframes momoproSkeletonPulse{0%{opacity:.42}50%{opacity:.88}100%{opacity:.42}}"
+        ".momopro-skeleton-card{border:1px solid rgba(128,128,128,.22);border-radius:.65rem;padding:.8rem .9rem .45rem .9rem;margin:.35rem 0 .75rem 0}"
+        ".momopro-skeleton-label{font-size:.78rem;opacity:.72;margin-bottom:.55rem}"
+        ".momopro-skeleton-line{height:.72rem;border-radius:.35rem;background:rgba(128,128,128,.30);margin:0 0 .48rem 0;animation:momoproSkeletonPulse 1.15s ease-in-out infinite}"
+        "</style>"
+        f'<div class="momopro-skeleton-card"><div class="momopro-skeleton-label">{label} automatically…</div>{bars}</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 def freshness_text(resource: str) -> str:
     updated = resource_updated_at(resource)

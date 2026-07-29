@@ -1,3 +1,9 @@
+## v0.98.3 — Completion audit and loading-skeleton restoration
+- Audited the current release against the locked v0.98.3 scope.
+- Restored the missing visual loading skeletons for Dashboard, Market Context, Scanner, News, Relative Strength, Smart Money, and Trading Intelligence.
+- Added an explicit per-resource `loading` state so skeletons appear only while queued work is actively restoring or refreshing data.
+- Preserved automatic loading, separated resource persistence, stale detection, configurable refresh windows, refresh-only controls, Dashboard-home startup, Webull snapshot restoration, and global stock-tab behavior.
+
 ## v0.98.3 — Global stock workspace close fix
 
 - Fixed stock tabs that reappeared after being closed from Scanner or another permanent page.

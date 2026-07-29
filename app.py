@@ -93,7 +93,7 @@ from supabase_backend import is_supabase_configured
 from automatic_loading import (
     initialize_automatic_loading, load_resource, force_refresh_resource,
     render_automatic_loading_worker,
-    render_freshness, restore_saved_resource,
+    render_freshness, render_loading_skeleton, restore_saved_resource,
 )
 
 
@@ -516,6 +516,10 @@ if active_page_is("Dashboard"):
     render_freshness("market_context", ttl_minutes=_data_cache_minutes("market", 15), label="Market")
     render_freshness("market_news", ttl_minutes=_data_cache_minutes("news", 15), label="News")
     render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
+    if not st.session_state.get("market_context") or not st.session_state.get("dashboard_headlines") or st.session_state.get("scan_results") is None:
+        render_loading_skeleton("market_context", rows=2, label="Preparing Dashboard market data")
+        render_loading_skeleton("market_news", rows=2, label="Preparing Dashboard news")
+        render_loading_skeleton("market_scan", rows=2, label="Preparing Dashboard opportunities")
 
     control_left, control_mid, control_right = st.columns([2, 1, 1])
     with control_left:
@@ -743,6 +747,8 @@ if active_page_is("Market Context"):
             st.error(f"Market context could not be loaded: {error}")
 
     market = st.session_state.market_context
+    if not market:
+        render_loading_skeleton("market_context", rows=4, label="Analyzing broad-market conditions")
 
     if market:
         top = st.columns(5)
@@ -1017,6 +1023,8 @@ if active_page_is("Scanner"):
         st.info("New scan started. You can keep using the app while it runs.")
 
     df = st.session_state.scan_results
+    if df is None:
+        render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
 
     if df is not None and not df.empty:
         st.success(
@@ -1317,7 +1325,10 @@ if active_page_is("Scanner"):
                     lambda: load_relative_strength(selected_symbol),
                     ttl_minutes=60,
                     loading_label=f"Comparing {selected_symbol} with market benchmarks",
-                ) or {"status": "Unavailable", "summary": "Relative strength is unavailable."}
+                )
+            if relative_strength is None:
+                render_loading_skeleton(rs_resource, rows=3, label=f"Comparing {selected_symbol} with market benchmarks")
+                relative_strength = {"status": "Loading", "summary": "Relative strength is loading automatically."}
 
             if relative_strength.get("status") == "Available":
                 rs_top = st.columns(4)
@@ -1436,6 +1447,7 @@ if active_page_is("Scanner"):
                 st.session_state.smart_money_cache[selected_symbol] = smart_money_context
 
             if smart_money_context is None:
+                render_loading_skeleton(smart_resource, rows=4, label=f"Loading Smart Money data for {selected_symbol}")
                 smart_money_context = {
                     "status": "Not Loaded",
                     "overall_score": None,
@@ -1642,6 +1654,7 @@ if active_page_is("Scanner"):
                 st.session_state.trade_intelligence_cache[selected_symbol] = trade_intelligence_context
 
             if trade_intelligence_context is None:
+                render_loading_skeleton(trade_resource, rows=4, label=f"Analyzing trading structure for {selected_symbol}")
                 trade_intelligence_context = {
                     "overall_score": None,
                     "status": "Not Loaded",
@@ -2470,6 +2483,7 @@ if active_page_is("News"):
         try:
             market_news = list(st.session_state.get("dashboard_headlines") or [])
             if not market_news:
+                render_loading_skeleton("market_news", rows=5, label="Loading current market news")
                 st.info("Market news is loading automatically.")
             market_summary = summarize_news(market_news)
             summary_cols = st.columns(5)
