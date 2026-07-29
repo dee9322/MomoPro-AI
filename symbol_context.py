@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import requests
+from alpaca.data.enums import DataFeed
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+
+from confidence import calculate_confidence
+from float_intelligence import get_float_intelligence
+from indicators import calculate_indicators
+from levels import calculate_levels
+from risk_reward import calculate_risk_reward
+from scoring import score_stock
+from sec_intelligence import get_company_profile
+from targets import calculate_targets
+
+_CACHE_PATH = Path(__file__).with_name("company_metadata_cache.json")
+_METADATA_TTL_DAYS = 30
+
+# Broad SIC groupings. This is intentionally deterministic and provider-neutral.
+_SIC_SECTORS = (
+    (100, 999, "Agriculture"),
+    (1000, 1499, "Materials"),
+    (1500, 1799, "Industrials"),
+    (2000, 2399, "Consumer Defensive"),
+    (2400, 2799, "Industrials"),
+    (2800, 2899, "Healthcare"),
+    (2900, 2999, "Energy"),
+    (3000, 3999, "Industrials"),
+    (4000, 4899, "Industrials"),
+    (4900, 4999, "Utilities"),
+    (5000, 5199, "Consumer Cyclical"),
+    (5200, 5999, "Consumer Cyclical"),
+    (6000, 6799, "Financial Services"),
+    (7000, 7299, "Communication Services"),
+    (7300, 7399, "Technology"),
+    (7500, 7999, "Consumer Cyclical"),
+    (8000, 8099, "Healthcare"),
+    (8100, 8999, "Industrials"),
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _read_cache() -> dict[str, Any]:
+    try:
+        raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_cache(cache: dict[str, Any]) -> None:
+    try:
+        _CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sector_from_sic(value: Any) -> str:
+    try:
+        sic = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return "Unclassified"
+    for low, high, label in _SIC_SECTORS:
+        if low <= sic <= high:
+            return label
+    return "Unclassified"
+
+
+def _fresh(record: dict[str, Any]) -> bool:
+    try:
+        fetched = datetime.fromisoformat(str(record.get("cached_at") or ""))
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        return _utc_now() - fetched < timedelta(days=_METADATA_TTL_DAYS)
+    except Exception:
+        return False
+
+
+def get_company_metadata(
+    symbol: str,
+    *,
+    fmp_api_key: str | None = None,
+    alpha_vantage_api_key: str | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    ticker = str(symbol or "").upper().strip()
+    if not ticker:
+        return {"symbol": "", "status": "Unavailable"}
+
+    cache = _read_cache()
+    cached = cache.get(ticker)
+    if isinstance(cached, dict) and _fresh(cached) and not force_refresh:
+        return cached
+
+    sec = get_company_profile(ticker)
+    float_data = get_float_intelligence(ticker, fmp_api_key, alpha_vantage_api_key)
+    provider: dict[str, Any] = {}
+    try:
+        if alpha_vantage_api_key:
+            response = requests.get(
+                "https://www.alphavantage.co/query",
+                params={"function": "OVERVIEW", "symbol": ticker, "apikey": alpha_vantage_api_key},
+                timeout=20,
+            )
+            payload = response.json() if response.status_code == 200 else {}
+            if isinstance(payload, dict) and payload.get("Symbol"):
+                provider = payload
+        if not provider and fmp_api_key:
+            response = requests.get(
+                "https://financialmodelingprep.com/stable/profile",
+                params={"symbol": ticker, "apikey": fmp_api_key},
+                timeout=20,
+            )
+            payload = response.json() if response.status_code == 200 else {}
+            if isinstance(payload, list) and payload:
+                provider = payload[0]
+            elif isinstance(payload, dict):
+                provider = payload
+    except Exception:
+        provider = {}
+
+    def _number(value: Any) -> float | None:
+        try:
+            return float(value) if value not in (None, "", "None") else None
+        except (TypeError, ValueError):
+            return None
+
+    record = {
+        "symbol": ticker,
+        "status": "Available" if sec.get("status") in {"Available", "Partial"} else "Unavailable",
+        "company": provider.get("Name") or provider.get("companyName") or sec.get("company") or ticker,
+        "sector": provider.get("Sector") or provider.get("sector") or sec.get("sector") or _sector_from_sic(sec.get("sic")),
+        "industry": provider.get("Industry") or provider.get("industry") or sec.get("industry") or "Unclassified",
+        "exchange": provider.get("Exchange") or provider.get("exchange") or sec.get("exchange") or "",
+        "country": provider.get("Country") or provider.get("country") or ("United States" if sec.get("cik") else ""),
+        "market_cap": _number(provider.get("MarketCapitalization") or provider.get("marketCap")),
+        "float_shares": float_data.get("float_shares"),
+        "shares_outstanding": float_data.get("shares_outstanding"),
+        "sic": sec.get("sic") or "",
+        "cik": sec.get("cik") or "",
+        "cached_at": _utc_now().isoformat(),
+    }
+    cache[ticker] = record
+    _write_cache(cache)
+    return record
+
+
+def cached_company_metadata(symbol: str) -> dict[str, Any] | None:
+    record = _read_cache().get(str(symbol or "").upper().strip())
+    return record if isinstance(record, dict) else None
+
+
+def available_cached_sectors() -> list[str]:
+    sectors = {
+        str(item.get("sector") or "").strip()
+        for item in _read_cache().values()
+        if isinstance(item, dict)
+    }
+    return sorted(sector for sector in sectors if sector and sector != "Unclassified")
+
+
+def attach_cached_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty or "Symbol" not in frame.columns:
+        return frame
+    cache = _read_cache()
+    enriched = frame.copy()
+    for column in ("Company", "Sector", "Industry", "Exchange", "Country", "Market Cap", "Float", "Shares Outstanding"):
+        if column not in enriched.columns:
+            enriched[column] = None
+    for index, symbol in enriched["Symbol"].items():
+        item = cache.get(str(symbol).upper()) or {}
+        enriched.at[index, "Company"] = item.get("company")
+        enriched.at[index, "Sector"] = item.get("sector")
+        enriched.at[index, "Industry"] = item.get("industry")
+        enriched.at[index, "Exchange"] = item.get("exchange")
+        enriched.at[index, "Country"] = item.get("country")
+        enriched.at[index, "Market Cap"] = item.get("market_cap")
+        enriched.at[index, "Float"] = item.get("float_shares")
+        enriched.at[index, "Shares Outstanding"] = item.get("shares_outstanding")
+    return enriched
+
+
+def analyze_symbol(api_key: str, secret_key: str, symbol: str) -> dict[str, Any]:
+    """Build the same structural Stock Report row for any valid ticker.
+
+    This removes the market scanner as a prerequisite. The scanner remains a
+    discovery tool, while a direct search can create a complete report on demand.
+    """
+    ticker = str(symbol or "").upper().strip()
+    if not ticker:
+        raise ValueError("A ticker is required.")
+
+    client = StockHistoricalDataClient(api_key, secret_key)
+    end = datetime.now()
+    start = end - timedelta(days=350)
+    request = StockBarsRequest(
+        symbol_or_symbols=ticker,
+        timeframe=TimeFrame.Day,
+        start=start,
+        end=end,
+        feed=DataFeed.IEX,
+    )
+    bars = client.get_stock_bars(request).df
+    if bars is None or bars.empty:
+        raise ValueError(f"No daily market data was returned for {ticker}.")
+    data = bars.reset_index()
+    if "symbol" in data.columns:
+        data = data[data["symbol"] == ticker].copy()
+    if len(data) < 50:
+        raise ValueError(f"Not enough daily history is available for {ticker}.")
+
+    data = calculate_indicators(data)
+    latest, previous = data.iloc[-1], data.iloc[-2]
+    levels = calculate_levels(data)
+    risk_reward = calculate_risk_reward(latest["close"], levels)
+    targets = calculate_targets(
+        entry=risk_reward["Reference Entry"],
+        risk_per_share=risk_reward["Risk Per Share"],
+        levels=levels,
+    )
+    score, dee_fit, momo_score, modules, grade, setup, reasons = score_stock(latest, previous)
+    confidence = calculate_confidence(modules=modules, risk_reward_data=risk_reward, levels=levels)
+
+    row: dict[str, Any] = {
+        "Symbol": ticker,
+        "Close": round(float(latest["close"]), 2),
+        "Score": score,
+        "Dee Fit": dee_fit,
+        "Setup": setup,
+        "ATR %": round(float(latest.get("atr_pct", 0)), 2),
+        "RVOL": round(float(latest.get("rvol", 0)), 2),
+        "Distance EMA21 %": round(float(latest.get("distance_from_ema21", 0)), 2),
+        "Reasons": reasons,
+        "Grade": grade,
+        "Momo Score": momo_score,
+        "Momo Confidence": confidence["Momo Confidence"],
+        "Confidence Rating": confidence["Confidence Rating"],
+    }
+    for label in ("Trend", "Location", "Momentum", "Volume", "Opportunity", "Risk", "Structure"):
+        row[f"{label} Confidence"] = confidence["Confidence Breakdown"][label]
+    for n in (1, 2, 3):
+        for side in ("Support", "Resistance"):
+            row[f"{side} {n}"] = levels[f"{side} {n}"]
+            row[f"{side} {n} Quality"] = levels[f"{side} {n} Quality"]
+            row[f"{side} {n} Touches"] = levels[f"{side} {n} Touches"]
+    for key in ("Reference Entry", "Risk Reference", "Reward Reference", "Risk Per Share", "Reward Per Share", "Risk Reward", "Risk Reward Status"):
+        row[key] = risk_reward[key]
+    for n in (1, 2, 3):
+        row[f"T{n}"] = targets[f"T{n}"]
+        row[f"T{n} Upside %"] = targets[f"T{n} Upside %"]
+        row[f"T{n} R"] = targets[f"T{n} R"]
+    return row

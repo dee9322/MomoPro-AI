@@ -1,3 +1,13 @@
+# v0.98.4 — Scanner and Symbol Unification
+
+- Any valid ticker entered through universal search can build the complete Stock Workspace without appearing in the market scan.
+- Added a canonical on-demand symbol-analysis service using the same scoring, confidence, support/resistance, risk/reward, and target engines as the scanner.
+- Added persistent company metadata caching with company, sector, industry, exchange, country, market-cap placeholder, float, and shares outstanding fields.
+- Added cached metadata attachment and sector filtering to Scanner.
+- Preserved one universal symbol context across Stock Report, News, AI Analysis, Live Chart, Trade Planner, and Journal.
+- Added Trade Planner long/short direction support and target-level dollar profit, percentage return, reward per share, and R-multiple calculations.
+- Guarded Stock Report selection against symbols missing from the current scanner DataFrame.
+
 ## v0.98.3 — Completion audit and loading-skeleton restoration
 - Audited the current release against the locked v0.98.3 scope.
 - Restored the missing visual loading skeletons for Dashboard, Market Context, Scanner, News, Relative Strength, Smart Money, and Trading Intelligence.

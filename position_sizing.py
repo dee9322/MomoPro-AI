@@ -11,6 +11,7 @@ def calculate_position_size(
     risk_percent: float,
     entry_price: float,
     stop_price: float,
+    direction: str = "Long",
 ) -> Dict[str, Any]:
     """Calculate a whole-share position using both risk and cash constraints.
 
@@ -21,6 +22,7 @@ def calculate_position_size(
     risk_pct = min(max(float(risk_percent or 0.0), 0.0), 100.0)
     entry = max(float(entry_price or 0.0), 0.0)
     stop = max(float(stop_price or 0.0), 0.0)
+    side = str(direction or "Long").strip().title()
 
     risk_budget = account * (risk_pct / 100.0)
     risk_per_share: Optional[float] = None
@@ -30,10 +32,12 @@ def calculate_position_size(
         error = "Enter a valid entry price greater than $0."
     elif stop <= 0:
         error = "Enter a valid stop price greater than $0."
-    elif stop >= entry:
+    elif side == "Short" and stop <= entry:
+        error = "For a short trade, the stop must be above the entry price."
+    elif side != "Short" and stop >= entry:
         error = "For a long trade, the stop must be below the entry price."
     else:
-        risk_per_share = entry - stop
+        risk_per_share = abs(entry - stop)
 
     cash_based_shares = math.floor(account / entry) if account > 0 and entry > 0 else 0
     risk_based_shares = (
@@ -64,6 +68,7 @@ def calculate_position_size(
         raise AssertionError("Position value exceeded account size.")
 
     return {
+        "direction": side,
         "account_size": account,
         "risk_percent": risk_pct,
         "risk_budget": risk_budget,
