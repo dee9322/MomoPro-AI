@@ -1,3 +1,11 @@
+## v0.98.2 Canonical Webull Account Integration
+
+- Added one canonical broker account context shared by Settings, Trade Planner, risk sizing, and future journal automation.
+- Fixed Webull parsing so zero-valued aliases no longer hide later positive account-value fields.
+- Aggregated multiple Webull accounts and reconstructed equity from cash plus positions when needed.
+- Persisted the last valid Webull account context in Supabase settings so transient cold-start reads do not revert the app to $10,000.
+- Kept the manual account-size value only as an explicit fallback when no Webull value has ever been resolved.
+
 v0.98.2 Tabs v2 — Hybrid Navigation Workspace
 
 Restored top workspace tabs while keeping the permanent sidebar navigation.

@@ -16,6 +16,17 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "preferred_sectors": [],
         "preferred_universes": ["Entire Market"],
     },
+    "broker": {
+        "provider": "Webull",
+        "account_value": 0.0,
+        "cash_balance": 0.0,
+        "market_value": 0.0,
+        "buying_power": 0.0,
+        "source": "Unavailable",
+        "account_count": 0,
+        "last_sync": None,
+        "resolved_at": None,
+    },
     "risk": {
         "account_size": 10000.0,
         "risk_per_trade_pct": 1.0,

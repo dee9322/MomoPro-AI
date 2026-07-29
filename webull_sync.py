@@ -26,6 +26,7 @@ from trade_evidence import refresh_trade_evidence
 from trade_classification import classify_trade
 from trade_timeline import build_trade_timeline
 from webull_api import WebullCredentials, WebullReadOnlyClient, safe_shape
+from account_context import resolve_webull_snapshot
 
 
 SNAPSHOT_PATH = Path(__file__).with_name("webull_sync_data.json")
@@ -94,48 +95,9 @@ def load_webull_snapshot() -> dict[str, Any]:
 
 
 def get_webull_account_value(snapshot: dict[str, Any] | None = None) -> tuple[float, str]:
-    """Return the best real account-value figure from normalized or raw Webull data.
-
-    The API has returned several balance shapes across environments. Prefer true
-    liquidation/asset values, then reconstruct from cash plus market value, and use
-    cash or buying power only as explicitly-labelled fallbacks.
-    """
-    data = snapshot if isinstance(snapshot, dict) else load_webull_snapshot()
-    balances = list((data.get("balances") or {}).values()) if isinstance(data.get("balances"), dict) else []
-
-    primary_keys = (
-        "net_liquidation", "netLiquidation", "net_account_value", "netAccountValue",
-        "account_value", "accountValue", "total_assets", "totalAssets",
-        "total_asset", "totalAsset", "net_value", "netValue", "equity",
-    )
-    for balance in balances:
-        if not isinstance(balance, dict):
-            continue
-        value = _number(_deep_first(balance, primary_keys))
-        if value > 0:
-            return value, "Webull account value"
-
-    for balance in balances:
-        if not isinstance(balance, dict):
-            continue
-        cash = _number(_deep_first(balance, ("cash_balance", "cashBalance", "cash", "cash_value", "cashValue")))
-        market = _number(_deep_first(balance, ("market_value", "marketValue", "positions_market_value", "positionsMarketValue", "stock_market_value", "stockMarketValue")))
-        if cash > 0 and market > 0:
-            return cash + market, "Webull cash + positions"
-
-    # Search the complete snapshot because some API responses are retained under raw.
-    value = _number(_deep_first(data, primary_keys))
-    if value > 0:
-        return value, "Webull account value"
-
-    cash = _number(_deep_first(data, ("cash_balance", "cashBalance", "settled_cash", "settledCash", "cash_value", "cashValue")))
-    if cash > 0:
-        return cash, "Webull cash balance"
-
-    buying_power = _number(_deep_first(data, ("buying_power", "buyingPower", "cash_available_for_trade", "cashAvailableForTrade")))
-    if buying_power > 0:
-        return buying_power, "Webull buying power"
-    return 0.0, "Unavailable"
+    """Backward-compatible wrapper around the canonical account resolver."""
+    context = resolve_webull_snapshot(snapshot if isinstance(snapshot, dict) else load_webull_snapshot())
+    return context.account_value, context.source
 
 def _first(data: dict[str, Any], names: Iterable[str], default: Any = None) -> Any:
     lowered = {str(key).lower(): value for key, value in data.items()}
@@ -601,6 +563,13 @@ def sync_webull(
         _atomic_json_write(SNAPSHOT_PATH, snapshot)
         if cloud_available():
             save_document(SNAPSHOT_BUCKET, snapshot)
+        # Store the last known valid broker context inside durable settings so every
+        # feature uses the same Webull account value even after a cold start.
+        try:
+            from settings_engine import refresh_broker_account_context
+            refresh_broker_account_context(snapshot)
+        except Exception:
+            pass
         pending_detail_count = sum(
             1 for error in errors
             if "order detail" in str(error).lower() or "retried on the next sync" in str(error).lower()

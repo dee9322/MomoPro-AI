@@ -56,7 +56,7 @@ from trade_journal import (
 )
 from broker_import import preview_webull_csv
 from trade_storage import load_broker_executions, load_broker_imports, load_broker_orders
-from webull_sync import get_webull_account_value, load_webull_snapshot, sync_webull, webull_connection_status
+from webull_sync import load_webull_snapshot, sync_webull, webull_connection_status
 from trade_storage import load_trades, save_attachment
 from performance_engine import (
     SOURCE_OPTIONS, calculate_summary, data_quality_report, decision_accuracy, equity_curve,
@@ -71,7 +71,7 @@ from learning_storage import (
     save_snapshot as save_learning_snapshot, set_rule_enabled as set_learning_rule_enabled,
 )
 from settings_engine import (
-    get_setting, get_settings, reset_settings, save_settings, settings_summary, update_section,
+    get_account_context, get_effective_account_size, get_setting, get_settings, reset_settings, save_settings, settings_summary, update_section,
 )
 from canonical_analysis import build_canonical_analysis, planner_prefill
 from analysis_storage import save_analysis, get_analysis, list_analyses
@@ -3402,16 +3402,13 @@ if active_page_is("Trade Planner"):
             f"Stop {money_text(saved_plan.get('stop'))}, T1 {money_text(saved_plan.get('t1'))}, "
             f"T2 {money_text(saved_plan.get('t2'))}, T3 {money_text(saved_plan.get('t3'))}."
         )
-    webull_snapshot_for_planner = load_webull_snapshot()
-    webull_account_size, webull_account_source = get_webull_account_value(webull_snapshot_for_planner)
-    configured_account_size = float(
-        get_setting("risk.account_size", 10000.0, st.session_state.momopro_settings)
+    planner_account_default, planner_account_source = get_effective_account_size(
+        st.session_state.momopro_settings
     )
-    planner_account_default = webull_account_size or configured_account_size
     if "planner_account_size" not in st.session_state:
         st.session_state.planner_account_size = planner_account_default
-    elif webull_account_size > 0 and not st.session_state.get("planner_account_size_user_override", False):
-        st.session_state.planner_account_size = webull_account_size
+    elif not st.session_state.get("planner_account_size_user_override", False):
+        st.session_state.planner_account_size = planner_account_default
 
     account_size = st.number_input(
         "Account Size ($)",
@@ -3424,8 +3421,10 @@ if active_page_is("Trade Planner"):
         ),
         on_change=lambda: st.session_state.__setitem__("planner_account_size_user_override", True),
     )
-    if webull_account_size > 0:
-        st.caption(f"Connected Webull planning balance detected: {money_text(webull_account_size)} · {webull_account_source}")
+    if planner_account_source != "Manual fallback":
+        st.caption(f"Automatic planning balance: {money_text(planner_account_default)} · {planner_account_source}")
+    else:
+        st.caption("Webull account value is unavailable; using the manual risk-setting fallback.")
 
     risk_pct = st.number_input(
         "Risk Per Trade (%)",
@@ -4773,10 +4772,8 @@ if active_page_is("Settings"):
     settings = get_settings()
     st.session_state.momopro_settings = settings
     summary = settings_summary(settings)
-    settings_webull_snapshot = load_webull_snapshot()
-    settings_webull_account_size, settings_webull_source = get_webull_account_value(settings_webull_snapshot)
-    displayed_account_size = settings_webull_account_size or float(summary["Account size"] or 0)
-    account_size_source = settings_webull_source if settings_webull_account_size > 0 else "Manual fallback"
+    displayed_account_size, account_size_source = get_effective_account_size(settings)
+    broker_context = get_account_context(settings, refresh=False)
     summary_cols = st.columns(5)
     summary_cols[0].metric("Trading Style", summary["Trading style"])
     summary_cols[1].metric("Account Size", money_text(displayed_account_size), help=f"Source: {account_size_source}")
@@ -4787,8 +4784,15 @@ if active_page_is("Settings"):
 
     st.info(
         "Settings are saved to your private Supabase workspace, with `settings_data.json` retained only as a local backup/export layer. "
-        "The account-size card uses your connected Webull balance when available; the editable Risk value remains the manual fallback."
+        "Account size is resolved once through the canonical Webull account context and reused by Settings, Trade Planner, risk calculations, and future journal automation. The editable Risk value is only a fallback."
     )
+    if account_size_source != "Manual fallback":
+        st.caption(
+            f"Webull context: cash {money_text(broker_context.cash_balance)} · "
+            f"positions {money_text(broker_context.market_value)} · "
+            f"buying power {money_text(broker_context.buying_power)} · "
+            f"last sync {broker_context.last_sync or '—'}"
+        )
 
     settings_tabs = st.tabs([
         "Profile", "Risk", "Scanner", "Indicators", "AI Behavior",

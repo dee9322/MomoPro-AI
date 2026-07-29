@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any, Dict
 
 from settings_storage import load_settings, reset_settings, save_settings
+from account_context import AccountContext, context_from_saved, resolve_webull_snapshot
 
 
 def get_settings() -> Dict[str, Any]:
@@ -30,6 +31,47 @@ def update_section(section: str, values: Dict[str, Any]) -> Dict[str, Any]:
     return save_settings(settings)
 
 
+
+def refresh_broker_account_context(snapshot: Dict[str, Any] | None = None) -> AccountContext:
+    """Resolve and persist the current Webull account context when valid."""
+    if snapshot is None:
+        try:
+            from webull_sync import load_webull_snapshot
+            snapshot = load_webull_snapshot()
+        except Exception:
+            snapshot = {}
+    live = resolve_webull_snapshot(snapshot)
+    if live.account_value > 0:
+        settings = load_settings()
+        settings["broker"] = live.to_dict()
+        save_settings(settings)
+    return live
+
+
+def get_account_context(settings: Dict[str, Any] | None = None, *, refresh: bool = True) -> AccountContext:
+    """Return one canonical broker account context for every app feature.
+
+    A valid live Webull snapshot wins. If a transient API/cloud read is empty, the
+    last known Webull value saved in settings is retained instead of reverting the
+    entire app to the $10,000 manual planning fallback.
+    """
+    s = settings or load_settings()
+    if refresh:
+        live = refresh_broker_account_context()
+        if live.account_value > 0:
+            return live
+    return context_from_saved(s.get("broker"))
+
+
+def get_effective_account_size(settings: Dict[str, Any] | None = None, *, refresh: bool = True) -> tuple[float, str]:
+    s = settings or load_settings()
+    context = get_account_context(s, refresh=refresh)
+    if context.account_value > 0:
+        source = context.source if context.is_live else f"{context.source} (last synced)"
+        return context.account_value, source
+    return float(get_setting("risk.account_size", 10000.0, s) or 0.0), "Manual fallback"
+
+
 def settings_summary(settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
     s = settings or load_settings()
     return {
@@ -44,4 +86,4 @@ def settings_summary(settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
         "Broker": get_setting("journal.default_broker", "—", s),
     }
 
-__all__ = ["get_settings", "get_setting", "update_section", "save_settings", "reset_settings", "settings_summary"]
+__all__ = ["get_settings", "get_setting", "update_section", "save_settings", "reset_settings", "settings_summary", "refresh_broker_account_context", "get_account_context", "get_effective_account_size"]
