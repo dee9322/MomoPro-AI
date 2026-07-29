@@ -131,7 +131,7 @@ def initialize_navigation(workspace: dict[str, Any] | None = None) -> None:
     _ensure_stock_tabs()
 
     if "active_page" not in st.session_state:
-        st.session_state.active_page = query_page or normalize_page(workspace.get("active_page"))
+        st.session_state.active_page = DEFAULT_PAGE
     elif query_page and query_page != normalize_page(st.session_state.active_page):
         st.session_state.active_page = query_page
 
