@@ -604,3 +604,11 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Use the connected Webull balance for the Settings account-size summary when available, with a clearly labeled manual fallback.
 - Clarify that Supabase is the primary settings store and local JSON is only backup/export storage.
 - Preserve the latest cloud-backed Webull snapshot and workspace context across fresh Streamlit runtimes.
+
+## v0.98.2 lifecycle stabilization — 2026-07-29
+- Removed Webull snapshot loading from the critical workspace persistence path so optional broker-data errors cannot prevent page, ticker, or stock-tab saves.
+- Made the restored shared ticker authoritative over stale Live Chart defaults such as SPY.
+- Kept the Live Chart widget, selected symbol, URL state, and cloud workspace synchronized on every symbol change.
+- Added authenticated access-token propagation for all Supabase document loads/saves, improving refresh, sign-in, and sleep/wake recovery for workspace and settings.
+- Added a unified Webull account-value resolver that supports normalized and nested/raw API response shapes.
+- Updated Trade Planner and Settings to use the same Webull account-value source and label the source shown.

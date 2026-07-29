@@ -290,8 +290,9 @@ def sync_symbol_widget(widget_key: str) -> None:
     st.session_state.selected_symbol = clean
     st.session_state.news_search_symbol = clean
     st.session_state.ai_analysis_symbol = clean
-    if widget_key != "live_chart_symbol":
-        st.session_state.live_chart_symbol = clean
+    # Keep the shared symbol and the Live Chart widget value identical. This is
+    # required because Streamlit restores widget keys before the page body runs.
+    st.session_state.live_chart_symbol = clean
     if widget_key != "planner_symbol":
         st.session_state.planner_symbol = clean
     if widget_key != "journal_new_symbol":

@@ -13,7 +13,7 @@ DEFAULT_WORKSPACE = {
     "selected_symbol": None,
     "active_watchlist": "Main Watchlist",
     "news_search_symbol": "SPY",
-    "chart_symbol": "SPY",
+    "chart_symbol": None,
     "chart_timeframe": "1D",
     "chart_candles": 300,
     "chart_overlays": [],
@@ -74,35 +74,45 @@ def save_workspace(workspace: dict[str, Any]) -> dict[str, Any]:
 
 
 def persist_session_workspace() -> dict[str, Any]:
-    """Persist the lightweight workspace immediately, including before st.rerun().
+    """Persist navigation and workspace state without optional-service dependencies.
 
-    Navigation actions frequently trigger Streamlit reruns before app.py reaches its
-    end-of-run save block. Saving here prevents page, ticker, chart, and open-stock
-    context from being lost during navigation or after the hosted app sleeps.
+    This function is intentionally limited to session/workspace fields. A Webull read,
+    chart-data request, or any other optional integration must never be able to block
+    page, ticker, tab, or settings recovery.
     """
     try:
         import streamlit as st
-        from webull_sync import load_webull_snapshot
 
+        selected_symbol = str(st.session_state.get("selected_symbol") or "").upper().strip() or None
+        chart_symbol = str(
+            st.session_state.get("live_chart_symbol")
+            or selected_symbol
+            or "SPY"
+        ).upper().strip()
         workspace = dict(st.session_state.get("momopro_workspace") or {})
         workspace.update({
             "active_page": st.session_state.get("active_page", "Dashboard"),
             "active_tab_id": st.session_state.get("active_tab_id", "page:dashboard"),
             "workspace_tabs": st.session_state.get("workspace_tabs", []),
-            "selected_symbol": st.session_state.get("selected_symbol"),
+            "selected_symbol": selected_symbol,
             "news_search_symbol": st.session_state.get("news_search_symbol", ""),
             "active_watchlist": st.session_state.get("active_watchlist", "Main Watchlist"),
             "dashboard_universe": st.session_state.get("dashboard_universe", "Entire Market"),
-            "chart_symbol": st.session_state.get("live_chart_symbol", st.session_state.get("selected_symbol") or "SPY"),
+            "chart_symbol": chart_symbol,
             "chart_timeframe": st.session_state.get("live_chart_timeframe", "1D"),
             "chart_candles": st.session_state.get("live_chart_candles", 300),
             "chart_overlays": st.session_state.get("live_chart_overlays", []),
             "trade_plan_prefill": st.session_state.get("trade_plan_prefill", {}),
             "journal_prefill": st.session_state.get("journal_prefill", {}),
-            "last_webull_sync": (load_webull_snapshot() or {}).get("last_sync"),
         })
         clean = save_workspace(workspace)
         st.session_state.momopro_workspace = clean
+        st.session_state._workspace_persist_error = ""
         return clean
-    except Exception:
+    except Exception as error:
+        try:
+            import streamlit as st
+            st.session_state._workspace_persist_error = str(error)
+        except Exception:
+            pass
         return normalize_workspace({})

@@ -56,7 +56,7 @@ from trade_journal import (
 )
 from broker_import import preview_webull_csv
 from trade_storage import load_broker_executions, load_broker_imports, load_broker_orders
-from webull_sync import load_webull_snapshot, sync_webull, webull_connection_status
+from webull_sync import get_webull_account_value, load_webull_snapshot, sync_webull, webull_connection_status
 from trade_storage import load_trades, save_attachment
 from performance_engine import (
     SOURCE_OPTIONS, calculate_summary, data_quality_report, decision_accuracy, equity_curve,
@@ -425,9 +425,11 @@ if "journal_prefill" not in st.session_state:
     st.session_state.journal_prefill = dict(st.session_state.momopro_workspace.get("journal_prefill") or {})
 
 if "live_chart_symbol" not in st.session_state:
+    # The restored shared ticker is authoritative. A stale saved chart default
+    # (commonly SPY) must never override the symbol restored from the URL/cloud.
     st.session_state.live_chart_symbol = str(
-        st.session_state.momopro_workspace.get("chart_symbol")
-        or st.session_state.get("selected_symbol")
+        st.session_state.get("selected_symbol")
+        or st.session_state.momopro_workspace.get("chart_symbol")
         or "SPY"
     ).upper().strip()
 if "live_chart_timeframe" not in st.session_state:
@@ -3401,16 +3403,7 @@ if active_page_is("Trade Planner"):
             f"T2 {money_text(saved_plan.get('t2'))}, T3 {money_text(saved_plan.get('t3'))}."
         )
     webull_snapshot_for_planner = load_webull_snapshot()
-    webull_balances_for_planner = list((webull_snapshot_for_planner.get("balances") or {}).values())
-    webull_account_size = first_positive(
-        value
-        for balance in webull_balances_for_planner
-        for value in (
-            balance.get("buying_power"),
-            balance.get("cash_balance"),
-            balance.get("net_liquidation"),
-        )
-    )
+    webull_account_size, webull_account_source = get_webull_account_value(webull_snapshot_for_planner)
     configured_account_size = float(
         get_setting("risk.account_size", 10000.0, st.session_state.momopro_settings)
     )
@@ -3432,7 +3425,7 @@ if active_page_is("Trade Planner"):
         on_change=lambda: st.session_state.__setitem__("planner_account_size_user_override", True),
     )
     if webull_account_size > 0:
-        st.caption(f"Connected Webull planning balance detected: {money_text(webull_account_size)}")
+        st.caption(f"Connected Webull planning balance detected: {money_text(webull_account_size)} · {webull_account_source}")
 
     risk_pct = st.number_input(
         "Risk Per Trade (%)",
@@ -4781,18 +4774,9 @@ if active_page_is("Settings"):
     st.session_state.momopro_settings = settings
     summary = settings_summary(settings)
     settings_webull_snapshot = load_webull_snapshot()
-    settings_webull_balances = list((settings_webull_snapshot.get("balances") or {}).values())
-    settings_webull_account_size = first_positive(
-        first_positive([
-            balance.get("net_liquidation"),
-            balance.get("total_assets"),
-            balance.get("buying_power"),
-            balance.get("cash_balance"),
-        ])
-        for balance in settings_webull_balances
-    )
+    settings_webull_account_size, settings_webull_source = get_webull_account_value(settings_webull_snapshot)
     displayed_account_size = settings_webull_account_size or float(summary["Account size"] or 0)
-    account_size_source = "Webull" if settings_webull_account_size > 0 else "Manual fallback"
+    account_size_source = settings_webull_source if settings_webull_account_size > 0 else "Manual fallback"
     summary_cols = st.columns(5)
     summary_cols[0].metric("Trading Style", summary["Trading style"])
     summary_cols[1].metric("Account Size", money_text(displayed_account_size), help=f"Source: {account_size_source}")

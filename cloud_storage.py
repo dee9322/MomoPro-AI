@@ -10,6 +10,18 @@ from user_context import current_user_id
 TABLE = "user_documents"
 
 
+def _session_access_token() -> str | None:
+    """Return the active Supabase access token without coupling callers to auth state."""
+    try:
+        import streamlit as st
+
+        auth = st.session_state.get("momopro_auth") or {}
+        token = str(auth.get("access_token") or "").strip() if isinstance(auth, dict) else ""
+        return token or None
+    except Exception:
+        return None
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -24,7 +36,7 @@ def load_document(bucket: str, default: Any, *, access_token: str | None = None)
     if not client or not user_id:
         return copy.deepcopy(default)
     try:
-        apply_access_token(client, access_token)
+        apply_access_token(client, access_token or _session_access_token())
         response = (
             client.table(TABLE)
             .select("payload")
@@ -54,7 +66,7 @@ def save_document(bucket: str, payload: Any, *, access_token: str | None = None)
         "updated_at": _now(),
     }
     try:
-        apply_access_token(client, access_token)
+        apply_access_token(client, access_token or _session_access_token())
         client.table(TABLE).upsert(row, on_conflict="user_id,bucket").execute()
         return True
     except Exception:
@@ -67,7 +79,7 @@ def delete_document(bucket: str, *, access_token: str | None = None) -> bool:
     if not client or not user_id:
         return False
     try:
-        apply_access_token(client, access_token)
+        apply_access_token(client, access_token or _session_access_token())
         (
             client.table(TABLE)
             .delete()

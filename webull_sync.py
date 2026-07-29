@@ -92,6 +92,51 @@ def load_webull_snapshot() -> dict[str, Any]:
     return value if isinstance(value, dict) else dict(default)
 
 
+
+def get_webull_account_value(snapshot: dict[str, Any] | None = None) -> tuple[float, str]:
+    """Return the best real account-value figure from normalized or raw Webull data.
+
+    The API has returned several balance shapes across environments. Prefer true
+    liquidation/asset values, then reconstruct from cash plus market value, and use
+    cash or buying power only as explicitly-labelled fallbacks.
+    """
+    data = snapshot if isinstance(snapshot, dict) else load_webull_snapshot()
+    balances = list((data.get("balances") or {}).values()) if isinstance(data.get("balances"), dict) else []
+
+    primary_keys = (
+        "net_liquidation", "netLiquidation", "net_account_value", "netAccountValue",
+        "account_value", "accountValue", "total_assets", "totalAssets",
+        "total_asset", "totalAsset", "net_value", "netValue", "equity",
+    )
+    for balance in balances:
+        if not isinstance(balance, dict):
+            continue
+        value = _number(_deep_first(balance, primary_keys))
+        if value > 0:
+            return value, "Webull account value"
+
+    for balance in balances:
+        if not isinstance(balance, dict):
+            continue
+        cash = _number(_deep_first(balance, ("cash_balance", "cashBalance", "cash", "cash_value", "cashValue")))
+        market = _number(_deep_first(balance, ("market_value", "marketValue", "positions_market_value", "positionsMarketValue", "stock_market_value", "stockMarketValue")))
+        if cash > 0 and market > 0:
+            return cash + market, "Webull cash + positions"
+
+    # Search the complete snapshot because some API responses are retained under raw.
+    value = _number(_deep_first(data, primary_keys))
+    if value > 0:
+        return value, "Webull account value"
+
+    cash = _number(_deep_first(data, ("cash_balance", "cashBalance", "settled_cash", "settledCash", "cash_value", "cashValue")))
+    if cash > 0:
+        return cash, "Webull cash balance"
+
+    buying_power = _number(_deep_first(data, ("buying_power", "buyingPower", "cash_available_for_trade", "cashAvailableForTrade")))
+    if buying_power > 0:
+        return buying_power, "Webull buying power"
+    return 0.0, "Unavailable"
+
 def _first(data: dict[str, Any], names: Iterable[str], default: Any = None) -> Any:
     lowered = {str(key).lower(): value for key, value in data.items()}
     for name in names:
