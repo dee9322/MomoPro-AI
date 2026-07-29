@@ -1,3 +1,23 @@
+v0.98.2 — Navigation and Workspace Restoration
+
+Replaced the fixed twelve-tab application shell with routed, conditional page rendering controlled by a persistent navigation manager.
+
+Added persistent active-page and selected-symbol restoration through Supabase workspace storage and browser query parameters.
+
+Added one universal ticker context shared by News, AI Analysis, Trade Planner, Journal, and Live Chart.
+
+Added direct cross-feature navigation so Stock Report and Watchlist actions open their destination immediately without requiring the user to search again.
+
+Updated Trade Planner to detect connected Webull buying power, cash, or net liquidation automatically while preserving a manual override.
+
+Updated Live Chart to restore the current or last-viewed ticker, timeframe, candle count, and overlays instead of resetting to SPY after refresh.
+
+Expanded the lightweight workspace record to persist page, ticker, chart controls, planner prefill, journal prefill, active watchlist, Dashboard universe, and last Webull sync reference.
+
+Added shareable query-parameter routes such as ?page=trade-planner&symbol=AAPL while preserving Supabase workspace restoration as the fallback.
+
+Preserved all existing scanner, intelligence, AI, journal, performance, Webull, TradingView, and trading-engine logic.
+
 v0.95C3 — Official Plan Visual Polish + Live Chart Upgrade
 
 Kept the original MomoPro Phase 5.6 indicator unchanged.
