@@ -8,6 +8,8 @@ BUCKET = "workspace_state"
 DEFAULT_WORKSPACE = {
     "schema_version": "0.98.2",
     "active_page": "Dashboard",
+    "active_tab_id": "page:dashboard",
+    "workspace_tabs": [],
     "selected_symbol": None,
     "active_watchlist": "Main Watchlist",
     "news_search_symbol": "SPY",
@@ -40,6 +42,8 @@ def normalize_workspace(workspace: dict[str, Any] | None) -> dict[str, Any]:
 
     clean["schema_version"] = "0.98.2"
     clean["active_page"] = str(clean.get("active_page") or "Dashboard")
+    clean["active_tab_id"] = str(clean.get("active_tab_id") or "page:dashboard")
+    clean["workspace_tabs"] = [dict(item) for item in _list(clean.get("workspace_tabs")) if isinstance(item, dict)]
     clean["selected_symbol"] = str(clean.get("selected_symbol") or "").upper().strip() or None
     clean["active_watchlist"] = str(clean.get("active_watchlist") or "Main Watchlist")
     clean["news_search_symbol"] = str(clean.get("news_search_symbol") or "").upper().strip()
