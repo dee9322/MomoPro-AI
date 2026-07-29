@@ -651,3 +651,11 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Trading Intelligence now loads automatically per ticker and persists in the automatic-data cache.
 - Returning to a recently opened ticker reuses its saved analysis until the configured refresh window expires.
 - Manual controls remain available only to force an immediate refresh.
+
+## v0.98.3 Scanner Regression Hotfix
+
+- Removed blocking live requests from the Dashboard render path so saved Dashboard data paints immediately.
+- Removed the automatic full-market scan from Scanner page initialization.
+- Restored an explicit primary **Run New Market Scan** action that always starts a fresh scan.
+- Prevented Dashboard news from silently refreshing during normal page rendering.
+- Preserved automatic Stock Report intelligence loading after a stock is selected.

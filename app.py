@@ -489,19 +489,14 @@ def _autoload_active_page():
     news_ttl = _data_cache_minutes("news", 15)
     scanner_ttl = _data_cache_minutes("scanner", 30)
 
-    # Dashboard is latency-sensitive. Restore all saved content immediately and
-    # only perform the lightest required refresh before rendering the page.
-    # Scanner/news refreshes are handled lower in the Dashboard after useful
-    # cached content is already visible.
+    # Dashboard must never block its first paint on live network work. Streamlit
+    # executes top-to-bottom, so a live request here delays the entire page.
+    # Restore saved snapshots only; the explicit Refresh controls perform live
+    # updates without making every Dashboard visit wait.
     if page == "Dashboard":
         restore_saved_resource("market_context", "market_context")
         restore_saved_resource("market_scan", "scan_results")
         restore_saved_resource("market_news", "dashboard_headlines")
-        if not st.session_state.get("market_context"):
-            load_resource(
-                "market_context", "market_context", _load_market_context_for_page,
-                ttl_minutes=market_ttl, loading_label="Loading current market context",
-            )
         return
 
     if page in {"Market Context", "AI Analysis", "Watchlist", "Journal"}:
@@ -510,11 +505,12 @@ def _autoload_active_page():
             ttl_minutes=market_ttl, loading_label="Loading current market context",
         )
 
-    if page in {"Scanner", "AI Analysis", "Watchlist"}:
-        load_resource(
-            "market_scan", "scan_results", run_scan,
-            ttl_minutes=scanner_ttl, loading_label="Scanning the market",
-        )
+    # A full market scan is intentionally user-triggered. Running it during the
+    # Scanner page's top-to-bottom render can hold the UI hostage and can also
+    # consume the click rerun before the scan button is handled. AI Analysis and
+    # Watchlist may restore a saved scan, but never launch a new full scan here.
+    if page in {"AI Analysis", "Watchlist"}:
+        restore_saved_resource("market_scan", "scan_results")
 
     if page == "News":
         load_resource(
@@ -573,14 +569,8 @@ if active_page_is("Dashboard"):
             st.warning(f"Market headlines are temporarily unavailable: {error}")
 
     dashboard_market = st.session_state.market_context
-    if not st.session_state.dashboard_headlines:
-        try:
-            st.session_state.dashboard_headlines = force_refresh_resource(
-                "market_news", "dashboard_headlines", _load_ranked_market_news_for_page,
-                ttl_minutes=_data_cache_minutes("news", 15), loading_label="Refreshing market news",
-            )
-        except Exception:
-            st.session_state.dashboard_headlines = []
+    # Do not silently run a live news request during Dashboard rendering. Saved
+    # headlines appear immediately; Refresh News is the deliberate live action.
     dashboard_news = st.session_state.dashboard_headlines[:10]
 
     filtered_scan, universe_note = filter_scan_universe(
@@ -1020,9 +1010,15 @@ if active_page_is("Scanner"):
     st.header("Scanner")
     render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
 
+    st.caption(
+        "Saved results open immediately. Run a new scan whenever you want fresh candidates."
+    )
+
     if st.button(
-        "Refresh Market Scan",
+        "Run New Market Scan",
         key="run_market_scan",
+        type="primary",
+        use_container_width=True,
     ):
         with st.spinner(
             "Scanning market..."
