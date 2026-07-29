@@ -84,6 +84,10 @@ from tradingview_bridge import (build_tradingview_payload, official_plan_packet,
 from auth_manager import require_auth, sign_out
 from migration_manager import migrate_local_json_once
 from workspace_storage import load_workspace, save_workspace
+from navigation_manager import (
+    active_page_is, first_positive, initialize_navigation, navigate_to,
+    normalize_symbol, render_navigation, set_active_symbol, sync_symbol_widget,
+)
 from supabase_backend import is_supabase_configured
 
 
@@ -364,6 +368,8 @@ if "scan_results" not in st.session_state:
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = st.session_state.momopro_workspace.get("selected_symbol")
 
+initialize_navigation(st.session_state.momopro_workspace)
+
 if "ai_commentary_cache" not in st.session_state:
     st.session_state.ai_commentary_cache = {}
 
@@ -386,7 +392,7 @@ if "canonical_analysis_cache" not in st.session_state:
     st.session_state.canonical_analysis_cache = {}
 
 if "trade_plan_prefill" not in st.session_state:
-    st.session_state.trade_plan_prefill = {}
+    st.session_state.trade_plan_prefill = dict(st.session_state.momopro_workspace.get("trade_plan_prefill") or {})
 
 if "ai_research_reports" not in st.session_state:
     st.session_state.ai_research_reports = {}
@@ -415,31 +421,35 @@ if "dashboard_headlines" not in st.session_state:
     st.session_state.dashboard_headlines = []
 
 if "journal_prefill" not in st.session_state:
-    st.session_state.journal_prefill = {}
+    st.session_state.journal_prefill = dict(st.session_state.momopro_workspace.get("journal_prefill") or {})
 
+if "live_chart_symbol" not in st.session_state:
+    st.session_state.live_chart_symbol = str(
+        st.session_state.momopro_workspace.get("chart_symbol")
+        or st.session_state.get("selected_symbol")
+        or "SPY"
+    ).upper().strip()
+if "live_chart_timeframe" not in st.session_state:
+    st.session_state.live_chart_timeframe = str(
+        st.session_state.momopro_workspace.get("chart_timeframe") or "1D"
+    )
+if "live_chart_candles" not in st.session_state:
+    st.session_state.live_chart_candles = int(
+        st.session_state.momopro_workspace.get("chart_candles") or 300
+    )
+if "live_chart_overlays" not in st.session_state:
+    st.session_state.live_chart_overlays = list(
+        st.session_state.momopro_workspace.get("chart_overlays") or []
+    )
 
-tabs = st.tabs(
-    [
-        "Dashboard",
-        "Market Context",
-        "Scanner",
-        "News",
-        "AI Analysis",
-        "Watchlist",
-        "Trade Planner",
-        "Journal",
-        "Performance",
-        "Learning",
-        "Settings",
-        "Live Chart",
-    ]
-)
+render_navigation()
+active_page = st.session_state.active_page
 
 
 # -----------------------------
 # Dashboard — Morning Command Center
 # -----------------------------
-with tabs[0]:
+if active_page_is("Dashboard"):
     st.header("Morning Command Center")
     st.caption("Market health, leadership, opportunities, alerts, open trades, and today’s plan in one place.")
 
@@ -647,7 +657,7 @@ with tabs[0]:
 # -----------------------------
 # Market Context
 # -----------------------------
-with tabs[1]:
+if active_page_is("Market Context"):
     st.header("Market Context")
     st.caption(
         "Full broad-market assessment. Refresh this before scanning "
@@ -916,7 +926,7 @@ with tabs[1]:
 # -----------------------------
 # Scanner
 # -----------------------------
-with tabs[2]:
+if active_page_is("Scanner"):
     st.header("Scanner")
 
     if st.button(
@@ -1642,7 +1652,7 @@ with tabs[2]:
             if trade_intelligence_context.get("overall_score") is not None:
                 if st.button("Send to Trade Planner", key=f"send_to_planner_{selected_symbol}"):
                     st.session_state.trade_plan_prefill = planner_prefill(canonical_analysis)
-                    st.success("Trade plan loaded into the Trade Planner tab.")
+                    navigate_to("Trade Planner", symbol=selected_symbol)
 
             # -------------------------
             # Canonical MomoPro Plan
@@ -2324,7 +2334,7 @@ with tabs[2]:
 # -----------------------------
 # News
 # -----------------------------
-with tabs[3]:
+if active_page_is("News"):
     st.header("News")
     st.caption(
         "Centralized market and stock-specific news intelligence. Search any ticker, "
@@ -2576,7 +2586,7 @@ def render_ai_summary_header(symbol, grade, confidence, momo_decision, rs_verdic
 # -----------------------------
 # AI Analysis
 # -----------------------------
-with tabs[4]:
+if active_page_is("AI Analysis"):
     st.header("AI Analysis")
     st.caption(
         "Independent AI research that uses MomoPro evidence, forms its own "
@@ -3131,7 +3141,7 @@ with tabs[4]:
 # -----------------------------
 # Watchlist & Alert Intelligence
 # -----------------------------
-with tabs[5]:
+if active_page_is("Watchlist"):
     st.header("Watchlist & Alert Intelligence")
     st.caption("Living stock profiles, thesis tracking, opportunity scoring, timelines, research history, and smart alerts.")
 
@@ -3318,15 +3328,17 @@ with tabs[5]:
 
             quick = st.columns(6)
             if quick[0].button("Open Stock Report", key=f"quick_report_{item.symbol}"):
-                st.session_state.selected_symbol = item.symbol; st.info("Ticker loaded as the selected scanner stock. Open the Scanner tab.")
+                navigate_to("Scanner", symbol=item.symbol)
             if quick[1].button("Trade Planner", key=f"quick_plan_{item.symbol}"):
-                st.session_state.trade_plan_prefill = {"symbol": item.symbol, "entry": item.entry_idea or tech.get("price"), "stop": item.stop, "t1": item.target}; st.success("Loaded into Trade Planner.")
+                st.session_state.trade_plan_prefill = {"symbol": item.symbol, "entry": item.entry_idea or tech.get("price"), "stop": item.stop, "t1": item.target}
+                navigate_to("Trade Planner", symbol=item.symbol)
             if quick[2].button("Journal", key=f"quick_journal_{item.symbol}"):
-                st.session_state.journal_prefill = {"symbol": item.symbol, "entry_price": tech.get("price") or 0, "initial_stop": item.stop or 0, "t1": item.target or 0, "thesis": item.thesis}; st.success("Watchlist profile loaded into the Journal.")
+                st.session_state.journal_prefill = {"symbol": item.symbol, "entry_price": tech.get("price") or 0, "initial_stop": item.stop or 0, "t1": item.target or 0, "thesis": item.thesis}
+                navigate_to("Journal", symbol=item.symbol)
             if quick[3].button("AI Research", key=f"quick_ai_{item.symbol}"):
-                st.session_state.ai_analysis_symbol = item.symbol; st.info("Ticker loaded for AI Analysis.")
+                navigate_to("AI Analysis", symbol=item.symbol)
             if quick[4].button("News", key=f"quick_news_{item.symbol}"):
-                st.session_state.news_search_symbol = item.symbol; st.info("Ticker loaded for News.")
+                navigate_to("News", symbol=item.symbol)
             if quick[5].button("Remove", key=f"quick_remove_{item.symbol}"):
                 remove_symbol(active_watchlist, item.symbol); st.rerun()
 
@@ -3374,12 +3386,17 @@ with tabs[5]:
 # -----------------------------
 # Trade Planner
 # -----------------------------
-with tabs[6]:
+if active_page_is("Trade Planner"):
     st.header("Trade Planner")
     st.caption("Review the official canonical plan, then customize position sizing or personal execution notes without changing the engine plan.")
 
     prefill = st.session_state.trade_plan_prefill or {}
-    planner_symbol = st.text_input("Ticker", value=str(prefill.get("symbol", "")), key="planner_symbol").upper().strip()
+    desired_planner_symbol = str(prefill.get("symbol") or st.session_state.get("selected_symbol") or "").upper().strip()
+    if "planner_symbol" not in st.session_state:
+        st.session_state.planner_symbol = desired_planner_symbol
+    planner_symbol = st.text_input(
+        "Ticker", key="planner_symbol", on_change=sync_symbol_widget, args=("planner_symbol",)
+    ).upper().strip()
     canonical_saved = st.session_state.canonical_analysis_cache.get(planner_symbol) or (get_analysis(planner_symbol).to_dict() if planner_symbol and get_analysis(planner_symbol) else None)
     if canonical_saved:
         saved_plan = canonical_saved.get("plan", {})
@@ -3388,13 +3405,39 @@ with tabs[6]:
             f"Stop {money_text(saved_plan.get('stop'))}, T1 {money_text(saved_plan.get('t1'))}, "
             f"T2 {money_text(saved_plan.get('t2'))}, T3 {money_text(saved_plan.get('t3'))}."
         )
+    webull_snapshot_for_planner = load_webull_snapshot()
+    webull_balances_for_planner = list((webull_snapshot_for_planner.get("balances") or {}).values())
+    webull_account_size = first_positive(
+        value
+        for balance in webull_balances_for_planner
+        for value in (
+            balance.get("buying_power"),
+            balance.get("cash_balance"),
+            balance.get("net_liquidation"),
+        )
+    )
+    configured_account_size = float(
+        get_setting("risk.account_size", 10000.0, st.session_state.momopro_settings)
+    )
+    planner_account_default = webull_account_size or configured_account_size
+    if "planner_account_size" not in st.session_state:
+        st.session_state.planner_account_size = planner_account_default
+    elif webull_account_size > 0 and not st.session_state.get("planner_account_size_user_override", False):
+        st.session_state.planner_account_size = webull_account_size
+
     account_size = st.number_input(
         "Account Size ($)",
         min_value=0.0,
-        value=float(get_setting("risk.account_size", 10000.0, st.session_state.momopro_settings)),
         step=500.0,
         key="planner_account_size",
+        help=(
+            "Automatically uses connected Webull buying power/cash when available. "
+            "You may still enter a manual planning amount."
+        ),
+        on_change=lambda: st.session_state.__setitem__("planner_account_size_user_override", True),
     )
+    if webull_account_size > 0:
+        st.caption(f"Connected Webull planning balance detected: {money_text(webull_account_size)}")
 
     risk_pct = st.number_input(
         "Risk Per Trade (%)",
@@ -3513,7 +3556,7 @@ with tabs[6]:
 # -----------------------------
 # Journal & Open Trades
 # -----------------------------
-with tabs[7]:
+if active_page_is("Journal"):
     st.header("Journal & Open Trades")
     st.caption("Plan, monitor, manage, close, and review every trade in one persistent record.")
 
@@ -4154,7 +4197,7 @@ with tabs[7]:
 # -----------------------------
 # Performance Analytics
 # -----------------------------
-with tabs[8]:
+if active_page_is("Performance"):
     st.header("Performance Analytics")
     st.caption(
         "Analyze completed journal trades and historical Webull executions from one reconciled performance record."
@@ -4477,7 +4520,7 @@ with tabs[8]:
 # -----------------------------
 # Learning Engine
 # -----------------------------
-with tabs[9]:
+if active_page_is("Learning"):
     st.header("Learning Engine")
     st.caption(
         "Personalized edge detection, confidence calibration, mistake learning, and coaching from the same reconciled Journal and Webull history used by Performance Analytics."
@@ -4733,7 +4776,7 @@ with tabs[9]:
 # -----------------------------
 # Settings & Personalization
 # -----------------------------
-with tabs[10]:
+if active_page_is("Settings"):
     st.header("Settings & Personalization")
     st.caption(
         "One persistent profile for strategy, risk, scanner, AI, dashboard, journal, performance, alerts, and integrations."
@@ -4996,7 +5039,7 @@ with tabs[10]:
 # -----------------------------
 # v0.95B — Native Live Chart & TradingView Bridge
 # -----------------------------
-with tabs[11]:
+if active_page_is("Live Chart"):
     st.header("Live Chart & TradingView Bridge")
     st.caption(
         "Review live market structure inside MomoPro, overlay the saved Official MomoPro Plan, "
@@ -5004,10 +5047,19 @@ with tabs[11]:
     )
 
     saved_analyses = {item.symbol: item for item in list_analyses()}
-    default_chart_symbol = str(st.session_state.get("selected_symbol") or "SPY").upper().strip()
+    default_chart_symbol = str(
+        st.session_state.get("live_chart_symbol")
+        or st.session_state.get("selected_symbol")
+        or "SPY"
+    ).upper().strip()
+    if not st.session_state.get("live_chart_symbol"):
+        st.session_state.live_chart_symbol = default_chart_symbol
     controls = st.columns([2, 1, 1, 1])
     with controls[0]:
-        chart_symbol = st.text_input("Symbol", value=default_chart_symbol, key="live_chart_symbol").upper().strip()
+        chart_symbol = st.text_input(
+            "Symbol", key="live_chart_symbol",
+            on_change=sync_symbol_widget, args=("live_chart_symbol",),
+        ).upper().strip()
     with controls[1]:
         chart_timeframe = st.selectbox("Timeframe", available_timeframes(), key="live_chart_timeframe")
     with controls[2]:
@@ -5181,10 +5233,18 @@ with tabs[11]:
 try:
     _workspace = dict(st.session_state.get("momopro_workspace") or {})
     _workspace.update({
+        "active_page": st.session_state.get("active_page", "Dashboard"),
         "selected_symbol": st.session_state.get("selected_symbol"),
         "news_search_symbol": st.session_state.get("news_search_symbol", ""),
         "active_watchlist": st.session_state.get("active_watchlist", "Main Watchlist"),
         "dashboard_universe": st.session_state.get("dashboard_universe", "Entire Market"),
+        "chart_symbol": st.session_state.get("live_chart_symbol", st.session_state.get("selected_symbol") or "SPY"),
+        "chart_timeframe": st.session_state.get("live_chart_timeframe", "1D"),
+        "chart_candles": st.session_state.get("live_chart_candles", 300),
+        "chart_overlays": st.session_state.get("live_chart_overlays", []),
+        "trade_plan_prefill": st.session_state.get("trade_plan_prefill", {}),
+        "journal_prefill": st.session_state.get("journal_prefill", {}),
+        "last_webull_sync": (load_webull_snapshot() or {}).get("last_sync"),
     })
     st.session_state.momopro_workspace = save_workspace(_workspace)
 except Exception:
