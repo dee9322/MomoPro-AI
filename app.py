@@ -483,25 +483,40 @@ def _load_ranked_market_news_for_page():
 
 
 def _autoload_active_page():
-    """Load the current tab like a normal website, without loading unrelated tabs."""
+    """Load the current tab like a normal website, without blocking Dashboard on every feed."""
     page = str(active_page or "")
     market_ttl = _data_cache_minutes("market", 15)
     news_ttl = _data_cache_minutes("news", 15)
     scanner_ttl = _data_cache_minutes("scanner", 30)
 
-    if page in {"Dashboard", "Market Context", "AI Analysis", "Watchlist", "Journal"}:
+    # Dashboard is latency-sensitive. Restore all saved content immediately and
+    # only perform the lightest required refresh before rendering the page.
+    # Scanner/news refreshes are handled lower in the Dashboard after useful
+    # cached content is already visible.
+    if page == "Dashboard":
+        restore_saved_resource("market_context", "market_context")
+        restore_saved_resource("market_scan", "scan_results")
+        restore_saved_resource("market_news", "dashboard_headlines")
+        if not st.session_state.get("market_context"):
+            load_resource(
+                "market_context", "market_context", _load_market_context_for_page,
+                ttl_minutes=market_ttl, loading_label="Loading current market context",
+            )
+        return
+
+    if page in {"Market Context", "AI Analysis", "Watchlist", "Journal"}:
         load_resource(
             "market_context", "market_context", _load_market_context_for_page,
             ttl_minutes=market_ttl, loading_label="Loading current market context",
         )
 
-    if page in {"Dashboard", "Scanner", "AI Analysis", "Watchlist"}:
+    if page in {"Scanner", "AI Analysis", "Watchlist"}:
         load_resource(
             "market_scan", "scan_results", run_scan,
             ttl_minutes=scanner_ttl, loading_label="Scanning the market",
         )
 
-    if page in {"Dashboard", "News"}:
+    if page == "News":
         load_resource(
             "market_news", "dashboard_headlines", _load_ranked_market_news_for_page,
             ttl_minutes=news_ttl, loading_label="Loading current market news",
@@ -1301,15 +1316,28 @@ if active_page_is("Scanner"):
             )
 
             rs_refresh = st.button(
-                "Load / Refresh Relative Strength",
+                "Refresh Relative Strength",
                 key=f"relative_strength_{selected_symbol}",
             )
 
+            rs_resource = f"stock_report:{selected_symbol}:relative_strength"
             if rs_refresh:
                 load_relative_strength.clear()
-
-            with st.spinner("Comparing the stock with market benchmarks..."):
-                relative_strength = load_relative_strength(selected_symbol)
+                relative_strength = force_refresh_resource(
+                    rs_resource,
+                    f"stock_report_rs_{selected_symbol}",
+                    lambda: load_relative_strength(selected_symbol),
+                    ttl_minutes=60,
+                    loading_label=f"Refreshing relative strength for {selected_symbol}",
+                )
+            else:
+                relative_strength = load_resource(
+                    rs_resource,
+                    f"stock_report_rs_{selected_symbol}",
+                    lambda: load_relative_strength(selected_symbol),
+                    ttl_minutes=60,
+                    loading_label=f"Comparing {selected_symbol} with market benchmarks",
+                ) or {"status": "Unavailable", "summary": "Relative strength is unavailable."}
 
             if relative_strength.get("status") == "Available":
                 rs_top = st.columns(4)
@@ -1386,30 +1414,46 @@ if active_page_is("Scanner"):
             )
 
             smart_refresh = st.button(
-                "Load / Refresh Smart Money",
+                "Refresh Smart Money",
                 key=f"smart_money_{selected_symbol}",
             )
+            smart_resource = f"stock_report:{selected_symbol}:smart_money"
+
+            def _load_stock_smart_money():
+                try:
+                    return load_smart_money(selected_symbol)
+                except Exception:
+                    return {
+                        "status": "Unavailable",
+                        "overall_score": None,
+                        "verdict": "Unavailable",
+                        "read_status": "Unavailable",
+                        "coverage_pct": 0,
+                        "available_modules": 0,
+                        "total_modules": 5,
+                        "summary": "Smart Money data could not be loaded from the connected providers.",
+                    }
+
             if smart_refresh:
                 load_smart_money.clear()
                 st.session_state.smart_money_cache.pop(selected_symbol, None)
-
-            smart_money_context = st.session_state.smart_money_cache.get(selected_symbol)
-            if smart_refresh:
-                with st.spinner(f"Loading Smart Money data for {selected_symbol}..."):
-                    try:
-                        smart_money_context = load_smart_money(selected_symbol)
-                    except Exception:
-                        smart_money_context = {
-                            "status": "Unavailable",
-                            "overall_score": None,
-                            "verdict": "Unavailable",
-                            "read_status": "Unavailable",
-                            "coverage_pct": 0,
-                            "available_modules": 0,
-                            "total_modules": 5,
-                            "summary": "Smart Money data could not be loaded from the connected providers.",
-                        }
-                    st.session_state.smart_money_cache[selected_symbol] = smart_money_context
+                smart_money_context = force_refresh_resource(
+                    smart_resource,
+                    f"stock_report_smart_money_{selected_symbol}",
+                    _load_stock_smart_money,
+                    ttl_minutes=30,
+                    loading_label=f"Refreshing Smart Money data for {selected_symbol}",
+                )
+            else:
+                smart_money_context = load_resource(
+                    smart_resource,
+                    f"stock_report_smart_money_{selected_symbol}",
+                    _load_stock_smart_money,
+                    ttl_minutes=30,
+                    loading_label=f"Loading Smart Money data for {selected_symbol}",
+                )
+            if smart_money_context:
+                st.session_state.smart_money_cache[selected_symbol] = smart_money_context
 
             if smart_money_context is None:
                 smart_money_context = {
@@ -1425,8 +1469,8 @@ if active_page_is("Scanner"):
                     "insider_activity": {},
                     "ownership": {},
                     "float": {},
-                    "summary": "Click Load / Refresh Smart Money to query the connected providers for this ticker.",
-                    "data_note": "Smart Money is loaded on demand to conserve free API limits.",
+                    "summary": "Smart Money data is loading automatically for this ticker.",
+                    "data_note": "Smart Money refreshes automatically and can also be refreshed manually.",
                 }
 
             score_value = smart_money_context.get("overall_score")
@@ -1573,34 +1617,49 @@ if active_page_is("Scanner"):
             )
 
             trade_refresh = st.button(
-                "Load / Refresh Trading Intelligence",
+                "Refresh Trading Intelligence",
                 key=f"trade_intelligence_{selected_symbol}",
             )
+            trade_resource = f"stock_report:{selected_symbol}:trading_intelligence"
+            stock_payload = selected_stock.to_dict()
+
+            def _load_stock_trade_intelligence():
+                try:
+                    return load_trade_intelligence(selected_symbol, stock_payload)
+                except Exception:
+                    return {
+                        "overall_score": None,
+                        "status": "Unavailable",
+                        "pattern": {},
+                        "trend_health": {},
+                        "multi_timeframe": {},
+                        "entry_quality": {},
+                        "adaptive_stops": {},
+                        "targets": {"targets": []},
+                        "exit_management": {},
+                        "historical_setup": {},
+                    }
+
             if trade_refresh:
                 load_trade_intelligence.clear()
                 st.session_state.trade_intelligence_cache.pop(selected_symbol, None)
-
-            trade_intelligence_context = st.session_state.trade_intelligence_cache.get(selected_symbol)
-            if trade_refresh:
-                with st.spinner(f"Analyzing trading structure for {selected_symbol}..."):
-                    try:
-                        trade_intelligence_context = load_trade_intelligence(
-                            selected_symbol, selected_stock.to_dict()
-                        )
-                    except Exception:
-                        trade_intelligence_context = {
-                            "overall_score": None,
-                            "status": "Unavailable",
-                            "pattern": {},
-                            "trend_health": {},
-                            "multi_timeframe": {},
-                            "entry_quality": {},
-                            "adaptive_stops": {},
-                            "targets": {"targets": []},
-                            "exit_management": {},
-                            "historical_setup": {},
-                        }
-                    st.session_state.trade_intelligence_cache[selected_symbol] = trade_intelligence_context
+                trade_intelligence_context = force_refresh_resource(
+                    trade_resource,
+                    f"stock_report_trade_intelligence_{selected_symbol}",
+                    _load_stock_trade_intelligence,
+                    ttl_minutes=30,
+                    loading_label=f"Refreshing trading structure for {selected_symbol}",
+                )
+            else:
+                trade_intelligence_context = load_resource(
+                    trade_resource,
+                    f"stock_report_trade_intelligence_{selected_symbol}",
+                    _load_stock_trade_intelligence,
+                    ttl_minutes=30,
+                    loading_label=f"Analyzing trading structure for {selected_symbol}",
+                )
+            if trade_intelligence_context:
+                st.session_state.trade_intelligence_cache[selected_symbol] = trade_intelligence_context
 
             if trade_intelligence_context is None:
                 trade_intelligence_context = {

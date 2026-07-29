@@ -642,3 +642,12 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - News begins loading automatically when opened while preserving manual refresh controls.
 - Added per-resource loading locks and status metadata to prevent duplicate requests during Streamlit reruns.
 - Preserved all v0.98.2 page, ticker, workspace, settings, and canonical Webull persistence behavior.
+
+## v0.98.3 Final — Dashboard speed and complete Stock Report auto-loading
+- Dashboard restores cached market, scanner, and news content before any expensive refresh work.
+- Dashboard no longer blocks initial rendering on a full scanner run and news request every time it opens.
+- Relative Strength now loads automatically when a Stock Report opens; its button is refresh-only.
+- Smart Money Intelligence now loads automatically per ticker and persists in the automatic-data cache.
+- Trading Intelligence now loads automatically per ticker and persists in the automatic-data cache.
+- Returning to a recently opened ticker reuses its saved analysis until the configured refresh window expires.
+- Manual controls remain available only to force an immediate refresh.
