@@ -1,3 +1,10 @@
+## v0.98.3 — Global stock workspace close fix
+
+- Fixed stock tabs that reappeared after being closed from Scanner or another permanent page.
+- Closing a ticker now removes the workspace tab, clears the shared selected ticker when it matches, removes the ticker from the URL, and persists the closed state.
+- Fixed Scanner's Close Report button when the Scanner page tab—not the stock tab—was active.
+- Added defensive cleanup for older sessions containing a selected ticker without a matching open stock tab.
+- Preserved other open stock tabs and the current ticker when closing a different ticker.
 
 ## v0.98.3 — Automatic data loading (complete)
 

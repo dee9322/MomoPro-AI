@@ -237,32 +237,73 @@ def activate_tab(tab_id: str, *, rerun: bool = True) -> None:
 
 
 def close_tab(tab_id: str, *, rerun: bool = True) -> None:
+    """Close one stock workspace everywhere in the application.
+
+    A permanent page tab can be active while a stock report remains visible. In
+    that state ``active_tab_id`` is a page tab, so the previous implementation
+    removed the stock chip but left ``selected_symbol`` and the URL symbol
+    untouched. Opening Scanner then treated that stale URL symbol as a deep link
+    and recreated the stock workspace.
+
+    Closing a stock now clears the shared symbol whenever the closed ticker is
+    the shared ticker, removes it from the URL, and persists the complete state
+    regardless of which permanent page is active.
+    """
     _ensure_stock_tabs()
-    tabs = st.session_state.workspace_tabs
+    tabs = list(st.session_state.workspace_tabs)
     index = next((i for i, tab in enumerate(tabs) if tab.get("id") == tab_id), None)
     if index is None:
         return
-    was_active = st.session_state.get("active_tab_id") == tab_id
-    tabs.pop(index)
+
+    closed_tab = tabs.pop(index)
+    closed_symbol = normalize_symbol(closed_tab.get("symbol"))
+    was_active_stock_tab = st.session_state.get("active_tab_id") == tab_id
+    selected_symbol = normalize_symbol(st.session_state.get("selected_symbol"))
+
     st.session_state.workspace_tabs = tabs
-    if was_active:
+
+    if was_active_stock_tab:
         st.session_state.active_page = "Scanner"
         st.session_state.active_tab_id = _page_tab_id("Scanner")
         _request_navigation_sync("Scanner")
-        if tabs:
-            st.session_state.selected_symbol = normalize_symbol(tabs[-1].get("symbol")) or None
-        _write_query("Scanner", normalize_symbol(st.session_state.get("selected_symbol")))
+
+    if closed_symbol and selected_symbol == closed_symbol:
+        st.session_state.selected_symbol = None
+        # The universal search is only a launcher. Clear the closed value so a
+        # later widget callback cannot silently reopen it.
+        if normalize_symbol(st.session_state.get("global_symbol_search")) == closed_symbol:
+            st.session_state.global_symbol_search = ""
+
+    _write_query(
+        st.session_state.get("active_page", DEFAULT_PAGE),
+        normalize_symbol(st.session_state.get("selected_symbol")),
+    )
     persist_session_workspace()
     if rerun:
         st.rerun()
 
 
 def close_active_stock_tab(*, rerun: bool = True) -> None:
+    """Close the displayed stock even when a permanent page tab is active."""
+    _ensure_stock_tabs()
     tab_id = str(st.session_state.get("active_tab_id") or "")
     if tab_id.startswith("stock:"):
         close_tab(tab_id, rerun=rerun)
         return
+
+    selected_symbol = normalize_symbol(st.session_state.get("selected_symbol"))
+    selected_tab_id = _stock_tab_id(selected_symbol) if selected_symbol else ""
+    if selected_tab_id and _stock_tab_by_id(selected_tab_id):
+        close_tab(selected_tab_id, rerun=rerun)
+        return
+
+    # Defensive cleanup for legacy sessions where a selected ticker exists but
+    # its stock workspace tab is already missing.
     st.session_state.selected_symbol = None
+    if selected_symbol and normalize_symbol(st.session_state.get("global_symbol_search")) == selected_symbol:
+        st.session_state.global_symbol_search = ""
+    _write_query(st.session_state.get("active_page", DEFAULT_PAGE), "")
+    persist_session_workspace()
     if rerun:
         st.rerun()
 
