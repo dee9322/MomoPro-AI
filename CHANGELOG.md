@@ -659,3 +659,16 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Restored an explicit primary **Run New Market Scan** action that always starts a fresh scan.
 - Prevented Dashboard news from silently refreshing during normal page rendering.
 - Preserved automatic Stock Report intelligence loading after a stock is selected.
+
+## v0.98.3 Loading Architecture Repair
+
+- Removed the blocking Supabase read from application startup.
+- Replaced the combined market/news/scanner cache document with one document per resource.
+- Added a timed Streamlit fragment worker so page shells render before cloud restore or live provider work begins.
+- Restored automatic loading for Dashboard, Market Context, Scanner, News, AI Analysis, Watchlist, and Journal.
+- Restored automatic per-ticker loading for Relative Strength, Smart Money, and Trading Intelligence through the same non-blocking queue.
+- Scanner snapshots now save independently and never rewrite unrelated market/news cache data.
+- Scanner refresh is queued and no longer holds the full page render hostage.
+- News now renders the automatic-loading snapshot instead of issuing a second synchronous provider request on every rerun.
+- Manual controls remain force-refresh actions only.
+- Added legacy combined-cache migration so existing saved data can be restored once and rewritten into the separated resource documents.
