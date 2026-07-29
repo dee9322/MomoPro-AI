@@ -85,8 +85,9 @@ from auth_manager import require_auth, sign_out
 from migration_manager import migrate_local_json_once
 from workspace_storage import load_workspace, save_workspace
 from navigation_manager import (
-    active_page_is, first_positive, initialize_navigation, navigate_to,
-    normalize_symbol, render_navigation, set_active_symbol, sync_symbol_widget,
+    active_page_is, close_active_stock_tab, first_positive, initialize_navigation, navigate_to,
+    normalize_symbol, open_stock_workspace, render_navigation, render_workspace_tabs,
+    set_active_symbol, sync_symbol_widget,
 )
 from supabase_backend import is_supabase_configured
 
@@ -443,6 +444,7 @@ if "live_chart_overlays" not in st.session_state:
     )
 
 render_navigation()
+render_workspace_tabs()
 active_page = st.session_state.active_page
 
 
@@ -1036,9 +1038,7 @@ if active_page_is("Scanner"):
                 selected_index
             ]
 
-            st.session_state.selected_symbol = (
-                selected_row["Symbol"]
-            )
+            open_stock_workspace(selected_row["Symbol"], rerun=False)
 
         selected_symbol = (
             st.session_state
@@ -1076,12 +1076,7 @@ if active_page_is("Scanner"):
                         "close_stock_report"
                     ),
                 ):
-                    (
-                        st.session_state
-                        .selected_symbol
-                    ) = None
-
-                    st.rerun()
+                    close_active_stock_tab()
 
             metric_columns = st.columns(6)
 
@@ -5234,6 +5229,8 @@ try:
     _workspace = dict(st.session_state.get("momopro_workspace") or {})
     _workspace.update({
         "active_page": st.session_state.get("active_page", "Dashboard"),
+        "active_tab_id": st.session_state.get("active_tab_id", "page:dashboard"),
+        "workspace_tabs": st.session_state.get("workspace_tabs", []),
         "selected_symbol": st.session_state.get("selected_symbol"),
         "news_search_symbol": st.session_state.get("news_search_symbol", ""),
         "active_watchlist": st.session_state.get("active_watchlist", "Main Watchlist"),
