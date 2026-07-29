@@ -1,0 +1,12 @@
+MomoPro AI v0.98.2 Import Hotfix
+
+Upload all three files to the ROOT of the GitHub repository in one upload:
+1. workspace_storage.py
+2. navigation_manager.py
+3. app.py
+
+GitHub path must be the same folder that already contains requirements.txt.
+Do not upload the enclosing folder itself.
+
+Commit message:
+Fix v0.98.2 workspace persistence import mismatch
