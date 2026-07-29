@@ -1,3 +1,21 @@
+v0.98.2 Tabs v2 — Hybrid Navigation Workspace
+
+Restored top workspace tabs while keeping the permanent sidebar navigation.
+
+Added persistent page tabs and closeable multi-symbol Stock Report tabs.
+
+Scanner row selection and universal ticker search now open reusable stock workspace tabs.
+
+The active tab and open-tab list persist through Supabase workspace storage and browser refresh.
+
+Kept shared ticker context, direct feature navigation, deep links, Trade Planner handoff, and Live Chart restoration from v0.98.2.
+
+Removed the Streamlit warning caused by calling st.rerun() inside the sidebar radio callback.
+
+Dashboard remains pinned and cannot be closed; other page and stock tabs can be closed individually.
+
+No scanner, scoring, AI, journal, performance, Webull, or TradingView engines were changed.
+
 v0.98.2 — Navigation and Workspace Restoration
 
 Replaced the fixed twelve-tab application shell with routed, conditional page rendering controlled by a persistent navigation manager.
