@@ -71,3 +71,38 @@ def save_workspace(workspace: dict[str, Any]) -> dict[str, Any]:
     clean = normalize_workspace(workspace)
     save_document(BUCKET, clean)
     return clean
+
+
+def persist_session_workspace() -> dict[str, Any]:
+    """Persist the lightweight workspace immediately, including before st.rerun().
+
+    Navigation actions frequently trigger Streamlit reruns before app.py reaches its
+    end-of-run save block. Saving here prevents page, ticker, chart, and open-stock
+    context from being lost during navigation or after the hosted app sleeps.
+    """
+    try:
+        import streamlit as st
+        from webull_sync import load_webull_snapshot
+
+        workspace = dict(st.session_state.get("momopro_workspace") or {})
+        workspace.update({
+            "active_page": st.session_state.get("active_page", "Dashboard"),
+            "active_tab_id": st.session_state.get("active_tab_id", "page:dashboard"),
+            "workspace_tabs": st.session_state.get("workspace_tabs", []),
+            "selected_symbol": st.session_state.get("selected_symbol"),
+            "news_search_symbol": st.session_state.get("news_search_symbol", ""),
+            "active_watchlist": st.session_state.get("active_watchlist", "Main Watchlist"),
+            "dashboard_universe": st.session_state.get("dashboard_universe", "Entire Market"),
+            "chart_symbol": st.session_state.get("live_chart_symbol", st.session_state.get("selected_symbol") or "SPY"),
+            "chart_timeframe": st.session_state.get("live_chart_timeframe", "1D"),
+            "chart_candles": st.session_state.get("live_chart_candles", 300),
+            "chart_overlays": st.session_state.get("live_chart_overlays", []),
+            "trade_plan_prefill": st.session_state.get("trade_plan_prefill", {}),
+            "journal_prefill": st.session_state.get("journal_prefill", {}),
+            "last_webull_sync": (load_webull_snapshot() or {}).get("last_sync"),
+        })
+        clean = save_workspace(workspace)
+        st.session_state.momopro_workspace = clean
+        return clean
+    except Exception:
+        return normalize_workspace({})

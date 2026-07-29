@@ -83,7 +83,7 @@ from broker_order_intelligence import has_reliable_broker_time
 from tradingview_bridge import (build_tradingview_payload, official_plan_packet, packet_diagnostics, payload_json, pine_input_block, tradingview_chart_url)
 from auth_manager import require_auth, sign_out
 from migration_manager import migrate_local_json_once
-from workspace_storage import load_workspace, save_workspace
+from workspace_storage import load_workspace, persist_session_workspace, save_workspace
 from navigation_manager import (
     active_page_is, close_active_stock_tab, first_positive, initialize_navigation, navigate_to,
     normalize_symbol, open_stock_workspace, render_navigation, render_workspace_tabs,
@@ -4780,16 +4780,30 @@ if active_page_is("Settings"):
     settings = get_settings()
     st.session_state.momopro_settings = settings
     summary = settings_summary(settings)
+    settings_webull_snapshot = load_webull_snapshot()
+    settings_webull_balances = list((settings_webull_snapshot.get("balances") or {}).values())
+    settings_webull_account_size = first_positive(
+        first_positive([
+            balance.get("net_liquidation"),
+            balance.get("total_assets"),
+            balance.get("buying_power"),
+            balance.get("cash_balance"),
+        ])
+        for balance in settings_webull_balances
+    )
+    displayed_account_size = settings_webull_account_size or float(summary["Account size"] or 0)
+    account_size_source = "Webull" if settings_webull_account_size > 0 else "Manual fallback"
     summary_cols = st.columns(5)
     summary_cols[0].metric("Trading Style", summary["Trading style"])
-    summary_cols[1].metric("Account Size", money_text(summary["Account size"]))
+    summary_cols[1].metric("Account Size", money_text(displayed_account_size), help=f"Source: {account_size_source}")
+    summary_cols[1].caption(f"Source: {account_size_source}")
     summary_cols[2].metric("Risk / Trade", percent_text(summary["Risk / trade"]))
     summary_cols[3].metric("AI Style", summary["AI style"])
     summary_cols[4].metric("Default Universe", summary["Dashboard universe"])
 
     st.info(
-        "Settings save to `settings_data.json`. Trade Planner and Performance defaults use these values now. "
-        "Scanner/engine fields are stored centrally for the unified-engine phase, where all engines will consume them without duplicate calculations."
+        "Settings are saved to your private Supabase workspace, with `settings_data.json` retained only as a local backup/export layer. "
+        "The account-size card uses your connected Webull balance when available; the editable Risk value remains the manual fallback."
     )
 
     settings_tabs = st.tabs([
@@ -5031,6 +5045,10 @@ if active_page_is("Settings"):
             reset_settings(); st.session_state.momopro_settings = get_settings(); st.session_state.dashboard_universe = get_setting("dashboard.default_universe", "Entire Market", st.session_state.momopro_settings); st.success("Settings reset."); st.rerun()
 
 
+def _persist_live_chart_controls() -> None:
+    persist_session_workspace()
+
+
 # -----------------------------
 # v0.95B — Native Live Chart & TradingView Bridge
 # -----------------------------
@@ -5056,9 +5074,9 @@ if active_page_is("Live Chart"):
             on_change=sync_symbol_widget, args=("live_chart_symbol",),
         ).upper().strip()
     with controls[1]:
-        chart_timeframe = st.selectbox("Timeframe", available_timeframes(), key="live_chart_timeframe")
+        chart_timeframe = st.selectbox("Timeframe", available_timeframes(), key="live_chart_timeframe", on_change=_persist_live_chart_controls)
     with controls[2]:
-        chart_candles = st.selectbox("Candles", [100, 200, 300, 500], index=2, key="live_chart_candles")
+        chart_candles = st.selectbox("Candles", [100, 200, 300, 500], key="live_chart_candles", on_change=_persist_live_chart_controls)
     with controls[3]:
         refresh_chart = st.button("Refresh Chart", use_container_width=True, key="refresh_live_chart")
 
@@ -5068,6 +5086,7 @@ if active_page_is("Live Chart"):
             ["EMA21", "EMA50", "EMA200", "Entry", "Max Chase", "Stop", "T1", "T2", "T3", "Support", "Resistance", "RSI", "MACD", "RVOL"],
             default=["EMA21", "EMA50", "EMA200", "Entry", "Max Chase", "Stop", "T1", "T2", "T3", "Support", "Resistance", "RSI", "MACD", "RVOL"],
             key="live_chart_overlays",
+            on_change=_persist_live_chart_controls,
             help="Turn off any plan level or indicator panel that is crowding the chart. Level details remain available through hoverable symbols.",
         )
     chart_display_options = {
@@ -5223,26 +5242,6 @@ if active_page_is("Live Chart"):
     )
 
 
-# Persist lightweight workspace state on every successful rerun. Large dataframes
-# and provider responses remain in cache/database records rather than this object.
-try:
-    _workspace = dict(st.session_state.get("momopro_workspace") or {})
-    _workspace.update({
-        "active_page": st.session_state.get("active_page", "Dashboard"),
-        "active_tab_id": st.session_state.get("active_tab_id", "page:dashboard"),
-        "workspace_tabs": st.session_state.get("workspace_tabs", []),
-        "selected_symbol": st.session_state.get("selected_symbol"),
-        "news_search_symbol": st.session_state.get("news_search_symbol", ""),
-        "active_watchlist": st.session_state.get("active_watchlist", "Main Watchlist"),
-        "dashboard_universe": st.session_state.get("dashboard_universe", "Entire Market"),
-        "chart_symbol": st.session_state.get("live_chart_symbol", st.session_state.get("selected_symbol") or "SPY"),
-        "chart_timeframe": st.session_state.get("live_chart_timeframe", "1D"),
-        "chart_candles": st.session_state.get("live_chart_candles", 300),
-        "chart_overlays": st.session_state.get("live_chart_overlays", []),
-        "trade_plan_prefill": st.session_state.get("trade_plan_prefill", {}),
-        "journal_prefill": st.session_state.get("journal_prefill", {}),
-        "last_webull_sync": (load_webull_snapshot() or {}).get("last_sync"),
-    })
-    st.session_state.momopro_workspace = save_workspace(_workspace)
-except Exception:
-    pass
+# Persist lightweight workspace state on every successful rerun. Navigation
+# callbacks also save immediately before any st.rerun().
+persist_session_workspace()

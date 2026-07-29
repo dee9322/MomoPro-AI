@@ -6,6 +6,8 @@ from typing import Any, Iterable
 
 import streamlit as st
 
+from workspace_storage import persist_session_workspace
+
 
 @dataclass(frozen=True)
 class PageRoute:
@@ -189,6 +191,7 @@ def open_page_tab(page: str, *, symbol: Any | None = None, rerun: bool = True) -
         set_active_symbol(symbol)
     else:
         _write_query(target, normalize_symbol(st.session_state.get("selected_symbol")))
+    persist_session_workspace()
     if rerun:
         st.rerun()
 
@@ -206,6 +209,7 @@ def open_stock_workspace(symbol: Any, *, rerun: bool = True) -> str:
     st.session_state.active_page = "Scanner"
     _request_navigation_sync("Scanner")
     _write_query("Scanner", clean)
+    persist_session_workspace()
     if rerun:
         st.rerun()
     return clean
@@ -227,6 +231,7 @@ def activate_tab(tab_id: str, *, rerun: bool = True) -> None:
     st.session_state.active_page = "Scanner"
     _request_navigation_sync("Scanner")
     set_active_symbol(tab.get("symbol"))
+    persist_session_workspace()
     if rerun:
         st.rerun()
 
@@ -247,6 +252,7 @@ def close_tab(tab_id: str, *, rerun: bool = True) -> None:
         if tabs:
             st.session_state.selected_symbol = normalize_symbol(tabs[-1].get("symbol")) or None
         _write_query("Scanner", normalize_symbol(st.session_state.get("selected_symbol")))
+    persist_session_workspace()
     if rerun:
         st.rerun()
 
@@ -267,6 +273,7 @@ def _navigation_changed() -> None:
     st.session_state.active_page = target
     st.session_state.active_tab_id = _page_tab_id(target)
     _write_query(target, normalize_symbol(st.session_state.get("selected_symbol")))
+    persist_session_workspace()
 
 
 def _symbol_submitted() -> None:
@@ -290,6 +297,7 @@ def sync_symbol_widget(widget_key: str) -> None:
     if widget_key != "journal_new_symbol":
         st.session_state.journal_new_symbol = clean
     _write_query(st.session_state.get("active_page", DEFAULT_PAGE), clean)
+    persist_session_workspace()
 
 
 def render_navigation() -> None:

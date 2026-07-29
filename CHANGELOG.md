@@ -597,3 +597,10 @@ Added symbol/timeframe mismatch warnings.
 Added structured JSON webhook events for entry-zone, targets, manage, trim, exit, hard-exit, and stop events.
 
 Updated the app's Pine Input Block labels to match the indicator inputs exactly.
+
+## v0.98.2 Stabilization Patch — 2026-07-29
+- Persist page, active ticker, open stock tabs, and chart controls immediately before navigation reruns.
+- Restore Live Chart symbol/timeframe/candle/overlay state from the private workspace after refresh, login, or app wake.
+- Use the connected Webull balance for the Settings account-size summary when available, with a clearly labeled manual fallback.
+- Clarify that Supabase is the primary settings store and local JSON is only backup/export storage.
+- Preserve the latest cloud-backed Webull snapshot and workspace context across fresh Streamlit runtimes.
