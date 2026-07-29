@@ -1,3 +1,16 @@
+
+## v0.98.3 — Automatic data loading (complete)
+
+- Added a single application initialization and automatic-loading manager.
+- Restores saved market context, scanner results, and news immediately from the private Supabase cache.
+- Automatically refreshes missing or stale content using the cache windows configured in Settings.
+- Reclassified old Load/Run controls as explicit force-refresh controls.
+- Added consistent freshness timestamps and stale/fresh status captions.
+- Added loading skeleton placeholders while network-backed content initializes.
+- Restores the saved canonical Webull account context at sign-in without requiring a manual sync.
+- Prevents duplicate requests during Streamlit reruns and keeps unrelated tabs lazy-loaded.
+- Preserves v0.98.2 page, ticker, workspace, settings, and Webull persistence behavior.
+
 ## v0.98.2 Canonical Webull Account Integration
 
 - Added one canonical broker account context shared by Settings, Trade Planner, risk sizing, and future journal automation.
@@ -620,3 +633,12 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Added authenticated access-token propagation for all Supabase document loads/saves, improving refresh, sign-in, and sleep/wake recovery for workspace and settings.
 - Added a unified Webull account-value resolver that supports normalized and nested/raw API response shapes.
 - Updated Trade Planner and Settings to use the same Webull account-value source and label the source shown.
+
+## v0.98.3 Automatic Loading — Phase 1 — 2026-07-29
+- Added page-aware lazy loading so opening Dashboard, Market Context, Scanner, News, AI Analysis, or Watchlist immediately begins loading the data that page needs.
+- Dashboard now automatically loads market context, ranked market news, and scanner results when missing.
+- Market Context now automatically loads on first open; its button is now a force-refresh action rather than a required first step.
+- Scanner now automatically runs on first open; its button is now a force-refresh action rather than a required first step.
+- News begins loading automatically when opened while preserving manual refresh controls.
+- Added per-resource loading locks and status metadata to prevent duplicate requests during Streamlit reruns.
+- Preserved all v0.98.2 page, ticker, workspace, settings, and canonical Webull persistence behavior.

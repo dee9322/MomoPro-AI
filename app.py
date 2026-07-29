@@ -90,6 +90,10 @@ from navigation_manager import (
     set_active_symbol, sync_symbol_widget,
 )
 from supabase_backend import is_supabase_configured
+from automatic_loading import (
+    initialize_automatic_loading, load_resource, force_refresh_resource,
+    render_freshness, restore_saved_resource,
+)
 
 
 st.set_page_config(
@@ -360,6 +364,8 @@ def load_comparison_research(query):
     )
 
 
+initialize_automatic_loading()
+
 if "momopro_workspace" not in st.session_state:
     st.session_state.momopro_workspace = load_workspace()
 
@@ -413,6 +419,12 @@ if "global_ai_last_meta" not in st.session_state:
 if "momopro_settings" not in st.session_state:
     st.session_state.momopro_settings = get_settings()
 
+# Restore the canonical saved Webull account snapshot during application initialization.
+# refresh=False prevents a page render from depending on a live broker request.
+st.session_state.momopro_account_context = get_account_context(
+    st.session_state.momopro_settings, refresh=False
+)
+
 if "dashboard_universe" not in st.session_state:
     st.session_state.dashboard_universe = get_setting(
         "dashboard.default_universe", "Entire Market", st.session_state.momopro_settings
@@ -420,6 +432,11 @@ if "dashboard_universe" not in st.session_state:
 
 if "dashboard_headlines" not in st.session_state:
     st.session_state.dashboard_headlines = []
+
+# v0.98.3: paint the last saved results immediately, before any network refresh.
+restore_saved_resource("market_context", "market_context")
+restore_saved_resource("market_scan", "scan_results")
+restore_saved_resource("market_news", "dashboard_headlines")
 
 if "journal_prefill" not in st.session_state:
     st.session_state.journal_prefill = dict(st.session_state.momopro_workspace.get("journal_prefill") or {})
@@ -450,12 +467,59 @@ render_workspace_tabs()
 active_page = st.session_state.active_page
 
 
+def _data_cache_minutes(name: str, default: int) -> int:
+    try:
+        return int(get_setting(f"data.{name}_cache_minutes", default, st.session_state.momopro_settings) or default)
+    except Exception:
+        return default
+
+
+def _load_market_context_for_page():
+    return get_market_context(st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"])
+
+
+def _load_ranked_market_news_for_page():
+    return rank_news(load_market_news())
+
+
+def _autoload_active_page():
+    """Load the current tab like a normal website, without loading unrelated tabs."""
+    page = str(active_page or "")
+    market_ttl = _data_cache_minutes("market", 15)
+    news_ttl = _data_cache_minutes("news", 15)
+    scanner_ttl = _data_cache_minutes("scanner", 30)
+
+    if page in {"Dashboard", "Market Context", "AI Analysis", "Watchlist", "Journal"}:
+        load_resource(
+            "market_context", "market_context", _load_market_context_for_page,
+            ttl_minutes=market_ttl, loading_label="Loading current market context",
+        )
+
+    if page in {"Dashboard", "Scanner", "AI Analysis", "Watchlist"}:
+        load_resource(
+            "market_scan", "scan_results", run_scan,
+            ttl_minutes=scanner_ttl, loading_label="Scanning the market",
+        )
+
+    if page in {"Dashboard", "News"}:
+        load_resource(
+            "market_news", "dashboard_headlines", _load_ranked_market_news_for_page,
+            ttl_minutes=news_ttl, loading_label="Loading current market news",
+        )
+
+
+_autoload_active_page()
+
+
 # -----------------------------
 # Dashboard — Morning Command Center
 # -----------------------------
 if active_page_is("Dashboard"):
     st.header("Morning Command Center")
     st.caption("Market health, leadership, opportunities, alerts, open trades, and today’s plan in one place.")
+    render_freshness("market_context", ttl_minutes=_data_cache_minutes("market", 15), label="Market")
+    render_freshness("market_news", ttl_minutes=_data_cache_minutes("news", 15), label="News")
+    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
 
     control_left, control_mid, control_right = st.columns([2, 1, 1])
     with control_left:
@@ -474,9 +538,9 @@ if active_page_is("Dashboard"):
     if refresh_market:
         with st.spinner("Refreshing the market command center..."):
             try:
-                st.session_state.market_context = get_market_context(
-                    st.secrets["ALPACA_API_KEY"],
-                    st.secrets["ALPACA_SECRET_KEY"],
+                st.session_state.market_context = force_refresh_resource(
+                    "market_context", "market_context", _load_market_context_for_page,
+                    ttl_minutes=_data_cache_minutes("market", 15), loading_label="Refreshing market context",
                 )
                 st.success("Market Context refreshed.")
             except Exception as error:
@@ -485,7 +549,10 @@ if active_page_is("Dashboard"):
     if refresh_news:
         load_market_news.clear()
         try:
-            st.session_state.dashboard_headlines = rank_news(load_market_news())
+            st.session_state.dashboard_headlines = force_refresh_resource(
+                "market_news", "dashboard_headlines", _load_ranked_market_news_for_page,
+                ttl_minutes=_data_cache_minutes("news", 15), loading_label="Refreshing market news",
+            )
             st.success("Market headlines refreshed.")
         except Exception as error:
             st.warning(f"Market headlines are temporarily unavailable: {error}")
@@ -493,7 +560,10 @@ if active_page_is("Dashboard"):
     dashboard_market = st.session_state.market_context
     if not st.session_state.dashboard_headlines:
         try:
-            st.session_state.dashboard_headlines = rank_news(load_market_news())
+            st.session_state.dashboard_headlines = force_refresh_resource(
+                "market_news", "dashboard_headlines", _load_ranked_market_news_for_page,
+                ttl_minutes=_data_cache_minutes("news", 15), loading_label="Refreshing market news",
+            )
         except Exception:
             st.session_state.dashboard_headlines = []
     dashboard_news = st.session_state.dashboard_headlines[:10]
@@ -543,7 +613,7 @@ if active_page_is("Dashboard"):
     if index_rows:
         st.dataframe(pd.DataFrame(index_rows), use_container_width=True, hide_index=True)
     else:
-        st.caption("Refresh Market Context to populate SPY, QQQ, IWM, DIA, and volatility-proxy intelligence.")
+        st.caption("Market context loads automatically; use Refresh Market only to force an immediate update.")
 
     breadth_col, sector_col = st.columns(2)
     with breadth_col:
@@ -663,20 +733,21 @@ if active_page_is("Dashboard"):
 # -----------------------------
 if active_page_is("Market Context"):
     st.header("Market Context")
+    render_freshness("market_context", ttl_minutes=_data_cache_minutes("market", 15), label="Market context")
     st.caption(
-        "Full broad-market assessment. Refresh this before scanning "
-        "when you want the latest market backdrop."
+        "The latest broad-market assessment loads automatically when this tab opens. "
+        "Use Refresh only when you want to force a new request."
     )
 
     if st.button(
-        "Load / Refresh Market Context",
+        "Refresh Market Context",
         key="refresh_market_context",
     ):
         try:
             with st.spinner("Analyzing the broad market and breadth..."):
-                st.session_state.market_context = get_market_context(
-                    st.secrets["ALPACA_API_KEY"],
-                    st.secrets["ALPACA_SECRET_KEY"],
+                st.session_state.market_context = force_refresh_resource(
+                    "market_context", "market_context", _load_market_context_for_page,
+                    ttl_minutes=_data_cache_minutes("market", 15), loading_label="Refreshing market context",
                 )
         except Exception as error:
             st.error(f"Market context could not be loaded: {error}")
@@ -924,7 +995,7 @@ if active_page_is("Market Context"):
         else:
             st.caption("Sector relative-strength leadership is unavailable.")
     else:
-        st.info("Load Market Context to see the complete market assessment.")
+        st.info("Market Context is loading automatically. Use Refresh only to force a new request.")
 
 
 # -----------------------------
@@ -932,16 +1003,18 @@ if active_page_is("Market Context"):
 # -----------------------------
 if active_page_is("Scanner"):
     st.header("Scanner")
+    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
 
     if st.button(
-        "Run Market Scan",
+        "Refresh Market Scan",
         key="run_market_scan",
     ):
         with st.spinner(
             "Scanning market..."
         ):
-            st.session_state.scan_results = (
-                run_scan()
+            st.session_state.scan_results = force_refresh_resource(
+                "market_scan", "scan_results", run_scan,
+                ttl_minutes=_data_cache_minutes("scanner", 30), loading_label="Refreshing market scan",
             )
 
         st.session_state.selected_symbol = (
@@ -2333,6 +2406,7 @@ if active_page_is("Scanner"):
 # -----------------------------
 if active_page_is("News"):
     st.header("News")
+    render_freshness("market_news", ttl_minutes=_data_cache_minutes("news", 15), label="Market news")
     st.caption(
         "Centralized market and stock-specific news intelligence. Search any ticker, "
         "even if it did not appear in the scanner."
