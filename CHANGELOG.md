@@ -725,3 +725,9 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Deferred universal ticker widget clearing until the next rerun, before widget creation.
 - Prevented StreamlitAPIException when closing a stock workspace from any page.
 - Preserved global tab removal, selected-symbol clearing, and URL cleanup behavior.
+
+### v0.98.4 import synchronization hotfix
+- Split company metadata enrichment into `company_metadata.py`.
+- `app.py` now imports metadata helpers from the dedicated module and imports only direct-symbol analysis from `symbol_context.py`.
+- `symbol_context.py` re-exports metadata helpers for backward compatibility.
+- Prevents Streamlit hot-reload/module-cache mismatches from stopping the entire app at startup.

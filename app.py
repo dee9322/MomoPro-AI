@@ -91,8 +91,9 @@ from navigation_manager import (
 )
 from supabase_backend import is_supabase_configured
 from cloud_storage import verify_cloud_access
-from symbol_context import (
-    analyze_symbol, available_cached_sectors, enrich_company_metadata, get_company_metadata,
+from symbol_context import analyze_symbol
+from company_metadata import (
+    available_cached_sectors, enrich_company_metadata, get_company_metadata,
 )
 from automatic_loading import (
     initialize_automatic_loading, load_resource, force_refresh_resource,
