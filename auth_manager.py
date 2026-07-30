@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import json
+import time
 from typing import Any
 
 import streamlit as st
@@ -23,6 +26,7 @@ class AuthState:
     email: str = ""
     access_token: str = ""
     refresh_token: str = ""
+    expires_at: int = 0
 
 
 def _cookie_manager():
@@ -39,7 +43,10 @@ def _save_session(session: Any) -> AuthState:
     refresh_token = str(getattr(session, "refresh_token", "") or "")
     user_id = str(getattr(user, "id", "") or "")
     email = str(getattr(user, "email", "") or "")
-    state = AuthState(bool(user_id), user_id, email, access_token, refresh_token)
+    expires_at = int(getattr(session, "expires_at", 0) or 0)
+    if not expires_at and access_token:
+        expires_at = _jwt_exp(access_token)
+    state = AuthState(bool(user_id), user_id, email, access_token, refresh_token, expires_at)
     st.session_state.momopro_auth = state.__dict__
     set_current_user(user_id or None, email)
     manager = _cookie_manager()
@@ -50,6 +57,22 @@ def _save_session(session: Any) -> AuthState:
             pass
     return state
 
+
+
+def _jwt_exp(token: str) -> int:
+    """Read a JWT expiry without verifying the signature (expiry hint only)."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+        return int(data.get("exp") or 0)
+    except Exception:
+        return 0
+
+
+def _token_is_fresh(state: AuthState, minimum_seconds: int = 300) -> bool:
+    expiry = int(state.expires_at or _jwt_exp(state.access_token) or 0)
+    return bool(state.access_token and expiry > int(time.time()) + minimum_seconds)
 
 def _state_from_session() -> AuthState:
     raw = st.session_state.get("momopro_auth") or {}
@@ -64,11 +87,23 @@ def restore_auth() -> AuthState:
         return AuthState(True, "local-owner", "local@momopro.ai")
 
     existing = _state_from_session()
-    if existing.authenticated:
-        return existing
-
     client = get_supabase_client()
     manager = _cookie_manager()
+
+    # Streamlit sessions can survive while the Supabase access token expires. Never
+    # trust an authenticated flag alone: refresh before cloud data is loaded.
+    if existing.authenticated and _token_is_fresh(existing):
+        return existing
+    if client and existing.refresh_token:
+        try:
+            response = client.auth.refresh_session(existing.refresh_token)
+            session = getattr(response, "session", None)
+            if session:
+                return _save_session(session)
+        except Exception:
+            st.session_state.pop("momopro_auth", None)
+            set_current_user(None)
+
     refresh_token = None
     if manager:
         try:

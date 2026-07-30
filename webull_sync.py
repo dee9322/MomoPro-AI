@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any, Iterable
 
 from broker_models import BrokerExecution, stable_execution_id
@@ -31,7 +32,8 @@ from account_context import resolve_webull_snapshot
 
 SNAPSHOT_PATH = Path(__file__).with_name("webull_sync_data.json")
 DETAIL_CACHE_PATH = Path(__file__).with_name("webull_order_detail_cache.json")
-MAX_DETAIL_CALLS_PER_SYNC = 24
+MAX_DETAIL_CALLS_PER_SYNC = 8
+DETAIL_CALL_DELAY_SECONDS = 0.35
 SNAPSHOT_BUCKET = "webull_snapshot"
 DETAIL_CACHE_BUCKET = "webull_order_detail_cache"
 FILLED_WORDS = {"FILLED", "PARTIALLY_FILLED", "PARTIAL_FILLED", "EXECUTED", "COMPLETED", "COMPLETE"}
@@ -486,6 +488,8 @@ def sync_webull(
 
                     if needs_detail and detail_calls < MAX_DETAIL_CALLS_PER_SYNC:
                         try:
+                            if detail_calls:
+                                time.sleep(DETAIL_CALL_DELAY_SECONDS)
                             detail = client.get_order_detail(account_id, detail_id)
                             detail_calls += 1
                             if detail:

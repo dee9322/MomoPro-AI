@@ -90,6 +90,10 @@ from navigation_manager import (
     set_active_symbol, sync_symbol_widget,
 )
 from supabase_backend import is_supabase_configured
+from cloud_storage import verify_cloud_access
+from symbol_context import (
+    analyze_symbol, attach_cached_metadata, available_cached_sectors, get_company_metadata,
+)
 from automatic_loading import (
     initialize_automatic_loading, load_resource, force_refresh_resource,
     render_automatic_loading_worker,
@@ -184,6 +188,13 @@ st.markdown(
 auth_state = require_auth()
 
 if is_supabase_configured():
+    cloud_ok, cloud_error = verify_cloud_access()
+    if not cloud_ok:
+        st.error("Your private MomoPro cloud workspace could not be restored safely.")
+        st.info("Nothing has been reset or overwritten. Refresh the page to retry. If this continues, sign out and sign back in once.")
+        if cloud_error:
+            st.caption(f"Cloud restore detail: {cloud_error}")
+        st.stop()
     migration_result = migrate_local_json_once()
 else:
     migration_result = {"completed": False, "buckets": [], "skipped": []}
@@ -1027,6 +1038,14 @@ if active_page_is("Scanner"):
         render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
 
     if df is not None and not df.empty:
+        df = attach_cached_metadata(df)
+        sector_options = ["All Sectors"] + available_cached_sectors()
+        selected_sector = st.selectbox(
+            "Sector filter", sector_options, key="scanner_sector_filter",
+            help="Sector choices appear as company metadata is cached."
+        )
+        if selected_sector != "All Sectors" and "Sector" in df.columns:
+            df = df[df["Sector"].fillna("") == selected_sector].copy()
         st.success(
             f"Scan complete! "
             f"{len(df)} stocks analyzed."
@@ -1124,10 +1143,46 @@ if active_page_is("Scanner"):
         )
 
         if selected_symbol:
-            selected_stock = df[
-                df["Symbol"]
-                == selected_symbol
-            ].iloc[0]
+            matching_rows = df[df["Symbol"] == selected_symbol] if "Symbol" in df.columns else pd.DataFrame()
+            selected_stock = matching_rows.iloc[0].to_dict() if not matching_rows.empty else None
+
+            # A direct ticker search must build the same full report even when the
+            # symbol is absent from today's scan. The scanner is discovery only.
+            if selected_stock is None:
+                direct_cache = st.session_state.setdefault("direct_symbol_analysis_cache", {})
+                selected_stock = direct_cache.get(selected_symbol)
+                if selected_stock is None:
+                    with st.spinner(f"Building the full {selected_symbol} workspace..."):
+                        try:
+                            selected_stock = analyze_symbol(
+                                st.secrets["ALPACA_API_KEY"],
+                                st.secrets["ALPACA_SECRET_KEY"],
+                                selected_symbol,
+                            )
+                            direct_cache[selected_symbol] = selected_stock
+                        except Exception as error:
+                            st.error(f"Could not build the {selected_symbol} Stock Workspace: {error}")
+                            selected_stock = None
+
+            if selected_stock is not None:
+                metadata = get_company_metadata(
+                    selected_symbol,
+                    fmp_api_key=_secret("FMP_API_KEY"),
+                    alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+                )
+                selected_stock.update({
+                    "Company": metadata.get("company"),
+                    "Sector": metadata.get("sector"),
+                    "Industry": metadata.get("industry"),
+                    "Exchange": metadata.get("exchange"),
+                    "Country": metadata.get("country"),
+                    "Market Cap": metadata.get("market_cap"),
+                    "Float": metadata.get("float_shares"),
+                    "Shares Outstanding": metadata.get("shares_outstanding"),
+                })
+
+            if selected_stock is None:
+                st.stop()
 
             st.divider()
 
@@ -1146,6 +1201,13 @@ if active_page_is("Scanner"):
                     "MomoPro AI structural "
                     "swing-trade analysis."
                 )
+                identity_parts = [
+                    selected_stock.get("Company"), selected_stock.get("Sector"),
+                    selected_stock.get("Industry"), selected_stock.get("Exchange"),
+                ]
+                identity_text = " · ".join(str(item) for item in identity_parts if item)
+                if identity_text:
+                    st.caption(identity_text)
 
             with header_right:
                 if st.button(
@@ -3574,6 +3636,11 @@ if active_page_is("Trade Planner"):
         ),
     )
 
+    direction = st.radio(
+        "Trade Direction", ["Long", "Short"], horizontal=True,
+        index=1 if str(prefill.get("direction") or "Long").title() == "Short" else 0,
+        key="planner_direction",
+    )
     plan_cols = st.columns(5)
     entry = plan_cols[0].number_input("Entry", min_value=0.0, value=float(prefill.get("entry") or 0.0), step=0.01)
     stop = plan_cols[1].number_input("Stop", min_value=0.0, value=float(prefill.get("stop") or 0.0), step=0.01)
@@ -3586,6 +3653,7 @@ if active_page_is("Trade Planner"):
         risk_percent=risk_pct,
         entry_price=entry,
         stop_price=stop,
+        direction=direction,
     )
 
     risk_dollars = sizing["risk_budget"]
@@ -3649,21 +3717,33 @@ if active_page_is("Trade Planner"):
 
     rr_rows = []
     for name, target in [("T1", t1), ("T2", t2), ("T3", t3)]:
-        reward = target - entry if target > entry > 0 else None
+        if direction == "Short":
+            reward = entry - target if entry > target > 0 else None
+        else:
+            reward = target - entry if target > entry > 0 else None
         r_multiple = reward / risk_per_share if reward is not None and risk_per_share and risk_per_share > 0 else None
-        rr_rows.append({"Target": name, "Price": target if target > 0 else None, "Reward / Share": round(reward, 2) if reward is not None else None, "R Multiple": round(r_multiple, 2) if r_multiple is not None else None})
-    st.dataframe(pd.DataFrame(rr_rows), use_container_width=True, hide_index=True)
+        dollar_profit = reward * shares if reward is not None and shares > 0 else None
+        return_pct = (reward / entry) * 100 if reward is not None and entry > 0 else None
+        rr_rows.append({
+            "Target": name,
+            "Price": target if target > 0 else None,
+            "Reward / Share": round(reward, 2) if reward is not None else None,
+            "Dollar Profit": round(dollar_profit, 2) if dollar_profit is not None else None,
+            "Return %": round(return_pct, 2) if return_pct is not None else None,
+            "R Multiple": round(r_multiple, 2) if r_multiple is not None else None,
+        })
+    st.dataframe(pd.DataFrame(rr_rows), width="stretch", hide_index=True)
 
     st.markdown("### Plan Notes")
     plan_notes = st.text_area("Trade Thesis / Confirmation / Invalidation", key="trade_plan_notes")
     planner_action_1, planner_action_2 = st.columns(2)
     if planner_action_1.button("Save Plan to Session", use_container_width=True):
-        st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
+        st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "direction": direction, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
         st.success("Trade plan saved in this session.")
     if planner_action_2.button("Send Plan to Journal", use_container_width=True):
         plan_id = f"MP-{planner_symbol}-{uuid4().hex[:10].upper()}"
         plan_created_at = utc_now()
-        plan_snapshot = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "shares": shares, "thesis": plan_notes, "created_at": plan_created_at}
+        plan_snapshot = {"symbol": planner_symbol, "direction": direction, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "shares": shares, "thesis": plan_notes, "created_at": plan_created_at}
         st.session_state.journal_prefill = {
             "symbol": planner_symbol, "entry_price": entry, "shares": shares,
             "initial_stop": stop, "t1": t1, "t2": t2, "t3": t3,

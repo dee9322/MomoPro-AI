@@ -12,6 +12,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from cloud_storage import cloud_available, load_document, save_document
 from confidence import calculate_confidence
 from float_intelligence import get_float_intelligence
 from indicators import calculate_indicators
@@ -23,6 +24,7 @@ from targets import calculate_targets
 
 _CACHE_PATH = Path(__file__).with_name("company_metadata_cache.json")
 _METADATA_TTL_DAYS = 30
+_METADATA_BUCKET = "company_metadata_cache"
 
 # Broad SIC groupings. This is intentionally deterministic and provider-neutral.
 _SIC_SECTORS = (
@@ -51,7 +53,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _read_cache() -> dict[str, Any]:
+def _read_local_cache() -> dict[str, Any]:
     try:
         raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
@@ -59,11 +61,19 @@ def _read_cache() -> dict[str, Any]:
         return {}
 
 
+def _read_cache() -> dict[str, Any]:
+    local = _read_local_cache()
+    value = load_document(_METADATA_BUCKET, local) if cloud_available() else local
+    return value if isinstance(value, dict) else local
+
+
 def _write_cache(cache: dict[str, Any]) -> None:
     try:
         _CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
     except Exception:
         pass
+    if cloud_available():
+        save_document(_METADATA_BUCKET, cache)
 
 
 def _sector_from_sic(value: Any) -> str:

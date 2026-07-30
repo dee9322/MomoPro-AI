@@ -1,3 +1,12 @@
+# v0.98.4 durability hotfix — Cold-start recovery
+
+- Refreshes expired Supabase access tokens before restoring any user data.
+- Verifies private cloud access before loading settings, workspaces, plans, journal, integrations, or Webull snapshots.
+- Fails closed on a temporary cloud/auth outage so saved data is never silently replaced by defaults.
+- Adds retry handling for cloud reads and writes.
+- Reduces and paces Webull order-detail requests to avoid the 429 burst shown in the cold-start logs.
+- Keeps the v0.98.4 scanner and universal-symbol implementation intact.
+
 # v0.98.4 — Scanner and Symbol Unification
 
 - Any valid ticker entered through universal search can build the complete Stock Workspace without appearing in the market scan.
