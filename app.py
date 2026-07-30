@@ -91,31 +91,15 @@ from navigation_manager import (
 )
 from supabase_backend import is_supabase_configured
 from cloud_storage import verify_cloud_access
-from symbol_context import analyze_symbol
-from company_metadata import (
-    available_cached_sectors, enrich_company_metadata, get_company_metadata,
+from symbol_context import (
+    analyze_symbol, attach_cached_metadata, available_cached_sectors, get_company_metadata,
+    enrich_company_metadata_batch,
 )
 from automatic_loading import (
     initialize_automatic_loading, load_resource, force_refresh_resource,
     render_automatic_loading_worker,
     render_freshness, render_loading_skeleton, restore_saved_resource,
 )
-
-
-def _stock_record(value):
-    """Return one stable dict shape for scanner rows and direct symbols."""
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return dict(value)
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        result = to_dict()
-        return dict(result) if isinstance(result, dict) else {}
-    try:
-        return dict(value)
-    except Exception:
-        return {}
 
 
 st.set_page_config(
@@ -1055,22 +1039,34 @@ if active_page_is("Scanner"):
         render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
 
     if df is not None and not df.empty:
-        with st.spinner("Enriching company sectors and industries..."):
-            df = enrich_company_metadata(
-                df,
-                fmp_api_key=_secret("FMP_API_KEY"),
-                alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        # v0.98.4: enrich the current result set, not only symbols that happened
+        # to be opened previously. Provider failures are isolated per symbol.
+        enrich_company_metadata_batch(
+            df["Symbol"].astype(str).tolist(),
+            fmp_api_key=_secret("FMP_API_KEY"),
+            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+            max_workers=4,
+        )
+        df = attach_cached_metadata(df)
+        # Market cap can be safely estimated when reported shares outstanding
+        # exist and the scanner already has the current close.
+        if "Market Cap" in df.columns and "Shares Outstanding" in df.columns and "Close" in df.columns:
+            missing_cap = df["Market Cap"].isna() & df["Shares Outstanding"].notna()
+            df.loc[missing_cap, "Market Cap"] = (
+                pd.to_numeric(df.loc[missing_cap, "Close"], errors="coerce")
+                * pd.to_numeric(df.loc[missing_cap, "Shares Outstanding"], errors="coerce")
             )
+        st.session_state.scan_results = df
         sector_options = ["All Sectors"] + available_cached_sectors()
         selected_sector = st.selectbox(
             "Sector filter", sector_options, key="scanner_sector_filter",
-            help="Sector and industry data are enriched automatically and cached for later scans."
+            help="Sector choices appear as company metadata is cached."
         )
         if selected_sector != "All Sectors" and "Sector" in df.columns:
             df = df[df["Sector"].fillna("") == selected_sector].copy()
         st.success(
             f"Scan complete! "
-            f"{len(df)} scanner candidates matched and are displayed."
+            f"{len(df)} stocks analyzed."
         )
 
         st.caption(
@@ -1166,13 +1162,13 @@ if active_page_is("Scanner"):
 
         if selected_symbol:
             matching_rows = df[df["Symbol"] == selected_symbol] if "Symbol" in df.columns else pd.DataFrame()
-            selected_stock = _stock_record(matching_rows.iloc[0]) if not matching_rows.empty else None
+            selected_stock = matching_rows.iloc[0].to_dict() if not matching_rows.empty else None
 
             # A direct ticker search must build the same full report even when the
             # symbol is absent from today's scan. The scanner is discovery only.
             if selected_stock is None:
                 direct_cache = st.session_state.setdefault("direct_symbol_analysis_cache", {})
-                selected_stock = _stock_record(direct_cache.get(selected_symbol)) or None
+                selected_stock = direct_cache.get(selected_symbol)
                 if selected_stock is None:
                     with st.spinner(f"Building the full {selected_symbol} workspace..."):
                         try:
@@ -1181,7 +1177,6 @@ if active_page_is("Scanner"):
                                 st.secrets["ALPACA_SECRET_KEY"],
                                 selected_symbol,
                             )
-                            selected_stock = _stock_record(selected_stock)
                             direct_cache[selected_symbol] = selected_stock
                         except Exception as error:
                             st.error(f"Could not build the {selected_symbol} Stock Workspace: {error}")
@@ -1698,7 +1693,7 @@ if active_page_is("Scanner"):
                 key=f"trade_intelligence_{selected_symbol}",
             )
             trade_resource = f"stock_report:{selected_symbol}:trading_intelligence"
-            stock_payload = _stock_record(selected_stock)
+            stock_payload = selected_stock.to_dict()
 
             def _load_stock_trade_intelligence():
                 try:
@@ -1758,7 +1753,7 @@ if active_page_is("Scanner"):
             # single resolved plan instead of repeating fallback calculations.
             canonical_analysis = build_canonical_analysis(
                 selected_symbol,
-                _stock_record(selected_stock),
+                dict(selected_stock),
                 trading_intelligence=trade_intelligence_context,
                 market_context=report_market or {},
                 smart_money_context=smart_money_context or {},
@@ -3409,6 +3404,60 @@ if active_page_is("Watchlist"):
     if st.session_state.scan_results is not None and not st.session_state.scan_results.empty:
         scan_lookup = {str(row.get("Symbol", "")).upper(): row.to_dict() for _, row in st.session_state.scan_results.iterrows()}
 
+    # v0.98.4: Watchlist is a view of the same symbol intelligence, not a
+    # separate blank profile. Hydrate it automatically from scanner rows,
+    # saved canonical analyses, metadata and any live module caches.
+    watchlist_changed = False
+    direct_cache = st.session_state.setdefault("direct_symbol_analysis_cache", {})
+    for item in items:
+        row = scan_lookup.get(item.symbol) or direct_cache.get(item.symbol) or {}
+        saved_analysis = get_analysis(item.symbol)
+        saved = saved_analysis.to_dict() if saved_analysis else {}
+        if not row and saved:
+            plan = saved.get("plan") or {}
+            technicals = saved.get("technicals") or {}
+            row = {
+                "Symbol": item.symbol,
+                "Company": (saved.get("identity") or {}).get("company"),
+                "Sector": (saved.get("identity") or {}).get("sector"),
+                "Industry": (saved.get("identity") or {}).get("industry"),
+                "Close": technicals.get("close") or technicals.get("price"),
+                "Grade": saved.get("grade"),
+                "Momo Score": saved.get("momo_score"),
+                "Momo Confidence": saved.get("momo_confidence"),
+                "Setup": saved.get("setup"),
+                "Reference Entry": plan.get("reference_entry"),
+                "Risk Reference": plan.get("stop"),
+                "T1": plan.get("t1"), "T2": plan.get("t2"), "T3": plan.get("t3"),
+                "T1 R": plan.get("t1_r"), "T2 R": plan.get("t2_r"), "T3 R": plan.get("t3_r"),
+            }
+        metadata = get_company_metadata(
+            item.symbol,
+            fmp_api_key=_secret("FMP_API_KEY"),
+            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        )
+        row = dict(row or {})
+        row.update({
+            "Symbol": item.symbol,
+            "Company": row.get("Company") or metadata.get("company"),
+            "Sector": row.get("Sector") or metadata.get("sector"),
+            "Industry": row.get("Industry") or metadata.get("industry"),
+        })
+        report = st.session_state.ai_research_reports.get(item.symbol)
+        if report is None:
+            report = next((value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol), None)
+        smart_context = st.session_state.smart_money_cache.get(item.symbol) or saved.get("smart_money_context")
+        trade_context = st.session_state.trade_intelligence_cache.get(item.symbol) or saved.get("trading_intelligence")
+        market_context = saved.get("market_context") or st.session_state.market_context
+        before = item.to_dict()
+        refresh_item_from_scan(
+            item, row, ai_report=report, market_context=market_context,
+            smart_money_context=smart_context, trade_intelligence_context=trade_context,
+        )
+        if item.to_dict() != before:
+            update_watchlist_item(item)
+            watchlist_changed = True
+
     action_cols = st.columns([1, 1, 2])
     if action_cols[0].button("Refresh Intelligence", key="refresh_watchlist_intelligence", disabled=not items):
         refreshed = 0
@@ -3444,7 +3493,7 @@ if active_page_is("Watchlist"):
         for item in items: update_watchlist_item(item)
         st.success(f"{len(fired)} alert(s) triggered.") if fired else st.info("No alert conditions are currently met.")
         st.rerun()
-    action_cols[2].caption("Run the scanner first for fresh technical values, then refresh intelligence.")
+    action_cols[2].caption("Saved scanner and Stock Report intelligence is reused automatically. Refresh only forces a new evaluation.")
 
     brief = build_morning_brief(items)
     st.subheader("☀️ Morning Brief")

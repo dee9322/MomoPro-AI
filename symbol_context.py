@@ -1,27 +1,293 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 import pandas as pd
+import requests
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from company_metadata import (
-    attach_cached_metadata,
-    available_cached_sectors,
-    cached_company_metadata,
-    enrich_company_metadata,
-    get_company_metadata,
-)
+from cloud_storage import cloud_available, load_document, save_document
 from confidence import calculate_confidence
+from float_intelligence import get_float_intelligence
 from indicators import calculate_indicators
 from levels import calculate_levels
 from risk_reward import calculate_risk_reward
 from scoring import score_stock
+from sec_intelligence import get_company_profile
 from targets import calculate_targets
+
+_CACHE_PATH = Path(__file__).with_name("company_metadata_cache.json")
+_METADATA_TTL_DAYS = 30
+_METADATA_BUCKET = "company_metadata_cache"
+
+# Broad SIC groupings. This is intentionally deterministic and provider-neutral.
+_SIC_SECTORS = (
+    (100, 999, "Agriculture"),
+    (1000, 1499, "Materials"),
+    (1500, 1799, "Industrials"),
+    (2000, 2399, "Consumer Defensive"),
+    (2400, 2799, "Industrials"),
+    (2800, 2899, "Healthcare"),
+    (2900, 2999, "Energy"),
+    (3000, 3999, "Industrials"),
+    (4000, 4899, "Industrials"),
+    (4900, 4999, "Utilities"),
+    (5000, 5199, "Consumer Cyclical"),
+    (5200, 5999, "Consumer Cyclical"),
+    (6000, 6799, "Financial Services"),
+    (7000, 7299, "Communication Services"),
+    (7300, 7399, "Technology"),
+    (7500, 7999, "Consumer Cyclical"),
+    (8000, 8099, "Healthcare"),
+    (8100, 8999, "Industrials"),
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _read_local_cache() -> dict[str, Any]:
+    try:
+        raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _read_cache() -> dict[str, Any]:
+    local = _read_local_cache()
+    value = load_document(_METADATA_BUCKET, local) if cloud_available() else local
+    return value if isinstance(value, dict) else local
+
+
+def _write_cache(cache: dict[str, Any]) -> None:
+    try:
+        _CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+    if cloud_available():
+        save_document(_METADATA_BUCKET, cache)
+
+
+def _sector_from_sic(value: Any) -> str:
+    try:
+        sic = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return "Unclassified"
+    for low, high, label in _SIC_SECTORS:
+        if low <= sic <= high:
+            return label
+    return "Unclassified"
+
+
+def _fresh(record: dict[str, Any]) -> bool:
+    try:
+        fetched = datetime.fromisoformat(str(record.get("cached_at") or ""))
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        return _utc_now() - fetched < timedelta(days=_METADATA_TTL_DAYS)
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1000)
+def _sec_shares_outstanding(cik: str) -> float | None:
+    """Best-effort SEC company-facts fallback for shares outstanding."""
+    cik_text = str(cik or "").zfill(10)
+    if not cik_text.strip("0"):
+        return None
+    try:
+        response = requests.get(
+            f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_text}.json",
+            headers={
+                "User-Agent": "MomoProAI/0.98.4 contact: dbardwell9322@gmail.com",
+                "Accept-Encoding": "gzip, deflate",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        facts = response.json().get("facts", {}).get("dei", {})
+        candidates = []
+        for fact_name in ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"):
+            units = (facts.get(fact_name) or {}).get("units", {})
+            rows = units.get("shares") or []
+            for row in rows:
+                value = row.get("val")
+                filed = str(row.get("filed") or row.get("end") or "")
+                try:
+                    candidates.append((filed, float(value)))
+                except (TypeError, ValueError):
+                    continue
+        if candidates:
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return candidates[0][1]
+    except Exception:
+        return None
+    return None
+
+
+def enrich_company_metadata_batch(
+    symbols: list[str],
+    *,
+    fmp_api_key: str | None = None,
+    alpha_vantage_api_key: str | None = None,
+    force_refresh: bool = False,
+    max_workers: int = 4,
+) -> dict[str, dict[str, Any]]:
+    """Populate metadata with one cache read and one cache write per batch."""
+    tickers = list(dict.fromkeys(str(symbol or "").upper().strip() for symbol in symbols if str(symbol or "").strip()))
+    results: dict[str, dict[str, Any]] = {}
+    if not tickers:
+        return results
+    cache = _read_cache()
+    missing: list[str] = []
+    for ticker in tickers:
+        record = cache.get(ticker)
+        if isinstance(record, dict) and _fresh(record) and not force_refresh:
+            results[ticker] = record
+        else:
+            missing.append(ticker)
+    if missing:
+        workers = max(1, min(int(max_workers), 6, len(missing)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            jobs = {
+                executor.submit(
+                    get_company_metadata, ticker,
+                    fmp_api_key=fmp_api_key,
+                    alpha_vantage_api_key=alpha_vantage_api_key,
+                    force_refresh=force_refresh,
+                    _persist=False,
+                ): ticker
+                for ticker in missing
+            }
+            for future in as_completed(jobs):
+                ticker = jobs[future]
+                try:
+                    results[ticker] = future.result()
+                except Exception:
+                    results[ticker] = cache.get(ticker) or {"symbol": ticker, "status": "Unavailable"}
+        cache.update({ticker: record for ticker, record in results.items() if isinstance(record, dict)})
+        _write_cache(cache)
+    return results
+
+
+def get_company_metadata(
+    symbol: str,
+    *,
+    fmp_api_key: str | None = None,
+    alpha_vantage_api_key: str | None = None,
+    force_refresh: bool = False,
+    _persist: bool = True,
+) -> dict[str, Any]:
+    ticker = str(symbol or "").upper().strip()
+    if not ticker:
+        return {"symbol": "", "status": "Unavailable"}
+
+    cache = _read_cache()
+    cached = cache.get(ticker)
+    if isinstance(cached, dict) and _fresh(cached) and not force_refresh:
+        return cached
+
+    sec = get_company_profile(ticker)
+    float_data = get_float_intelligence(ticker, fmp_api_key, alpha_vantage_api_key)
+    provider: dict[str, Any] = {}
+    try:
+        if alpha_vantage_api_key:
+            response = requests.get(
+                "https://www.alphavantage.co/query",
+                params={"function": "OVERVIEW", "symbol": ticker, "apikey": alpha_vantage_api_key},
+                timeout=20,
+            )
+            payload = response.json() if response.status_code == 200 else {}
+            if isinstance(payload, dict) and payload.get("Symbol"):
+                provider = payload
+        if not provider and fmp_api_key:
+            response = requests.get(
+                "https://financialmodelingprep.com/stable/profile",
+                params={"symbol": ticker, "apikey": fmp_api_key},
+                timeout=20,
+            )
+            payload = response.json() if response.status_code == 200 else {}
+            if isinstance(payload, list) and payload:
+                provider = payload[0]
+            elif isinstance(payload, dict):
+                provider = payload
+    except Exception:
+        provider = {}
+
+    def _number(value: Any) -> float | None:
+        try:
+            return float(value) if value not in (None, "", "None") else None
+        except (TypeError, ValueError):
+            return None
+
+    outstanding = float_data.get("shares_outstanding") or _sec_shares_outstanding(sec.get("cik"))
+    market_cap = _number(provider.get("MarketCapitalization") or provider.get("marketCap"))
+
+    record = {
+        "symbol": ticker,
+        "status": "Available" if sec.get("status") in {"Available", "Partial"} else "Unavailable",
+        "company": provider.get("Name") or provider.get("companyName") or sec.get("company") or ticker,
+        "sector": provider.get("Sector") or provider.get("sector") or sec.get("sector") or _sector_from_sic(sec.get("sic")),
+        "industry": provider.get("Industry") or provider.get("industry") or sec.get("industry") or "Unclassified",
+        "exchange": provider.get("Exchange") or provider.get("exchange") or sec.get("exchange") or "",
+        "country": provider.get("Country") or provider.get("country") or ("United States" if sec.get("cik") else ""),
+        "market_cap": market_cap,
+        "float_shares": float_data.get("float_shares"),
+        "shares_outstanding": outstanding,
+        "sic": sec.get("sic") or "",
+        "cik": sec.get("cik") or "",
+        "cached_at": _utc_now().isoformat(),
+    }
+    cache[ticker] = record
+    if _persist:
+        _write_cache(cache)
+    return record
+
+
+def cached_company_metadata(symbol: str) -> dict[str, Any] | None:
+    record = _read_cache().get(str(symbol or "").upper().strip())
+    return record if isinstance(record, dict) else None
+
+
+def available_cached_sectors() -> list[str]:
+    sectors = {
+        str(item.get("sector") or "").strip()
+        for item in _read_cache().values()
+        if isinstance(item, dict)
+    }
+    return sorted(sector for sector in sectors if sector and sector != "Unclassified")
+
+
+def attach_cached_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty or "Symbol" not in frame.columns:
+        return frame
+    cache = _read_cache()
+    enriched = frame.copy()
+    for column in ("Company", "Sector", "Industry", "Exchange", "Country", "Market Cap", "Float", "Shares Outstanding"):
+        if column not in enriched.columns:
+            enriched[column] = None
+    for index, symbol in enriched["Symbol"].items():
+        item = cache.get(str(symbol).upper()) or {}
+        enriched.at[index, "Company"] = item.get("company")
+        enriched.at[index, "Sector"] = item.get("sector")
+        enriched.at[index, "Industry"] = item.get("industry")
+        enriched.at[index, "Exchange"] = item.get("exchange")
+        enriched.at[index, "Country"] = item.get("country")
+        enriched.at[index, "Market Cap"] = item.get("market_cap")
+        enriched.at[index, "Float"] = item.get("float_shares")
+        enriched.at[index, "Shares Outstanding"] = item.get("shares_outstanding")
+    return enriched
+
 
 def analyze_symbol(api_key: str, secret_key: str, symbol: str) -> dict[str, Any]:
     """Build the same structural Stock Report row for any valid ticker.
