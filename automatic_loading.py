@@ -102,6 +102,22 @@ def resource_is_stale(resource: str, ttl_minutes: int) -> bool:
     return (datetime.now(timezone.utc) - updated).total_seconds() >= max(1, int(ttl_minutes)) * 60
 
 
+
+
+def _job_priority(resource: str) -> int:
+    """Keep Stock Report modules from starving behind slower provider jobs."""
+    text = str(resource or "").lower()
+    if "trading_intelligence" in text:
+        return 0
+    if "relative_strength" in text:
+        return 1
+    if "smart_money" in text:
+        return 2
+    if text.startswith("stock_report:"):
+        return 3
+    return 10
+
+
 def _queue_job(
     resource: str,
     state_key: str,
@@ -123,6 +139,7 @@ def _queue_job(
     }
     if resource not in queued:
         queued.append(resource)
+    queued.sort(key=_job_priority)
     st.session_state[STATUS_KEY][resource] = {
         "status": "queued",
         "updated_at": _now(),

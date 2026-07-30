@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+import time
 from pathlib import Path
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import RLock
 
 import pandas as pd
 import requests
@@ -25,6 +28,7 @@ from targets import calculate_targets
 _CACHE_PATH = Path(__file__).with_name("company_metadata_cache.json")
 _METADATA_TTL_DAYS = 30
 _METADATA_BUCKET = "company_metadata_cache"
+_CACHE_LOCK = RLock()
 
 # Broad SIC groupings. This is intentionally deterministic and provider-neutral.
 _SIC_SECTORS = (
@@ -68,12 +72,24 @@ def _read_cache() -> dict[str, Any]:
 
 
 def _write_cache(cache: dict[str, Any]) -> None:
-    try:
-        _CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
-    except Exception:
-        pass
-    if cloud_available():
-        save_document(_METADATA_BUCKET, cache)
+    # Multiple metadata workers may finish together. Merge under a lock so one
+    # completed ticker can never overwrite another worker's freshly cached row.
+    with _CACHE_LOCK:
+        current = _read_local_cache()
+        merged = dict(current)
+        for symbol, incoming in cache.items():
+            existing = merged.get(symbol)
+            if not isinstance(existing, dict) or not isinstance(incoming, dict):
+                merged[symbol] = incoming
+                continue
+            if str(incoming.get("cached_at") or "") >= str(existing.get("cached_at") or ""):
+                merged[symbol] = incoming
+        try:
+            _CACHE_PATH.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception:
+            pass
+        if cloud_available():
+            save_document(_METADATA_BUCKET, merged)
 
 
 def _sector_from_sic(value: Any) -> str:
@@ -103,6 +119,8 @@ def get_company_metadata(
     fmp_api_key: str | None = None,
     alpha_vantage_api_key: str | None = None,
     force_refresh: bool = False,
+    persist: bool = True,
+    lightweight: bool = False,
 ) -> dict[str, Any]:
     ticker = str(symbol or "").upper().strip()
     if not ticker:
@@ -114,10 +132,10 @@ def get_company_metadata(
         return cached
 
     sec = get_company_profile(ticker)
-    float_data = get_float_intelligence(ticker, fmp_api_key, alpha_vantage_api_key)
+    float_data = {} if lightweight else get_float_intelligence(ticker, fmp_api_key, alpha_vantage_api_key)
     provider: dict[str, Any] = {}
     try:
-        if alpha_vantage_api_key:
+        if not lightweight and alpha_vantage_api_key:
             response = requests.get(
                 "https://www.alphavantage.co/query",
                 params={"function": "OVERVIEW", "symbol": ticker, "apikey": alpha_vantage_api_key},
@@ -126,7 +144,7 @@ def get_company_metadata(
             payload = response.json() if response.status_code == 200 else {}
             if isinstance(payload, dict) and payload.get("Symbol"):
                 provider = payload
-        if not provider and fmp_api_key:
+        if not lightweight and not provider and fmp_api_key:
             response = requests.get(
                 "https://financialmodelingprep.com/stable/profile",
                 params={"symbol": ticker, "apikey": fmp_api_key},
@@ -162,7 +180,8 @@ def get_company_metadata(
         "cached_at": _utc_now().isoformat(),
     }
     cache[ticker] = record
-    _write_cache(cache)
+    if persist:
+        _write_cache(cache)
     return record
 
 
@@ -200,6 +219,73 @@ def attach_cached_metadata(frame: pd.DataFrame) -> pd.DataFrame:
         enriched.at[index, "Shares Outstanding"] = item.get("shares_outstanding")
     return enriched
 
+
+
+def enrich_company_metadata(
+    frame: pd.DataFrame,
+    *,
+    fmp_api_key: str | None = None,
+    alpha_vantage_api_key: str | None = None,
+    max_workers: int = 2,
+) -> pd.DataFrame:
+    """Attach cached metadata and automatically fetch missing scanner symbols.
+
+    The scanner remains responsive on later reruns because every successful
+    lookup is persisted in the shared metadata cache. Provider failures are
+    isolated per ticker and never prevent the scan table from rendering.
+    """
+    if frame is None or frame.empty or "Symbol" not in frame.columns:
+        return frame
+
+    symbols = [str(value or "").upper().strip() for value in frame["Symbol"].tolist()]
+    symbols = list(dict.fromkeys(symbol for symbol in symbols if symbol))
+    cache = _read_cache()
+    missing = [symbol for symbol in symbols if not isinstance(cache.get(symbol), dict) or not _fresh(cache[symbol])]
+
+    if missing:
+        workers = max(1, min(int(max_workers or 1), 6, len(missing)))
+        fetched: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    get_company_metadata,
+                    symbol,
+                    fmp_api_key=fmp_api_key,
+                    alpha_vantage_api_key=alpha_vantage_api_key,
+                    persist=False,
+                    lightweight=True,
+                ): symbol
+                for symbol in missing
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    record = future.result()
+                    if isinstance(record, dict):
+                        fetched[symbol] = record
+                except Exception:
+                    # Retry once, gently, because SEC/provider throttling can leave
+                    # a scanner row blank even though the ticker is valid.
+                    try:
+                        time.sleep(0.35)
+                        record = get_company_metadata(
+                            symbol,
+                            fmp_api_key=fmp_api_key,
+                            alpha_vantage_api_key=alpha_vantage_api_key,
+                            persist=False,
+                            lightweight=True,
+                            force_refresh=True,
+                        )
+                        if isinstance(record, dict):
+                            fetched[symbol] = record
+                    except Exception:
+                        # Metadata enrichment must never break the scanner.
+                        pass
+        if fetched:
+            cache.update(fetched)
+            _write_cache(cache)
+
+    return attach_cached_metadata(frame)
 
 def analyze_symbol(api_key: str, secret_key: str, symbol: str) -> dict[str, Any]:
     """Build the same structural Stock Report row for any valid ticker.

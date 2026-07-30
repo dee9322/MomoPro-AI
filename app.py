@@ -92,13 +92,29 @@ from navigation_manager import (
 from supabase_backend import is_supabase_configured
 from cloud_storage import verify_cloud_access
 from symbol_context import (
-    analyze_symbol, attach_cached_metadata, available_cached_sectors, get_company_metadata,
+    analyze_symbol, available_cached_sectors, enrich_company_metadata, get_company_metadata,
 )
 from automatic_loading import (
     initialize_automatic_loading, load_resource, force_refresh_resource,
     render_automatic_loading_worker,
     render_freshness, render_loading_skeleton, restore_saved_resource,
 )
+
+
+def _stock_record(value):
+    """Return one stable dict shape for scanner rows and direct symbols."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        result = to_dict()
+        return dict(result) if isinstance(result, dict) else {}
+    try:
+        return dict(value)
+    except Exception:
+        return {}
 
 
 st.set_page_config(
@@ -1038,17 +1054,22 @@ if active_page_is("Scanner"):
         render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
 
     if df is not None and not df.empty:
-        df = attach_cached_metadata(df)
+        with st.spinner("Enriching company sectors and industries..."):
+            df = enrich_company_metadata(
+                df,
+                fmp_api_key=_secret("FMP_API_KEY"),
+                alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+            )
         sector_options = ["All Sectors"] + available_cached_sectors()
         selected_sector = st.selectbox(
             "Sector filter", sector_options, key="scanner_sector_filter",
-            help="Sector choices appear as company metadata is cached."
+            help="Sector and industry data are enriched automatically and cached for later scans."
         )
         if selected_sector != "All Sectors" and "Sector" in df.columns:
             df = df[df["Sector"].fillna("") == selected_sector].copy()
         st.success(
             f"Scan complete! "
-            f"{len(df)} stocks analyzed."
+            f"{len(df)} scanner candidates matched and are displayed."
         )
 
         st.caption(
@@ -1144,13 +1165,13 @@ if active_page_is("Scanner"):
 
         if selected_symbol:
             matching_rows = df[df["Symbol"] == selected_symbol] if "Symbol" in df.columns else pd.DataFrame()
-            selected_stock = matching_rows.iloc[0].to_dict() if not matching_rows.empty else None
+            selected_stock = _stock_record(matching_rows.iloc[0]) if not matching_rows.empty else None
 
             # A direct ticker search must build the same full report even when the
             # symbol is absent from today's scan. The scanner is discovery only.
             if selected_stock is None:
                 direct_cache = st.session_state.setdefault("direct_symbol_analysis_cache", {})
-                selected_stock = direct_cache.get(selected_symbol)
+                selected_stock = _stock_record(direct_cache.get(selected_symbol)) or None
                 if selected_stock is None:
                     with st.spinner(f"Building the full {selected_symbol} workspace..."):
                         try:
@@ -1159,6 +1180,7 @@ if active_page_is("Scanner"):
                                 st.secrets["ALPACA_SECRET_KEY"],
                                 selected_symbol,
                             )
+                            selected_stock = _stock_record(selected_stock)
                             direct_cache[selected_symbol] = selected_stock
                         except Exception as error:
                             st.error(f"Could not build the {selected_symbol} Stock Workspace: {error}")
@@ -1675,7 +1697,7 @@ if active_page_is("Scanner"):
                 key=f"trade_intelligence_{selected_symbol}",
             )
             trade_resource = f"stock_report:{selected_symbol}:trading_intelligence"
-            stock_payload = selected_stock.to_dict()
+            stock_payload = _stock_record(selected_stock)
 
             def _load_stock_trade_intelligence():
                 try:
@@ -1735,7 +1757,7 @@ if active_page_is("Scanner"):
             # single resolved plan instead of repeating fallback calculations.
             canonical_analysis = build_canonical_analysis(
                 selected_symbol,
-                selected_stock.to_dict(),
+                _stock_record(selected_stock),
                 trading_intelligence=trade_intelligence_context,
                 market_context=report_market or {},
                 smart_money_context=smart_money_context or {},

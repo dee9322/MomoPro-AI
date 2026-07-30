@@ -1,3 +1,19 @@
+
+## v0.98.4 final loading and scanner completion
+
+- Normalized scanner rows and direct symbols before every Stock Report consumer, removing the remaining `to_dict()` crash path.
+- Changed scanner metadata enrichment to a lighter SEC-first batch path so company, sector, industry, exchange, and country populate more reliably without exhausting premium-provider request limits.
+- Added a gentle one-time retry for transient metadata failures and reduced batch concurrency to avoid throttling.
+- Prioritized Trading Intelligence and Relative Strength ahead of slower Smart Money provider work so the Stock Report does not appear permanently half-loaded.
+- Clarified the Scanner result banner: the displayed count is the number of candidates that matched the scan, not the size of the full market universe.
+
+## v0.98.4 completion repair
+
+- Normalized Scanner rows and direct-symbol analyses into one dictionary payload so arbitrary tickers cannot fail on `.to_dict()` calls inside Trading Intelligence or canonical analysis.
+- Added automatic Scanner company metadata enrichment for uncached symbols, including sector, industry, company, exchange, country, market cap, float, and shares outstanding.
+- Added bounded concurrent metadata loading with per-symbol failure isolation and persistent cache reuse.
+- Sector filtering now reflects automatically enriched Scanner results rather than only symbols opened previously.
+
 # v0.98.4 durability hotfix — Cold-start recovery
 
 - Refreshes expired Supabase access tokens before restoring any user data.
