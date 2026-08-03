@@ -178,7 +178,7 @@ def require_auth() -> AuthState:
         with st.form("momopro_sign_in"):
             email = st.text_input("Email", autocomplete="email")
             password = st.text_input("Password", type="password", autocomplete="current-password")
-            submitted = st.form_submit_button("Sign in", use_container_width=True)
+            submitted = st.form_submit_button("Sign in", width="stretch")
         if submitted:
             new_state, error = sign_in(email, password)
             if new_state.authenticated:
@@ -189,7 +189,7 @@ def require_auth() -> AuthState:
             new_email = st.text_input("Email", key="signup_email", autocomplete="email")
             new_password = st.text_input("Password", key="signup_password", type="password", autocomplete="new-password")
             confirm = st.text_input("Confirm password", type="password", autocomplete="new-password")
-            create = st.form_submit_button("Create account", use_container_width=True)
+            create = st.form_submit_button("Create account", width="stretch")
         if create:
             if len(new_password) < 8:
                 st.error("Use at least 8 characters.")

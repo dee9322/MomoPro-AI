@@ -106,6 +106,7 @@ def refresh_item_from_scan(
     news_context: Any = None,
     smart_money_context: Dict[str, Any] | None = None,
     trade_intelligence_context: Dict[str, Any] | None = None,
+    relative_strength_context: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     previous = dict(item.ai_state or {})
     events: List[Dict[str, Any]] = []
@@ -160,6 +161,7 @@ def refresh_item_from_scan(
         "news_context": news_context if news_context is not None else _pick(row, "News Summary"),
         "smart_money": smart_money_context if smart_money_context is not None else _pick(row, "Smart Money"),
         "trading_intelligence": trade_intelligence_context if trade_intelligence_context is not None else _pick(row, "Trading Intelligence"),
+        "relative_strength": relative_strength_context if relative_strength_context is not None else _pick(row, "Relative Strength Context"),
         "independent_ai": independent_ai or {"status": "Not generated"},
     }
 

@@ -1,3 +1,11 @@
+
+## v0.98.4 release-candidate stabilization
+- Unified scanner rows and direct ticker analyses through `normalize_stock_payload`; removed remaining dict `.to_dict()` crash paths.
+- Rebuilt company metadata as one implementation with SEC, configured providers, Yahoo and Nasdaq fallbacks; incomplete records retry on a shorter TTL.
+- Added watchlist-wide refresh for every saved ticker, including direct analysis, metadata, relative strength, Smart Money and Trading Intelligence.
+- Replaced collapsed watchlist JSON blobs with readable technical and intelligence status cards.
+- Normalized AI Confidence table values to prevent PyArrow mixed-type serialization errors.
+- Replaced deprecated Streamlit `use_container_width` calls with `width`.
 # v0.98.4 durability hotfix — Cold-start recovery
 
 - Refreshes expired Supabase access tokens before restoring any user data.

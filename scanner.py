@@ -217,6 +217,13 @@ def run_scan():
                             "Confidence Rating": confidence[
                                 "Confidence Rating"
                             ],
+                            "EMA21": round(float(latest.get("ema21", 0)), 2),
+                            "EMA50": round(float(latest.get("ema50", 0)), 2),
+                            "EMA200": round(float(latest.get("ema200", 0)), 2),
+                            "RSI": round(float(latest.get("rsi14", 0)), 2),
+                            "MACD": round(float(latest.get("macd", 0)), 4),
+                            "MACD Signal": round(float(latest.get("macd_signal", 0)), 4),
+                            "MACD Histogram": round(float(latest.get("macd_hist", 0)), 4),
                             "Trend Confidence": confidence[
                                 "Confidence Breakdown"
                             ]["Trend"],
