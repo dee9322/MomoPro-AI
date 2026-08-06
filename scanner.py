@@ -46,11 +46,12 @@ def run_scan():
         limit=None
     )
 
-    symbols = select_best_symbols(
+    symbols, prescreen_diagnostics = select_best_symbols(
         api_key,
         secret_key,
         all_symbols,
         limit=SCAN_LIMIT,
+        return_diagnostics=True,
     )
 
     for batch_start in range(
@@ -177,6 +178,12 @@ def run_scan():
                             "Symbol": symbol,
                             "__Universe Count": len(all_symbols),
                             "__Prescreened Count": len(symbols),
+                            "__Prescreen Eligible Count": prescreen_diagnostics.get("eligible_count", 0),
+                            "__Prescreen Bars Count": prescreen_diagnostics.get("symbols_with_bars", 0),
+                            "__Prescreen Strict Count": prescreen_diagnostics.get("strict_count", 0),
+                            "__Prescreen Standard Count": prescreen_diagnostics.get("standard_count", 0),
+                            "__Prescreen Expanded Count": prescreen_diagnostics.get("expanded_count", 0),
+                            "__Prescreen Request Failures": prescreen_diagnostics.get("request_failures", 0),
                             "__Usable History Count": symbols_with_usable_history,
                             "Close": round(
                                 float(
@@ -430,6 +437,12 @@ def run_scan():
     hidden_report_columns = [
         "__Universe Count",
         "__Prescreened Count",
+        "__Prescreen Eligible Count",
+        "__Prescreen Bars Count",
+        "__Prescreen Strict Count",
+        "__Prescreen Standard Count",
+        "__Prescreen Expanded Count",
+        "__Prescreen Request Failures",
         "__Usable History Count",
         "Momo Confidence",
         "Confidence Rating",

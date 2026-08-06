@@ -755,3 +755,12 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Added lightweight startup profiling and categorized fallback logging.
 - Added release regression checks for syntax, required maintainability modules, deprecated Streamlit calls, and known direct-symbol crash patterns.
 - Preserved all existing trading engines, scoring, broker integration, cloud persistence, navigation, and page behavior.
+
+## v0.99 Scanner Candidate-Recall Repair
+
+- Replaced the rigid IEX pre-screen gates that discarded symbols below 500,000 average shares or $5 million latest-day dollar volume before full MomoPro analysis.
+- Added a strategy-aware pre-ranking model aligned with MomoPro's swing methodology: EMA21/50 structure, EMA21 entry proximity, RSI health, ATR suitability, recent-high room, recent return, liquidity and relative volume.
+- Liquidity is now a weighted ranking input instead of an absolute exclusion rule, preserving quieter high-quality setups such as clean pullbacks and fresh EMA21 reclaims.
+- Expanded the pre-screen history window and introduced strict, standard and expanded-liquidity diagnostics.
+- The scanner now targets the strongest 500 eligible symbols whenever sufficient market data exists and reports the actual universe, eligible, selected and final-candidate counts accurately.
+- Added hidden scanner diagnostics so future candidate-recall issues can be traced without guessing.

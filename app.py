@@ -947,17 +947,21 @@ if active_page_is("Scanner"):
             df = df[df["Sector"].fillna("") == selected_sector].copy()
         matched_count = len(df)
         universe_count = int(pd.to_numeric(df.get("__Universe Count"), errors="coerce").dropna().max()) if "__Universe Count" in df.columns and not pd.to_numeric(df.get("__Universe Count"), errors="coerce").dropna().empty else None
-        prescreened_count = int(pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().max()) if "__Prescreened Count" in df.columns and not pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().empty else 500
-        scope_text = f" from {prescreened_count:,} ranked symbols"
+        prescreened_count = int(pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().max()) if "__Prescreened Count" in df.columns and not pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().empty else 0
+        eligible_count = int(pd.to_numeric(df.get("__Prescreen Eligible Count"), errors="coerce").dropna().max()) if "__Prescreen Eligible Count" in df.columns and not pd.to_numeric(df.get("__Prescreen Eligible Count"), errors="coerce").dropna().empty else prescreened_count
+        bars_count = int(pd.to_numeric(df.get("__Prescreen Bars Count"), errors="coerce").dropna().max()) if "__Prescreen Bars Count" in df.columns and not pd.to_numeric(df.get("__Prescreen Bars Count"), errors="coerce").dropna().empty else None
+        scope_text = f" after full analysis of {prescreened_count:,} strategy-ranked symbols"
         if universe_count:
-            scope_text += f" selected from {universe_count:,} active U.S. equities"
+            scope_text += f" selected from {universe_count:,} eligible U.S. equities"
         st.success(
             f"Scan complete: {matched_count} candidates matched the strategy filters{scope_text}."
         )
         st.caption(
-            "The number shown is the final candidate count—not the number of symbols checked. "
-            "MomoPro first ranks the broad tradable U.S. equity universe, then performs the full "
-            "indicator and setup analysis on the best 500 symbols for this scan."
+            "MomoPro now uses a strategy-aware pre-rank instead of a rigid activity-only gate. "
+            f"{eligible_count:,} symbols passed price/history eligibility"
+            + (f" from {bars_count:,} symbols with usable pre-screen data" if bars_count else "")
+            + f", and the strongest {prescreened_count:,} received the complete indicator and setup analysis. "
+            "Lower-volume stocks are ranked with a liquidity penalty rather than being discarded before the real engine sees them."
         )
 
         st.caption(
@@ -968,6 +972,12 @@ if active_page_is("Scanner"):
         hidden_columns = {
             "__Universe Count": None,
             "__Prescreened Count": None,
+            "__Prescreen Eligible Count": None,
+            "__Prescreen Bars Count": None,
+            "__Prescreen Strict Count": None,
+            "__Prescreen Standard Count": None,
+            "__Prescreen Expanded Count": None,
+            "__Prescreen Request Failures": None,
             "__Usable History Count": None,
             "Momo Confidence": None,
             "Confidence Rating": None,
