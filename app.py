@@ -16,6 +16,7 @@ from alpaca_test import (
     test_alpaca_connection,
 )
 from scanner import run_scan
+from massive_market_data import render_scanner_v2_setup
 from confidence import calculate_integrated_confidence
 from market_context import get_market_context
 from relative_strength import get_relative_strength
@@ -897,6 +898,8 @@ if active_page_is("Scanner"):
     st.caption(
         "Saved results open immediately. Run a new scan whenever you want fresh candidates."
     )
+
+    render_scanner_v2_setup()
 
     if st.button(
         "Run New Market Scan",

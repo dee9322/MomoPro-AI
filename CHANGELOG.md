@@ -1,3 +1,13 @@
+
+## v0.99 — Scanner v2 Free-Tier Bulk Market Database
+
+- Replaced repeated Alpaca broad-universe history requests with Massive daily market summaries.
+- Added a resumable, rate-limited one-time history bootstrap for the Massive free plan.
+- Added persistent Parquet storage in private Supabase Storage so history survives Streamlit sleep and redeploys.
+- Added daily incremental updates that normally require one grouped-market request.
+- Added local whole-market indicator ranking with setup-family diversification before the existing full MomoPro engines.
+- Added explicit Scanner v2 database status, setup progress, and failure messages.
+- Removed alphabetical and partial-data fallbacks.
 # v0.98.4 Final Workflow Stabilization
 
 - Restored the locked startup rule: every browser refresh or cold session opens Dashboard as the home page while preserving the active ticker, stock tabs, chart state, planner drafts, and saved workspace.
