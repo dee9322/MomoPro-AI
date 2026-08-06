@@ -125,12 +125,18 @@ def initialize_navigation(workspace: dict[str, Any] | None = None) -> None:
     query_page_text = _query_value("page")
     query_page = normalize_page(query_page_text) if query_page_text else ""
     query_symbol = normalize_symbol(_query_value("symbol"))
+    first_browser_load = not bool(st.session_state.get("_navigation_boot_complete"))
 
     if "workspace_tabs" not in st.session_state:
         st.session_state.workspace_tabs = list(workspace.get("workspace_tabs") or [])
     _ensure_stock_tabs()
 
-    if "active_page" not in st.session_state:
+    # MomoPro's locked startup rule: every new browser/session load opens the
+    # Dashboard as the home page, while the saved ticker, stock tabs, chart,
+    # planner drafts, and other workspace state remain restored underneath.
+    if first_browser_load:
+        st.session_state.active_page = DEFAULT_PAGE
+    elif "active_page" not in st.session_state:
         st.session_state.active_page = DEFAULT_PAGE
     elif query_page and query_page != normalize_page(st.session_state.active_page):
         st.session_state.active_page = query_page
@@ -143,12 +149,14 @@ def initialize_navigation(workspace: dict[str, Any] | None = None) -> None:
         st.session_state.selected_symbol = saved_symbol
 
     saved_active_tab = str(workspace.get("active_tab_id") or "")
-    if "active_tab_id" not in st.session_state:
+    if first_browser_load:
+        st.session_state.active_tab_id = _page_tab_id(DEFAULT_PAGE)
+    elif "active_tab_id" not in st.session_state:
         st.session_state.active_tab_id = saved_active_tab or _page_tab_id(st.session_state.active_page)
 
-    if query_symbol and normalize_page(st.session_state.active_page) == "Scanner":
+    if (not first_browser_load) and query_symbol and normalize_page(st.session_state.active_page) == "Scanner":
         open_stock_workspace(query_symbol, rerun=False)
-    elif str(st.session_state.active_tab_id).startswith("stock:"):
+    elif (not first_browser_load) and str(st.session_state.active_tab_id).startswith("stock:"):
         tab = _stock_tab_by_id(str(st.session_state.active_tab_id))
         if tab:
             st.session_state.active_page = "Scanner"
@@ -158,6 +166,7 @@ def initialize_navigation(workspace: dict[str, Any] | None = None) -> None:
     else:
         st.session_state.active_tab_id = _page_tab_id(st.session_state.active_page)
 
+    st.session_state._navigation_boot_complete = True
     _write_query(st.session_state.active_page, normalize_symbol(st.session_state.get("selected_symbol")))
 
 

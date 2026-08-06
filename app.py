@@ -1067,9 +1067,19 @@ if active_page_is("Scanner"):
         )
         if selected_sector != "All Sectors" and "Sector" in df.columns:
             df = df[df["Sector"].fillna("") == selected_sector].copy()
+        matched_count = len(df)
+        universe_count = int(pd.to_numeric(df.get("__Universe Count"), errors="coerce").dropna().max()) if "__Universe Count" in df.columns and not pd.to_numeric(df.get("__Universe Count"), errors="coerce").dropna().empty else None
+        prescreened_count = int(pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().max()) if "__Prescreened Count" in df.columns and not pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().empty else 500
+        scope_text = f" from {prescreened_count:,} ranked symbols"
+        if universe_count:
+            scope_text += f" selected from {universe_count:,} active U.S. equities"
         st.success(
-            f"Scan complete! "
-            f"{len(df)} stocks analyzed."
+            f"Scan complete: {matched_count} candidates matched the strategy filters{scope_text}."
+        )
+        st.caption(
+            "The number shown is the final candidate count—not the number of symbols checked. "
+            "MomoPro first ranks the broad tradable U.S. equity universe, then performs the full "
+            "indicator and setup analysis on the best 500 symbols for this scan."
         )
 
         st.caption(
@@ -1078,6 +1088,9 @@ if active_page_is("Scanner"):
         )
 
         hidden_columns = {
+            "__Universe Count": None,
+            "__Prescreened Count": None,
+            "__Usable History Count": None,
             "Momo Confidence": None,
             "Confidence Rating": None,
             "Trend Confidence": None,
@@ -3468,6 +3481,116 @@ if active_page_is("Watchlist"):
             update_watchlist_item(item)
             watchlist_changed = True
 
+    def _refresh_one_watchlist_item(item, *, force_metadata: bool = False) -> None:
+        """Load one living profile from the same canonical pipeline used by Stock Report."""
+        row = scan_lookup.get(item.symbol) or direct_cache.get(item.symbol)
+        if not row:
+            row = analyze_symbol(
+                st.secrets["ALPACA_API_KEY"],
+                st.secrets["ALPACA_SECRET_KEY"],
+                item.symbol,
+            )
+            direct_cache[item.symbol] = row
+        row = normalize_stock_payload(row)
+        metadata = get_company_metadata(
+            item.symbol,
+            fmp_api_key=_secret("FMP_API_KEY"),
+            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+            force_refresh=force_metadata,
+        )
+        row.update({
+            "Symbol": item.symbol,
+            "Company": row.get("Company") or metadata.get("company"),
+            "Sector": row.get("Sector") or metadata.get("sector"),
+            "Industry": row.get("Industry") or metadata.get("industry"),
+            "Market Cap": row.get("Market Cap") or metadata.get("market_cap"),
+            "Float": row.get("Float") or metadata.get("float_shares"),
+            "Shares Outstanding": row.get("Shares Outstanding") or metadata.get("shares_outstanding"),
+        })
+        report = st.session_state.ai_research_reports.get(item.symbol)
+        if report is None:
+            report = next((value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol), None)
+        existing_intelligence = item.intelligence or {}
+        relative_context = existing_intelligence.get("relative_strength")
+        smart_context = (
+            st.session_state.smart_money_cache.get(item.symbol)
+            or existing_intelligence.get("smart_money")
+        )
+        trade_context = (
+            st.session_state.trade_intelligence_cache.get(item.symbol)
+            or existing_intelligence.get("trading_intelligence")
+        )
+
+        # Each provider is isolated. One unavailable module must never prevent
+        # the other watchlist snapshots from loading and being saved.
+        try:
+            relative_context = get_relative_strength(
+                st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], item.symbol
+            )
+        except Exception:
+            pass
+        try:
+            smart_context = get_smart_money_intelligence(
+                item.symbol,
+                st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"],
+                _secret("ALPHA_VANTAGE_API_KEY"), _secret("FINNHUB_API_KEY"), _secret("FMP_API_KEY"),
+            )
+        except Exception:
+            pass
+        try:
+            trade_context = get_trade_intelligence(
+                st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], item.symbol, row
+            )
+        except Exception:
+            pass
+
+        if smart_context:
+            st.session_state.smart_money_cache[item.symbol] = smart_context
+        if trade_context:
+            st.session_state.trade_intelligence_cache[item.symbol] = trade_context
+        refresh_item_from_scan(
+            item, row, ai_report=report,
+            market_context=st.session_state.market_context,
+            smart_money_context=smart_context,
+            trade_intelligence_context=trade_context,
+            relative_strength_context=relative_context,
+        )
+        update_watchlist_item(item)
+
+    # Automatic watchlist hydration. Saved values render immediately; missing
+    # non-AI modules are filled once per session without requiring a button.
+    auto_refresh_state = st.session_state.setdefault("watchlist_auto_refresh_state", {})
+    missing_items = []
+    for item in items:
+        intelligence = item.intelligence or {}
+        technical = item.technical or {}
+        missing_core = not technical or any(
+            not intelligence.get(key)
+            for key in ("relative_strength", "smart_money", "trading_intelligence", "market_context")
+        )
+        if missing_core and not auto_refresh_state.get(item.symbol):
+            missing_items.append(item)
+
+    if missing_items:
+        completed = 0
+        failures = []
+        with st.spinner("Loading saved watchlist intelligence and filling missing modules..."):
+            for item in missing_items[:5]:
+                auto_refresh_state[item.symbol] = True
+                try:
+                    _refresh_one_watchlist_item(item, force_metadata=False)
+                    completed += 1
+                except Exception as exc:
+                    failures.append(item.symbol)
+                    auto_refresh_state.pop(item.symbol, None)
+        if completed:
+            st.rerun()
+        elif failures:
+            st.warning(
+                "Watchlist data could not be loaded for: " + ", ".join(failures) +
+                ". Use Refresh Watchlist Data to retry."
+            )
+
     action_cols = st.columns([1, 1, 2])
     if action_cols[0].button("Refresh Watchlist Data", key="refresh_watchlist_intelligence", disabled=not items):
         refreshed = 0
@@ -3475,57 +3598,12 @@ if active_page_is("Watchlist"):
         with st.spinner("Refreshing watchlist profiles from the shared symbol pipeline..."):
             for item in items:
                 try:
-                    row = scan_lookup.get(item.symbol) or direct_cache.get(item.symbol)
-                    if not row:
-                        row = analyze_symbol(
-                            st.secrets["ALPACA_API_KEY"],
-                            st.secrets["ALPACA_SECRET_KEY"],
-                            item.symbol,
-                        )
-                        direct_cache[item.symbol] = row
-                    row = normalize_stock_payload(row)
-                    metadata = get_company_metadata(
-                        item.symbol,
-                        fmp_api_key=_secret("FMP_API_KEY"),
-                        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-                        force_refresh=True,
-                    )
-                    row.update({
-                        "Symbol": item.symbol,
-                        "Company": row.get("Company") or metadata.get("company"),
-                        "Sector": row.get("Sector") or metadata.get("sector"),
-                        "Industry": row.get("Industry") or metadata.get("industry"),
-                        "Market Cap": row.get("Market Cap") or metadata.get("market_cap"),
-                        "Float": row.get("Float") or metadata.get("float_shares"),
-                        "Shares Outstanding": row.get("Shares Outstanding") or metadata.get("shares_outstanding"),
-                    })
-                    report = st.session_state.ai_research_reports.get(item.symbol)
-                    if report is None:
-                        report = next((value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol), None)
-                    relative_context = get_relative_strength(
-                        st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], item.symbol
-                    )
-                    smart_context = get_smart_money_intelligence(
-                        item.symbol,
-                        st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"],
-                        _secret("ALPHA_VANTAGE_API_KEY"), _secret("FINNHUB_API_KEY"), _secret("FMP_API_KEY"),
-                    )
-                    trade_context = get_trade_intelligence(
-                        st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], item.symbol, row
-                    )
-                    st.session_state.smart_money_cache[item.symbol] = smart_context
-                    st.session_state.trade_intelligence_cache[item.symbol] = trade_context
-                    refresh_item_from_scan(
-                        item, row, ai_report=report,
-                        market_context=st.session_state.market_context,
-                        smart_money_context=smart_context,
-                        trade_intelligence_context=trade_context,
-                        relative_strength_context=relative_context,
-                    )
-                    update_watchlist_item(item)
+                    _refresh_one_watchlist_item(item, force_metadata=True)
+                    auto_refresh_state[item.symbol] = True
                     refreshed += 1
                 except Exception:
                     failed.append(item.symbol)
+                    auto_refresh_state.pop(item.symbol, None)
         if failed:
             st.warning(f"Refreshed {refreshed} profile(s). Could not fully refresh: {', '.join(failed)}.")
         else:
@@ -3537,7 +3615,7 @@ if active_page_is("Watchlist"):
             update_watchlist_item(item)
         st.success(f"{len(fired)} alert(s) triggered.") if fired else st.info("No alert conditions are currently met.")
         st.rerun()
-    action_cols[2].caption("Known scanner and Stock Report values display immediately. Refresh Watchlist Data fills or updates every non-AI module for every saved ticker.")
+    action_cols[2].caption("Saved values display immediately. Missing non-AI modules load automatically; Refresh Watchlist Data is the force-refresh control.")
 
     brief = build_morning_brief(items)
     st.subheader("☀️ Morning Brief")

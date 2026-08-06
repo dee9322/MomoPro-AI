@@ -1,3 +1,11 @@
+# v0.98.4 Final Workflow Stabilization
+
+- Restored the locked startup rule: every browser refresh or cold session opens Dashboard as the home page while preserving the active ticker, stock tabs, chart state, planner drafts, and saved workspace.
+- Watchlist technical, Relative Strength, Smart Money, Trading Intelligence, and Market Context snapshots now hydrate automatically; the refresh button remains a force-refresh control.
+- Isolated Watchlist intelligence providers so one unavailable API/module cannot block all other snapshots.
+- Scanner completion messaging now distinguishes the broad active U.S. equity universe, the ranked best-500 full-analysis set, and the final strategy matches.
+- Added internal scan-scope counters without cluttering the visible Scanner table.
+
 
 ## v0.98.4 release-candidate stabilization
 - Unified scanner rows and direct ticker analyses through `normalize_stock_payload`; removed remaining dict `.to_dict()` crash paths.

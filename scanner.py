@@ -39,6 +39,7 @@ def run_scan():
     )
 
     results = []
+    symbols_with_usable_history = 0
 
 
     all_symbols = get_market_universe(
@@ -99,6 +100,7 @@ def run_scan():
                     ):
                         continue
 
+                    symbols_with_usable_history += 1
                     symbol_df = (
                         calculate_indicators(
                             symbol_df
@@ -173,6 +175,9 @@ def run_scan():
                     results.append(
                         {
                             "Symbol": symbol,
+                            "__Universe Count": len(all_symbols),
+                            "__Prescreened Count": len(symbols),
+                            "__Usable History Count": symbols_with_usable_history,
                             "Close": round(
                                 float(
                                     latest[
@@ -423,6 +428,9 @@ def run_scan():
     ]
 
     hidden_report_columns = [
+        "__Universe Count",
+        "__Prescreened Count",
+        "__Usable History Count",
         "Momo Confidence",
         "Confidence Rating",
         "Trend Confidence",
