@@ -170,6 +170,15 @@ def reconstruct_trade(trade: TradeRecord, api_key: str, secret_key: str) -> dict
 
     evidence_confidence = 96 if not intraday.empty else 78
     reconstruction_quality = "Excellent" if evidence_confidence >= 90 else "Good" if evidence_confidence >= 75 else "Limited"
+    chart_snapshot = [
+        {
+            "timestamp": pd.Timestamp(row["timestamp"]).isoformat(),
+            "close": round(float(row["close"]), 4),
+        }
+        for _, row in daily_frozen.tail(90).iterrows()
+        if pd.notna(row.get("close"))
+    ]
+
     result = {
         "entry_execution_time": entry.astimezone(timezone.utc).isoformat(timespec="seconds"),
         "daily_context_as_of": pd.Timestamp(daily_row["timestamp"]).isoformat(),
@@ -186,6 +195,7 @@ def reconstruct_trade(trade: TradeRecord, api_key: str, secret_key: str) -> dict
         "personal_thesis": "Unknown — not recorded",
         "planned_targets": "Unknown — not recorded" if not any([trade.t1, trade.t2, trade.t3]) else "Available from journal",
         "rule_following": "Not gradable without a verified pre-entry plan",
+        "chart_snapshot": chart_snapshot,
         "hindsight_guard": (
             "Daily grading used only fully completed candles before the entry date. "
             f"Intraday timing used only completed {intraday_label} bars before the exact broker execution time."

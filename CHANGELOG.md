@@ -732,3 +732,14 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Scanner metadata enrichment now processes the current result set, isolates provider failures, uses a single batch cache write, and adds SEC shares-outstanding fallback.
 - Market cap is estimated from scanner close × reported shares outstanding only when the provider did not return market cap.
 - Fixed the remaining direct-symbol canonical-analysis `.to_dict()` crash by using the normalized dictionary payload.
+
+## v0.98.5 — UI Design System and Responsive Polish
+
+- Added a shared visual design system with reusable spacing, card, border, typography, and status tokens.
+- Unified button hierarchy, navigation tabs, inputs, metric cards, alerts, forms, and expanders.
+- Standardized table presentation with sticky headers, alternating rows, compact density, clearer borders, and responsive scrolling.
+- Added responsive layouts for desktop, tablet, and smaller screens, including stacked columns and full-width mobile actions.
+- Added reusable polished empty states so missing data is explained rather than shown as an unexplained blank section.
+- Added historical reconstruction chart thumbnails using frozen pre-entry daily data.
+- Added AI Coach Summary cards for reconstructed historical trades, covering verdict, setup read, strengths, and coaching focus.
+- Preserved the existing scanner, intelligence, Webull, persistence, scoring, and trading-engine logic.

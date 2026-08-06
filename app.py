@@ -100,6 +100,11 @@ from automatic_loading import (
     render_automatic_loading_worker,
     render_freshness, render_loading_skeleton, restore_saved_resource,
 )
+from ui_design_system import (
+    apply_design_system, build_reconstruction_coach, render_chart_thumbnail,
+    render_coach_summary, render_empty_state,
+)
+
 
 
 st.set_page_config(
@@ -107,6 +112,8 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
 )
+
+apply_design_system()
 
 # App-wide readability guardrails. Important labels, values, tabs, buttons,
 # alerts, and table cells must wrap instead of being hidden behind ellipses.
@@ -4169,7 +4176,7 @@ if active_page_is("Journal"):
     with closed_tab:
         st.subheader("Closed Trades & Post-Trade Review")
         if not journal_closed:
-            st.info("Closed trades will appear here after the final exit is recorded.")
+            render_empty_state("No closed trades yet", "Closed trades will appear here after the final exit is recorded.", "📒")
         else:
             closed_rows = [trade_summary(trade) for trade in journal_closed]
             st.dataframe(pd.DataFrame(closed_rows), width="stretch", hide_index=True)
@@ -4223,6 +4230,12 @@ if active_page_is("Journal"):
                         rc_cols[4].metric("Evidence Confidence", f"{float(reconstruction_confidence):.0f}%")
                         quality_label = rc.get("reconstruction_quality") or ("Excellent" if float(reconstruction_confidence) >= 90 else "Good" if float(reconstruction_confidence) >= 75 else "Limited")
                         st.caption(f"Reconstruction Quality: {quality_label}")
+
+                        st.markdown("#### Chart Snapshot")
+                        render_chart_thumbnail(rc.get("chart_snapshot"), f"{closed_trade.symbol} · pre-entry daily context")
+
+                        st.markdown("#### AI Coach Summary")
+                        render_coach_summary(build_reconstruction_coach(rc))
 
                         st.caption(
                             f"Broker entry: {str(rc.get('entry_execution_time') or '—').replace('T', ' ')} · "
