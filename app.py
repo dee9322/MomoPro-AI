@@ -1,4 +1,3 @@
-import math
 from uuid import uuid4
 
 import pandas as pd
@@ -100,12 +99,27 @@ from automatic_loading import (
     render_automatic_loading_worker,
     render_freshness, render_loading_skeleton, restore_saved_resource,
 )
+from app_utils import valid_value, money_text, percent_text, r_text, compact_number, reaction_text
+from data_services import (
+    secret as _secret, load_relative_strength, load_market_news, load_ticker_news,
+    load_sec_filings, load_fda_records, load_smart_money,
+    load_trade_intelligence, load_comparison_research,
+)
+from cache_policy import ttl_minutes as policy_ttl_minutes
+from diagnostics import run_startup_checks
+from logging_config import configure_logging, log_event
+from startup_profiler import profile_step
+from ui_components import render_health_monitor, render_error_diagnostic
 from ui_design_system import (
     apply_design_system, build_reconstruction_coach, render_chart_thumbnail,
     render_coach_summary, render_empty_state,
 )
 
 
+
+APP_LOGGER = configure_logging()
+STARTUP_TIMINGS = {}
+log_event("startup", "Application import completed")
 
 st.set_page_config(
     page_title="MomoPro AI",
@@ -193,7 +207,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-auth_state = require_auth()
+with profile_step(STARTUP_TIMINGS, "authentication"):
+    auth_state = require_auth()
 
 if is_supabase_configured():
     cloud_ok, cloud_error = verify_cloud_access()
@@ -220,168 +235,22 @@ with st.sidebar:
     else:
         st.warning("Local fallback mode: add Supabase secrets before public release.")
 
+    try:
+        startup_checks = run_startup_checks(
+            supabase_configured=is_supabase_configured(),
+            secrets=list(st.secrets.keys()),
+        )
+    except Exception as exc:
+        log_event("diagnostics", "Startup checks failed", level=30, error=str(exc))
+        startup_checks = []
+    render_health_monitor(startup_checks, STARTUP_TIMINGS)
+
 st.title("📈 MomoPro AI")
 st.subheader(
     "Your AI Swing Trading Partner"
 )
 
 
-def valid_value(value):
-    return (
-        value is not None
-        and not pd.isna(value)
-        and (
-            not isinstance(value, float)
-            or math.isfinite(value)
-        )
-    )
-
-
-def money_text(value):
-    if not valid_value(value):
-        return "—"
-
-    return f"${float(value):.2f}"
-
-
-def percent_text(value):
-    if not valid_value(value):
-        return "—"
-
-    return f"{float(value):.2f}%"
-
-
-def r_text(value):
-    if not valid_value(value):
-        return "—"
-
-    return f"{float(value):.2f}R"
-
-
-
-def compact_number(value):
-    if not valid_value(value):
-        return "—"
-    number = float(value)
-    absolute = abs(number)
-    if absolute >= 1_000_000_000:
-        return f"{number / 1_000_000_000:.1f}B"
-    if absolute >= 1_000_000:
-        return f"{number / 1_000_000:.1f}M"
-    if absolute >= 1_000:
-        return f"{number / 1_000:.1f}K"
-    return f"{number:,.0f}"
-
-
-def reaction_text(
-    quality,
-    touches,
-):
-    if not valid_value(touches):
-        return None
-
-    quality_text = (
-        str(quality)
-        if valid_value(quality)
-        else "Unrated"
-    )
-
-    touch_count = int(float(touches))
-
-    reaction_word = (
-        "reaction"
-        if touch_count == 1
-        else "reactions"
-    )
-
-    return (
-        f"{quality_text} · "
-        f"{touch_count} confirmed "
-        f"{reaction_word}"
-    )
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_relative_strength(symbol):
-    return get_relative_strength(
-        st.secrets["ALPACA_API_KEY"],
-        st.secrets["ALPACA_SECRET_KEY"],
-        symbol,
-    )
-
-
-def _secret(name):
-    try:
-        return st.secrets.get(name)
-    except Exception:
-        return None
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_market_news():
-    return get_market_news(
-        st.secrets["ALPACA_API_KEY"],
-        st.secrets["ALPACA_SECRET_KEY"],
-        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-        finnhub_api_key=_secret("FINNHUB_API_KEY"),
-        fmp_api_key=_secret("FMP_API_KEY"),
-    )
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_ticker_news(symbol):
-    return get_ticker_news(
-        st.secrets["ALPACA_API_KEY"],
-        st.secrets["ALPACA_SECRET_KEY"],
-        symbol,
-        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-        finnhub_api_key=_secret("FINNHUB_API_KEY"),
-        fmp_api_key=_secret("FMP_API_KEY"),
-    )
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_sec_filings(symbol):
-    return get_recent_filings(symbol)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_fda_records(company_name):
-    return get_fda_enforcement(company_name)
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_smart_money(symbol):
-    return get_smart_money_intelligence(
-        symbol=symbol,
-        alpaca_api_key=st.secrets["ALPACA_API_KEY"],
-        alpaca_secret_key=st.secrets["ALPACA_SECRET_KEY"],
-        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-        finnhub_api_key=_secret("FINNHUB_API_KEY"),
-        fmp_api_key=_secret("FMP_API_KEY"),
-    )
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_trade_intelligence(symbol, stock_payload):
-    return get_trade_intelligence(
-        api_key=st.secrets["ALPACA_API_KEY"],
-        secret_key=st.secrets["ALPACA_SECRET_KEY"],
-        symbol=symbol,
-        stock=stock_payload,
-    )
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_comparison_research(query):
-    return research_comparison(
-        query=query,
-        alpaca_api_key=st.secrets["ALPACA_API_KEY"],
-        alpaca_secret_key=st.secrets["ALPACA_SECRET_KEY"],
-        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-        finnhub_api_key=_secret("FINNHUB_API_KEY"),
-        fmp_api_key=_secret("FMP_API_KEY"),
-    )
 
 
 initialize_automatic_loading()
@@ -483,10 +352,12 @@ active_page = st.session_state.active_page
 
 
 def _data_cache_minutes(name: str, default: int) -> int:
+    policy_default = policy_ttl_minutes(name, default)
     try:
-        return int(get_setting(f"data.{name}_cache_minutes", default, st.session_state.momopro_settings) or default)
-    except Exception:
-        return default
+        return int(get_setting(f"data.{name}_cache_minutes", policy_default, st.session_state.momopro_settings) or policy_default)
+    except Exception as exc:
+        log_event("cache", "Falling back to central cache policy", level=30, resource=name, error=str(exc))
+        return policy_default
 
 
 def _load_market_context_for_page():

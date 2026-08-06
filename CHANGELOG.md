@@ -743,3 +743,15 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Added historical reconstruction chart thumbnails using frozen pre-entry daily data.
 - Added AI Coach Summary cards for reconstructed historical trades, covering verdict, setup read, strengths, and coaching focus.
 - Preserved the existing scanner, intelligence, Webull, persistence, scoring, and trading-engine logic.
+
+## v0.98.6 — Performance and maintainability
+
+- Began decomposing the monolithic Streamlit entry point by extracting shared formatting helpers and cached provider adapters.
+- Added one central cache/freshness policy for market context, scanner, news, metadata, intelligence, AI research, historical candles, and Webull snapshots.
+- Added a reusable UI component layer for diagnostics and graceful error surfaces.
+- Added structured JSON logging with automatic redaction of secret-bearing fields.
+- Added startup diagnostics covering Supabase configuration, required Python packages, provider secrets, and runtime directory access.
+- Added a private System Health panel with startup timings and dependency status.
+- Added lightweight startup profiling and categorized fallback logging.
+- Added release regression checks for syntax, required maintainability modules, deprecated Streamlit calls, and known direct-symbol crash patterns.
+- Preserved all existing trading engines, scoring, broker integration, cloud persistence, navigation, and page behavior.
