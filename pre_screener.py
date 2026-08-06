@@ -20,13 +20,13 @@ from alpaca.data.timeframe import TimeFrame
 # downloading months of history for ~27k assets.
 BROAD_CALENDAR_DAYS = 55
 BROAD_MIN_BARS = 15
-BROAD_CHUNK_SIZE = 1000
+BROAD_CHUNK_SIZE = 200
 BROAD_POOL_TARGET = 3000
 
 # Strategy pass: enough history for EMA50/RSI/ATR and swing-setup context.
 STRATEGY_CALENDAR_DAYS = 125
 STRATEGY_MIN_BARS = 45
-STRATEGY_CHUNK_SIZE = 500
+STRATEGY_CHUNK_SIZE = 100
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -159,26 +159,59 @@ def _strategy_record(symbol: str, sdf: pd.DataFrame) -> dict[str, Any] | None:
 
 
 def _fetch_rank(client, symbols, start, end, chunk_size, scorer):
+    """Fetch and score symbols with adaptive retry/splitting.
+
+    Alpaca can reject oversized multi-symbol bar requests. The previous broad
+    request size caused every request to fail and the scanner silently fell
+    back to the alphabetically ordered universe. This helper retries once and
+    recursively splits failed batches so one provider limit or transient
+    failure cannot collapse the entire ranking stage.
+    """
     rows = []
     symbols_with_bars = set()
     failures = 0
+
+    def fetch_chunk(chunk):
+        nonlocal failures
+        if not chunk:
+            return
+
+        last_error = None
+        for _attempt in range(2):
+            try:
+                req = StockBarsRequest(
+                    symbol_or_symbols=chunk,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                    end=end,
+                    feed=DataFeed.IEX,
+                )
+                bars = client.get_stock_bars(req).df
+                if bars.empty:
+                    return
+                frame = bars.reset_index()
+                if "symbol" not in frame.columns:
+                    return
+                symbols_with_bars.update(frame["symbol"].astype(str).unique())
+                for symbol, sdf in frame.groupby("symbol", sort=False):
+                    rec = scorer(str(symbol), sdf)
+                    if rec is not None:
+                        rows.append(rec)
+                return
+            except Exception as exc:
+                last_error = exc
+
+        failures += 1
+        # Provider limits and transient failures should not turn into an
+        # alphabetical fallback. Split failed batches until requests are small.
+        if len(chunk) > 25:
+            midpoint = len(chunk) // 2
+            fetch_chunk(chunk[:midpoint])
+            fetch_chunk(chunk[midpoint:])
+
     for i in range(0, len(symbols), chunk_size):
-        chunk = symbols[i:i + chunk_size]
-        try:
-            req = StockBarsRequest(symbol_or_symbols=chunk, timeframe=TimeFrame.Day, start=start, end=end, feed=DataFeed.IEX)
-            bars = client.get_stock_bars(req).df
-            if bars.empty:
-                continue
-            frame = bars.reset_index()
-            if "symbol" not in frame.columns:
-                continue
-            symbols_with_bars.update(frame["symbol"].astype(str).unique())
-            for symbol, sdf in frame.groupby("symbol", sort=False):
-                rec = scorer(str(symbol), sdf)
-                if rec is not None:
-                    rows.append(rec)
-        except Exception:
-            failures += 1
+        fetch_chunk(symbols[i:i + chunk_size])
+
     return rows, symbols_with_bars, failures
 
 
@@ -199,9 +232,10 @@ def select_best_symbols(api_key: str, secret_key: str, symbols: list[str], limit
         "request_failures": broad_failures, "target_count": int(limit),
     }
     if broad.empty:
-        selected = symbols[:limit]
-        diagnostics["selected_count"] = len(selected)
-        return (selected, diagnostics) if return_diagnostics else selected
+        raise RuntimeError(
+            "The scanner could not retrieve usable broad-market price history. "
+            "No alphabetical fallback was used; retry the scan or check Alpaca connectivity."
+        )
 
     broad = broad.sort_values(["Broad Score", "Dollar Volume"], ascending=[False, False])
     pool_size = min(len(broad), max(BROAD_POOL_TARGET, int(limit) * 5))
@@ -217,7 +251,10 @@ def select_best_symbols(api_key: str, secret_key: str, symbols: list[str], limit
 
     ranked = pd.DataFrame(strategy_rows)
     if ranked.empty:
-        selected = pool[:limit]
+        raise RuntimeError(
+            "The scanner retrieved the broad universe but could not build the "
+            "strategy-aware ranking. No alphabetical fallback was used."
+        )
     else:
         ranked = ranked.sort_values(
             ["Prescreen Score", "Strategy Score", "Average Dollar Volume", "RVOL"],
