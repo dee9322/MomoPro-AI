@@ -356,67 +356,50 @@ def build_or_update_history(
 
 
 def render_scanner_v2_setup() -> None:
-    # Do not download the potentially large cloud parquet merely to paint the
-    # Scanner page. First verify configuration, then inspect history only when
-    # the key exists.
+    """Render non-blocking Scanner v2 setup/status.
+
+    The one-time free-tier history bootstrap is owned by scanner_runtime and
+    executes in its own worker thread. This UI never performs the hour-long
+    bootstrap inline, so Dashboard/navigation remain responsive.
+    """
     key_value, key_source = massive_api_key_with_source()
     configured = bool(key_value)
     if not configured:
         with st.expander("Scanner v2 Market Database", expanded=True):
-            st.error("Massive API key not detected. The scanner will NOT auto-run while setup is incomplete.")
-            st.caption("MomoPro now checks the entire Streamlit Secrets tree, including keys accidentally nested under another TOML section.")
-            st.caption("Preferred format: put MASSIVE_API_KEY = \"...\" before any [section] headers, or use [massive] with api_key = \"...\".")
-            if st.button("Re-check Massive API key", key="scanner_v2_recheck_key"):
-                st.rerun()
+            st.error("Massive API key not detected. Scanner v2 cannot build its market database yet.")
+            st.caption("Accepted secret: MASSIVE_API_KEY = \"...\" (nested locations are also detected).")
         return
-    status = history_status()
-    with st.expander("Scanner v2 Market Database", expanded=not status["ready"]):
+
+    from scanner_runtime import ensure_bootstrap_started, job_state, local_manifest
+    uid = str(current_user_id() or "anonymous")
+    manifest = local_manifest(uid)
+    if not manifest.get("ready"):
+        ensure_bootstrap_started()
+    state = job_state("bootstrap", uid)
+    sessions = int(manifest.get("sessions") or state.get("progress") or 0)
+    ready = bool(manifest.get("ready") or state.get("ready"))
+
+    with st.expander("Scanner v2 Market Database", expanded=not ready):
         st.success("Massive API key detected by MomoPro.")
         st.caption(f"Credential source: {key_source} (value hidden)")
+        cols = st.columns(4)
+        cols[0].metric("Stored sessions", f"{sessions}/{TARGET_SESSIONS}")
+        cols[1].metric("Status", "Ready" if ready else ("Building in background" if state.get("running") else "Preparing"))
+        cols[2].metric("Latest day", str(manifest.get("latest") or "Building"))
+        cols[3].metric("Symbols", f"{int(manifest.get('symbols') or 0):,}")
+        if ready:
+            st.success("Scanner v2 history is ready. Normal scans now use local calculations and only update missing market data.")
+        else:
+            pct = min(1.0, sessions / max(1, MINIMUM_READY_SESSIONS))
+            st.progress(pct)
+            st.info(
+                "The one-time consolidated-history build is running independently from the rest of MomoPro. "
+                "You can use Dashboard, Watchlist, Live Chart and every other page while it continues."
+            )
+            if state.get("stage"):
+                st.caption(str(state.get("stage")))
+            if state.get("error"):
+                st.warning(f"Last Scanner v2 history message: {state.get('error')}")
         if st.button("Test Massive API connection", key="scanner_v2_test_massive"):
             ok, detail = test_massive_connection()
             (st.success if ok else st.error)(detail)
-        cols = st.columns(4)
-        cols[0].metric("Stored sessions", f"{status['sessions']}/{status['target']}")
-        cols[1].metric("Symbols", f"{status['symbols']:,}")
-        cols[2].metric("Latest day", status["latest"] or "Not built")
-        cols[3].metric("Status", "Ready" if status["ready"] else "Setup needed")
-
-        if status["ready"]:
-            st.success("Scanner v2 has enough persistent history for EMA200 and full-market ranking.")
-            label = "Update Scanner v2 Database"
-        else:
-            remaining = status["missing"]
-            estimated = int((remaining * SAFE_CALL_INTERVAL_SECONDS) / 60)
-            st.info(
-                f"One-time setup still needs about {remaining} trading sessions. "
-                f"On the free plan this can take roughly {estimated} minutes. "
-                "Progress is saved every few days and can resume after interruption."
-            )
-            label = "Build / Continue Scanner v2 Database"
-
-        if st.button(label, key="scanner_v2_build_history", type="primary", width="stretch"):
-            bar = st.progress(0.0)
-            message = st.empty()
-            initial = max(1, status["sessions"])
-
-            def update(progress_state: dict[str, Any]) -> None:
-                completed = progress_state.get("sessions", 0)
-                bar.progress(min(1.0, completed / TARGET_SESSIONS))
-                message.info(
-                    f"Stored {completed}/{TARGET_SESSIONS} sessions — "
-                    f"currently checking {progress_state.get('current_date', '—')}."
-                )
-
-            try:
-                result = build_or_update_history(progress=update)
-                if result["ready"]:
-                    st.success("Scanner v2 market database is ready.")
-                else:
-                    st.warning(
-                        f"Saved {result['sessions']} sessions. Run Continue again if setup stopped or was interrupted. "
-                        f"{result['save_message']}"
-                    )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Scanner v2 history setup stopped safely: {exc}")

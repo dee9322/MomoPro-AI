@@ -17,6 +17,10 @@ from alpaca_test import (
 )
 from scanner import run_scan
 from massive_market_data import render_scanner_v2_setup
+from scanner_runtime import (
+    ensure_scan_started, job_state as scanner_job_state, load_latest_scan_results,
+    latest_scan_is_fresh, scanner_status_text, local_manifest as scanner_local_manifest,
+)
 from confidence import calculate_integrated_confidence
 from market_context import get_market_context
 from relative_strength import get_relative_strength
@@ -382,15 +386,13 @@ def _autoload_active_page():
             ttl_minutes=market_ttl, loading_label="Loading current market context",
         )
 
-    if page == "Scanner":
-        # Scanner v2 freshness policy: opening Scanner restores the latest saved
-        # candidates immediately. If that scan is stale, the automatic-loading
-        # worker refreshes it after the page shell paints. Other pages never
-        # trigger a whole-market scan merely because they were opened.
-        load_resource(
-            "market_scan", "scan_results", run_scan,
-            ttl_minutes=scanner_ttl, loading_label="Refreshing current scanner candidates",
-        )
+    # Scanner v2 deliberately does NOT use the generic automatic-loading queue.
+    # Whole-market work runs in scanner_runtime's isolated worker so a Scanner
+    # refresh can never hold Dashboard, News, Watchlist or navigation hostage.
+    if page in {"Dashboard", "Scanner"} and st.session_state.get("scan_results") is None:
+        restored_scan = load_latest_scan_results()
+        if restored_scan is not None and not restored_scan.empty:
+            st.session_state.scan_results = restored_scan
 
     if page in {"Dashboard", "News"}:
         load_resource(
@@ -410,7 +412,7 @@ if active_page_is("Dashboard"):
     st.caption("Market health, leadership, opportunities, alerts, open trades, and today’s plan in one place.")
     render_freshness("market_context", ttl_minutes=_data_cache_minutes("market", 15), label="Market")
     render_freshness("market_news", ttl_minutes=_data_cache_minutes("news", 15), label="News")
-    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
+    st.caption(f"Scanner: {scanner_status_text()}")
     if not st.session_state.get("market_context") or not st.session_state.get("dashboard_headlines") or st.session_state.get("scan_results") is None:
         render_loading_skeleton("market_context", rows=2, label="Preparing Dashboard market data")
         render_loading_skeleton("market_news", rows=2, label="Preparing Dashboard news")
@@ -897,7 +899,7 @@ if active_page_is("Market Context"):
 # -----------------------------
 if active_page_is("Scanner"):
     st.header("Scanner")
-    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
+    st.caption(f"Scanner: {scanner_status_text()}")
 
     st.caption(
         "Latest saved candidates appear immediately. If the scan is stale, Scanner refreshes automatically; Run New Market Scan is only a force-refresh control."
@@ -905,26 +907,40 @@ if active_page_is("Scanner"):
 
     render_scanner_v2_setup()
 
+    # Normal Scanner behavior is automatic: restore saved results immediately,
+    # then refresh in the isolated scanner worker only when stale.
+    scanner_manifest = scanner_local_manifest()
+    if scanner_manifest.get("ready"):
+        ensure_scan_started(force=False)
+
     if st.button(
         "Run New Market Scan",
         key="run_market_scan",
         type="primary",
         width="stretch",
     ):
-        with st.spinner(
-            "Scanning market..."
-        ):
-            st.session_state.scan_results = force_refresh_resource(
-                "market_scan", "scan_results", run_scan,
-                ttl_minutes=_data_cache_minutes("scanner", 30), loading_label="Refreshing market scan",
-            )
-
+        ensure_scan_started(force=True)
         st.session_state.selected_symbol = None
-        st.info("Force refresh queued. Normal Scanner visits refresh automatically only when the current scan is stale.")
+        st.info("Force refresh started in the Scanner v2 worker. You can leave this page while it runs.")
+
+    # Pick up a finished background result without blocking page rendering.
+    scan_state = scanner_job_state("scan")
+    if scan_state.get("done") and not scan_state.get("running"):
+        newest_scan = load_latest_scan_results()
+        if newest_scan is not None and not newest_scan.empty:
+            st.session_state.scan_results = newest_scan
+    if scan_state.get("running"):
+        progress_value = scan_state.get("progress")
+        if isinstance(progress_value, (int, float)):
+            st.progress(max(0.0, min(1.0, float(progress_value))))
+        st.caption(str(scan_state.get("stage") or "Refreshing current candidates in background"))
 
     df = st.session_state.scan_results
-    if df is None:
-        render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
+    if df is None or (hasattr(df, "empty") and df.empty):
+        if not scanner_manifest.get("ready"):
+            st.info("Scanner v2 is building its one-time market-history foundation in the background. The rest of MomoPro remains fully usable.")
+        else:
+            st.info("Scanner v2 is preparing the first current candidate list in the background.")
 
     if df is not None and not df.empty:
         # v0.98.4: enrich the current result set, not only symbols that happened

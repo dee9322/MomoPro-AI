@@ -161,28 +161,101 @@ def rank_universe(history: pd.DataFrame, limit: int = SCAN_LIMIT) -> tuple[list[
     }
 
 
-def run_scan_v2() -> pd.DataFrame:
-    status = history_status()
-    if not status["ready"]:
-        raise RuntimeError(
-            f"Scanner v2 market database is not ready ({status['sessions']}/{MINIMUM_READY_SESSIONS} required sessions). "
-            "Open Scanner v2 Market Database and build or continue history first."
-        )
-    history = load_history()
-    symbols, ranking, diagnostics = rank_universe(history, SCAN_LIMIT)
-    ranking_map = ranking.set_index("Symbol").to_dict(orient="index")
+def _live_adjusted_ranking(ranking: pd.DataFrame, live_snapshots: dict[str, dict[str, Any]] | None, candidate_pool: list[str] | None, limit: int = SCAN_LIMIT):
+    ranked = ranking.copy()
+    if candidate_pool:
+        pool = set(candidate_pool)
+        ranked = ranked[ranked["Symbol"].isin(pool)].copy()
+    live_snapshots = live_snapshots or {}
+    if live_snapshots and not ranked.empty:
+        def live_score(row):
+            snap = live_snapshots.get(str(row["Symbol"]).upper()) or {}
+            price = _f(snap.get("close"), _f(row.get("Close")))
+            ema21 = _f(row.get("EMA21"))
+            ema50 = _f(row.get("EMA50"))
+            ema200 = _f(row.get("EMA200"))
+            base = _f(row.get("Preliminary Score"))
+            if ema21:
+                old_distance = _f(row.get("Distance EMA21 %"), 99)
+                new_distance = (price - ema21) / ema21 * 100
+                # Re-weight location using today's price without double counting the old location score.
+                base += max(-16.0, 18.0 - abs(new_distance - 1.5) * 3.0) - max(-16.0, 18.0 - abs(old_distance - 1.5) * 3.0)
+                if price > ema21 and _f(row.get("Close")) <= ema21:
+                    base += 12
+                if price < ema21 and _f(row.get("Close")) > ema21:
+                    base -= 8
+            if price > ema21 > ema50 > ema200:
+                base += 6
+            return base
+        ranked["Live Preliminary Score"] = ranked.apply(live_score, axis=1)
+        ranked = ranked.sort_values(["Live Preliminary Score", "Dollar Volume"], ascending=[False, False])
+    else:
+        ranked["Live Preliminary Score"] = ranked["Preliminary Score"]
+    return ranked.head(limit).copy()
+
+
+def run_scan_v2(
+    history: pd.DataFrame | None = None,
+    progress_callback=None,
+    live_snapshots: dict[str, dict[str, Any]] | None = None,
+    candidate_pool: list[str] | None = None,
+) -> pd.DataFrame:
+    if history is None:
+        status = history_status()
+        if not status["ready"]:
+            raise RuntimeError(
+                f"Scanner v2 market database is not ready ({status['sessions']}/{MINIMUM_READY_SESSIONS} required sessions)."
+            )
+        history = load_history()
+    if progress_callback:
+        progress_callback("Ranking the eligible market", 0.30)
+    _symbols, ranking, diagnostics = rank_universe(history, max(SCAN_LIMIT, len(candidate_pool or [])))
+    current_ranking = _live_adjusted_ranking(ranking, live_snapshots, candidate_pool, SCAN_LIMIT)
+    symbols = current_ranking["Symbol"].astype(str).tolist()
+    diagnostics["selected_count"] = len(symbols)
+    if progress_callback:
+        progress_callback(f"Running full MomoPro analysis on {len(symbols)} current strategy-ranked stocks", 0.45)
+    ranking_map = current_ranking.set_index("Symbol").to_dict(orient="index")
     groups = {symbol: frame.sort_values("date") for symbol, frame in history[history["symbol"].isin(symbols)].groupby("symbol", sort=False)}
     results = []
 
-    for symbol in symbols:
+    total_symbols = max(1, len(symbols))
+    for symbol_index, symbol in enumerate(symbols, start=1):
+        if progress_callback and (symbol_index == 1 or symbol_index % 25 == 0):
+            progress_callback(f"Full MomoPro analysis {symbol_index}/{total_symbols}", 0.45 + 0.50 * (symbol_index / total_symbols))
         try:
             raw = groups.get(symbol)
             if raw is None or len(raw) < MINIMUM_DAILY_BARS:
                 continue
             symbol_df = raw.rename(columns={"date": "timestamp"}).copy()
             symbol_df["timestamp"] = pd.to_datetime(symbol_df["timestamp"])
+            snap = (live_snapshots or {}).get(symbol) or {}
+            if snap:
+                avg20 = _f(pd.to_numeric(symbol_df["volume"], errors="coerce").tail(20).mean(), 0.0)
+                current_price = _f(snap.get("close"), _f(symbol_df.iloc[-1]["close"]))
+                synthetic = {
+                    "timestamp": pd.Timestamp.now().normalize(),
+                    "open": _f(snap.get("open"), current_price),
+                    "high": max(_f(snap.get("high"), current_price), current_price),
+                    "low": min(_f(snap.get("low"), current_price), current_price),
+                    "close": current_price,
+                    # IEX volume is intentionally not used as consolidated RVOL.
+                    # Neutral volume preserves completed-day liquidity information.
+                    "volume": avg20 if avg20 > 0 else _f(symbol_df.iloc[-1].get("volume"), 0.0),
+                }
+                if symbol_df["timestamp"].max().normalize() < synthetic["timestamp"]:
+                    symbol_df = pd.concat([symbol_df, pd.DataFrame([synthetic])], ignore_index=True)
+                else:
+                    for col, value in synthetic.items():
+                        if col != "timestamp":
+                            symbol_df.loc[symbol_df.index[-1], col] = value
             symbol_df = calculate_indicators(symbol_df)
             latest, previous = symbol_df.iloc[-1], symbol_df.iloc[-2]
+            pre = ranking_map.get(symbol, {})
+            # Use consolidated completed-day RVOL rather than incomplete IEX volume.
+            if pre.get("RVOL") is not None:
+                latest = latest.copy()
+                latest["rvol"] = _f(pre.get("RVOL"), _f(latest.get("rvol")))
             required = [latest.get("ema200"), latest.get("rsi14"), latest.get("macd_hist"), latest.get("atr_pct"), latest.get("rvol"), latest.get("prior_120_high")]
             if any(pd.isna(value) for value in required):
                 continue
@@ -191,7 +264,6 @@ def run_scan_v2() -> pd.DataFrame:
             targets = calculate_targets(entry=risk_reward["Reference Entry"], risk_per_share=risk_reward["Risk Per Share"], levels=levels)
             score, dee_fit, momo_score, modules, grade, setup, reasons = score_stock(latest, previous)
             confidence = calculate_confidence(modules=modules, risk_reward_data=risk_reward, levels=levels)
-            pre = ranking_map.get(symbol, {})
             row = {
                 "Symbol": symbol,
                 "__Universe Count": diagnostics["universe_count"],
@@ -253,4 +325,6 @@ def run_scan_v2() -> pd.DataFrame:
         if column not in result.columns:
             result[column] = pd.NA
     result = result.sort_values(["Dee Fit", "Score"], ascending=[False, False])
+    if progress_callback:
+        progress_callback("Final candidates ready", 1.0)
     return result[all_columns]

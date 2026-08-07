@@ -774,3 +774,11 @@ Updated the app's Pine Input Block labels to match the indicator inputs exactly.
 - Expanded the pre-screen history window and introduced strict, standard and expanded-liquidity diagnostics.
 - The scanner now targets the strongest 500 eligible symbols whenever sufficient market data exists and reports the actual universe, eligible, selected and final-candidate counts accurately.
 - Added hidden scanner diagnostics so future candidate-recall issues can be traced without guessing.
+
+## v0.99 Scanner v2 runtime isolation hotfix
+- Scanner v2 no longer runs inside the generic Streamlit automatic-loading queue.
+- One-time Massive free-tier history bootstrap runs in an isolated background worker and cannot block Dashboard/navigation.
+- Scanner history progress is resumable and periodically persisted to the private scanner-data bucket.
+- Current scan calculations run in the same isolated worker; saved candidates remain visible while refresh runs.
+- Scanner opens with latest saved results and automatically refreshes stale results; the manual button is force-refresh only.
+- Added explicit scanner stages/progress so long operations are observable rather than appearing frozen.
