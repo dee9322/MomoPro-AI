@@ -26,7 +26,7 @@ SAFE_CALL_INTERVAL_SECONDS = 12.5
 
 
 def _secret(name: str) -> str:
-    """Read a secret without making one exact TOML layout a single point of failure."""
+    """Read a top-level Streamlit secret, then fall back to an environment variable."""
     try:
         value = st.secrets.get(name, "")
         if value:
@@ -36,24 +36,74 @@ def _secret(name: str) -> str:
     return str(os.getenv(name, "") or "").strip()
 
 
-def massive_api_key() -> str:
-    # Accept the documented top-level key plus common layouts people naturally
-    # use in Streamlit Secrets. This prevents a valid key from looking missing
-    # just because it was placed under [massive].
+def _iter_secret_items(node: Any, path: tuple[str, ...] = ()):
+    """Recursively walk Streamlit secrets without ever exposing secret values."""
+    try:
+        keys = list(node.keys()) if hasattr(node, "keys") else []
+    except Exception:
+        keys = []
+    for key in keys:
+        try:
+            value = node[key]
+        except Exception:
+            continue
+        current = path + (str(key),)
+        if hasattr(value, "keys"):
+            yield from _iter_secret_items(value, current)
+        else:
+            yield current, value
+
+
+def massive_api_key_with_source() -> tuple[str, str]:
+    """Resolve Massive credentials even when TOML section scope nests the key unexpectedly.
+
+    Streamlit TOML has an easy-to-miss rule: after a section header such as [webull],
+    later key/value lines remain inside that section. A line that visually reads
+    MASSIVE_API_KEY = "..." may therefore not be a top-level key. We search the
+    complete secret tree by key name so this cannot silently break Scanner v2.
+    """
+    aliases = {
+        "massive_api_key",
+        "massive_key",
+        "api_key",
+        "apikey",
+    }
+
+    # Prefer the documented top-level name.
     for name in ("MASSIVE_API_KEY", "MASSIVE_KEY", "massive_api_key"):
         value = _secret(name)
         if value:
-            return value
+            return value, f"Streamlit/env:{name}"
+
+    # Prefer an explicit [massive] table next.
     try:
         section = st.secrets.get("massive", {})
         if hasattr(section, "get"):
-            for name in ("api_key", "API_KEY", "key", "apiKey"):
+            for name in ("api_key", "API_KEY", "key", "apiKey", "MASSIVE_API_KEY"):
                 value = section.get(name, "")
                 if value:
-                    return str(value).strip()
+                    return str(value).strip(), f"Streamlit:massive.{name}"
     except Exception:
         pass
-    return ""
+
+    # Finally search all nested tables for an explicitly named Massive key.
+    # We intentionally do NOT accept a generic api_key outside a [massive] table,
+    # because other providers (Alpaca/OpenAI/etc.) also use that label.
+    try:
+        for path, value in _iter_secret_items(st.secrets):
+            leaf = path[-1].strip().lower() if path else ""
+            if leaf in {"massive_api_key", "massive_key"}:
+                cleaned = str(value or "").strip()
+                if cleaned:
+                    return cleaned, "Streamlit:" + ".".join(path)
+    except Exception:
+        pass
+
+    return "", "not found"
+
+
+def massive_api_key() -> str:
+    return massive_api_key_with_source()[0]
 
 
 def test_massive_connection() -> tuple[bool, str]:
@@ -309,17 +359,20 @@ def render_scanner_v2_setup() -> None:
     # Do not download the potentially large cloud parquet merely to paint the
     # Scanner page. First verify configuration, then inspect history only when
     # the key exists.
-    configured = bool(massive_api_key())
+    key_value, key_source = massive_api_key_with_source()
+    configured = bool(key_value)
     if not configured:
         with st.expander("Scanner v2 Market Database", expanded=True):
             st.error("Massive API key not detected. The scanner will NOT auto-run while setup is incomplete.")
-            st.caption("Accepted Streamlit Secrets formats: MASSIVE_API_KEY = \"...\" or [massive] with api_key = \"...\".")
+            st.caption("MomoPro now checks the entire Streamlit Secrets tree, including keys accidentally nested under another TOML section.")
+            st.caption("Preferred format: put MASSIVE_API_KEY = \"...\" before any [section] headers, or use [massive] with api_key = \"...\".")
             if st.button("Re-check Massive API key", key="scanner_v2_recheck_key"):
                 st.rerun()
         return
     status = history_status()
     with st.expander("Scanner v2 Market Database", expanded=not status["ready"]):
         st.success("Massive API key detected by MomoPro.")
+        st.caption(f"Credential source: {key_source} (value hidden)")
         if st.button("Test Massive API connection", key="scanner_v2_test_massive"):
             ok, detail = test_massive_connection()
             (st.success if ok else st.error)(detail)
