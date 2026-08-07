@@ -26,14 +26,60 @@ SAFE_CALL_INTERVAL_SECONDS = 12.5
 
 
 def _secret(name: str) -> str:
+    """Read a secret without making one exact TOML layout a single point of failure."""
     try:
-        return str(st.secrets.get(name, "") or "").strip()
+        value = st.secrets.get(name, "")
+        if value:
+            return str(value).strip()
     except Exception:
-        return str(os.getenv(name, "") or "").strip()
+        pass
+    return str(os.getenv(name, "") or "").strip()
 
 
 def massive_api_key() -> str:
-    return _secret("MASSIVE_API_KEY")
+    # Accept the documented top-level key plus common layouts people naturally
+    # use in Streamlit Secrets. This prevents a valid key from looking missing
+    # just because it was placed under [massive].
+    for name in ("MASSIVE_API_KEY", "MASSIVE_KEY", "massive_api_key"):
+        value = _secret(name)
+        if value:
+            return value
+    try:
+        section = st.secrets.get("massive", {})
+        if hasattr(section, "get"):
+            for name in ("api_key", "API_KEY", "key", "apiKey"):
+                value = section.get(name, "")
+                if value:
+                    return str(value).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def test_massive_connection() -> tuple[bool, str]:
+    """One lightweight authenticated request used only by the setup UI."""
+    key = massive_api_key()
+    if not key:
+        return False, "No Massive API key was found in Streamlit Secrets."
+    try:
+        response = requests.get(
+            f"{API_BASE}/v3/reference/tickers/types",
+            params={"asset_class": "stocks", "locale": "us", "apiKey": key},
+            timeout=(5, 15),
+        )
+        if response.status_code in {401, 403}:
+            return False, "Massive found the key but rejected it. Re-copy the API key from your Massive dashboard."
+        if response.status_code == 429:
+            return False, "Massive recognized the request but the free-tier rate limit is temporarily exhausted. Wait one minute and test again."
+        response.raise_for_status()
+        payload = response.json()
+        if str(payload.get("status", "")).upper() not in {"OK", "DELAYED"}:
+            return False, str(payload.get("error") or payload.get("message") or "Massive returned an unsuccessful response.")
+        return True, "Massive API connection verified."
+    except requests.Timeout:
+        return False, "Massive connection test timed out after 15 seconds."
+    except Exception as exc:
+        return False, f"Massive connection test failed: {exc}"
 
 
 def _auth_token() -> str | None:
@@ -260,11 +306,23 @@ def build_or_update_history(
 
 
 def render_scanner_v2_setup() -> None:
+    # Do not download the potentially large cloud parquet merely to paint the
+    # Scanner page. First verify configuration, then inspect history only when
+    # the key exists.
+    configured = bool(massive_api_key())
+    if not configured:
+        with st.expander("Scanner v2 Market Database", expanded=True):
+            st.error("Massive API key not detected. The scanner will NOT auto-run while setup is incomplete.")
+            st.caption("Accepted Streamlit Secrets formats: MASSIVE_API_KEY = \"...\" or [massive] with api_key = \"...\".")
+            if st.button("Re-check Massive API key", key="scanner_v2_recheck_key"):
+                st.rerun()
+        return
     status = history_status()
     with st.expander("Scanner v2 Market Database", expanded=not status["ready"]):
-        if not status["configured"]:
-            st.error("Add MASSIVE_API_KEY to Streamlit Secrets before building Scanner v2 history.")
-            return
+        st.success("Massive API key detected by MomoPro.")
+        if st.button("Test Massive API connection", key="scanner_v2_test_massive"):
+            ok, detail = test_massive_connection()
+            (st.success if ok else st.error)(detail)
         cols = st.columns(4)
         cols[0].metric("Stored sessions", f"{status['sessions']}/{status['target']}")
         cols[1].metric("Symbols", f"{status['symbols']:,}")

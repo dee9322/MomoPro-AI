@@ -382,10 +382,14 @@ def _autoload_active_page():
             ttl_minutes=market_ttl, loading_label="Loading current market context",
         )
 
-    if page in {"Dashboard", "Scanner", "AI Analysis", "Watchlist"}:
+    if page == "Scanner":
+        # Scanner v2 freshness policy: opening Scanner restores the latest saved
+        # candidates immediately. If that scan is stale, the automatic-loading
+        # worker refreshes it after the page shell paints. Other pages never
+        # trigger a whole-market scan merely because they were opened.
         load_resource(
             "market_scan", "scan_results", run_scan,
-            ttl_minutes=scanner_ttl, loading_label="Loading market scan",
+            ttl_minutes=scanner_ttl, loading_label="Refreshing current scanner candidates",
         )
 
     if page in {"Dashboard", "News"}:
@@ -896,7 +900,7 @@ if active_page_is("Scanner"):
     render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
 
     st.caption(
-        "Saved results open immediately. Run a new scan whenever you want fresh candidates."
+        "Latest saved candidates appear immediately. If the scan is stale, Scanner refreshes automatically; Run New Market Scan is only a force-refresh control."
     )
 
     render_scanner_v2_setup()
@@ -916,7 +920,7 @@ if active_page_is("Scanner"):
             )
 
         st.session_state.selected_symbol = None
-        st.info("New scan started. You can keep using the app while it runs.")
+        st.info("Force refresh queued. Normal Scanner visits refresh automatically only when the current scan is stale.")
 
     df = st.session_state.scan_results
     if df is None:
