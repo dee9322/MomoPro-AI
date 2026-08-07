@@ -383,21 +383,23 @@ def render_scanner_v2_setup() -> None:
         st.success("Massive API key detected by MomoPro.")
         st.caption(f"Credential source: {key_source} (value hidden)")
         cols = st.columns(4)
-        cols[0].metric("Stored sessions", f"{sessions}/{TARGET_SESSIONS}")
+        cols[0].metric("Durable sessions", f"{sessions}/{MINIMUM_READY_SESSIONS}")
         cols[1].metric("Status", "Ready" if ready else ("Building in background" if state.get("running") else "Preparing"))
-        cols[2].metric("Latest day", str(manifest.get("latest") or "Building"))
-        cols[3].metric("Symbols", f"{int(manifest.get('symbols') or 0):,}")
+        cols[2].metric("Latest saved day", str(manifest.get("last_saved_session") or manifest.get("latest") or state.get("last_saved_session") or "—"))
+        cols[3].metric("Symbols / latest day", f"{int(manifest.get('symbols') or 0):,}")
         if ready:
-            st.success("Scanner v2 history is ready. Normal scans now use local calculations and only update missing market data.")
+            st.success("Scanner v2 foundation is ready. Normal scans now reuse this saved history and only add missing completed sessions.")
         else:
             pct = min(1.0, sessions / max(1, MINIMUM_READY_SESSIONS))
             st.progress(pct)
             st.info(
-                "The one-time consolidated-history build is running independently from the rest of MomoPro. "
-                "You can use Dashboard, Watchlist, Live Chart and every other page while it continues."
+                "Each successful market day is now saved durably before it counts toward progress. "
+                "If Streamlit sleeps or redeploys, Scanner v2 resumes from the last saved session instead of starting over."
             )
             if state.get("stage"):
                 st.caption(str(state.get("stage")))
+            if state.get("current_date"):
+                st.caption(f"Current market day: {state.get('current_date')}")
             if state.get("error"):
                 st.warning(f"Last Scanner v2 history message: {state.get('error')}")
         if st.button("Test Massive API connection", key="scanner_v2_test_massive"):

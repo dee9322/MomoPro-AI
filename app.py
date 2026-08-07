@@ -907,6 +907,15 @@ if active_page_is("Scanner"):
 
     render_scanner_v2_setup()
 
+    # Restore the last persisted candidate list immediately, even while the
+    # Scanner v2 foundation is still building. This prevents a blank Scanner
+    # after a Streamlit sleep/redeploy.
+    current_scan = st.session_state.get("scan_results")
+    if current_scan is None or (hasattr(current_scan, "empty") and current_scan.empty):
+        persisted_scan = load_latest_scan_results()
+        if persisted_scan is not None and not persisted_scan.empty:
+            st.session_state.scan_results = persisted_scan
+
     # Normal Scanner behavior is automatic: restore saved results immediately,
     # then refresh in the isolated scanner worker only when stale.
     scanner_manifest = scanner_local_manifest()

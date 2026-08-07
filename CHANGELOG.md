@@ -1,4 +1,15 @@
 
+## Scanner v2 durable-bootstrap repair
+- Removed the repeating automatic-loading fragment timer that was producing invalid-fragment rerun storms in Streamlit.
+- Scanner v2 history now persists each successful Massive market day as its own durable Supabase Storage shard before progress is counted.
+- Bootstrap resumes from the durable manifest after Streamlit sleep/redeploy instead of depending on one growing in-memory Parquet build.
+- Scanner v2 becomes usable at 220 completed sessions, compacts the durable shards once, and immediately launches the first full candidate scan.
+- Normal future scans reuse the compact history and only fetch missing completed market sessions.
+- Scanner progress now has one authoritative count: durable sessions / 220, plus the latest saved market day.
+- Existing persisted scanner results are restored immediately while bootstrap or refresh work continues.
+- Added structured scanner logging for Massive fetches, durable saves, rate-limit messages, compaction, and scan completion.
+
+
 ## v0.99 — Scanner v2 Free-Tier Bulk Market Database
 
 - Replaced repeated Alpaca broad-universe history requests with Massive daily market summaries.

@@ -188,16 +188,10 @@ def _restore_entry(resource: str) -> dict[str, Any] | None:
     return _legacy_entry(resource)
 
 
-@st.fragment(run_every=0.75)
+@st.fragment
 def render_automatic_loading_worker() -> None:
     """Process one queued resource outside the full app render."""
     initialize_automatic_loading()
-
-    # During the initial full-app execution, arm the worker and return so the
-    # complete page shell paints before any cloud or provider request begins.
-    if not st.session_state.get(ARMED_KEY):
-        st.session_state[ARMED_KEY] = True
-        return
 
     queue = st.session_state.get(QUEUE_KEY) or []
     if not queue:

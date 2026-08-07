@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +25,10 @@ from scanner_v2 import run_scan_v2
 from supabase_backend import supabase_anon_key, supabase_url
 from user_context import current_user_id
 
-# Scanner v2 gets its own worker. It must never run inside MomoPro's generic
-# automatic-loading fragment because a whole-market job can take long enough to
-# block unrelated pages. The worker only touches plain Python state, local files,
-# HTTP endpoints and an explicitly authenticated Supabase client.
+LOGGER = logging.getLogger("momopro.scanner_v2")
+
+# Scanner v2 owns a dedicated executor. No whole-market work is executed by
+# automatic_loading.py or a Streamlit fragment.
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="momopro-scanner-v2")
 _LOCK = threading.RLock()
 _JOBS: dict[str, dict[str, Any]] = {}
@@ -38,6 +38,7 @@ HISTORY_NAME = "massive_daily_history.parquet"
 SCAN_NAME = "latest_scan.parquet"
 MANIFEST_NAME = "scanner_manifest.json"
 STORAGE_BUCKET = "scanner-data"
+HISTORY_FOLDER = "history-days"
 
 
 def _now() -> str:
@@ -49,18 +50,33 @@ def _safe_user(user_id: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(user_id or "anonymous"))
 
 
+def _user_root(user_id: str | None) -> Path:
+    root = BASE_DIR / _safe_user(user_id)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _paths(user_id: str | None) -> tuple[Path, Path, Path]:
-    BASE_DIR.mkdir(parents=True, exist_ok=True)
-    prefix = _safe_user(user_id)
-    return (
-        BASE_DIR / f"{prefix}_{HISTORY_NAME}",
-        BASE_DIR / f"{prefix}_{SCAN_NAME}",
-        BASE_DIR / f"{prefix}_{MANIFEST_NAME}",
-    )
+    root = _user_root(user_id)
+    return root / HISTORY_NAME, root / SCAN_NAME, root / MANIFEST_NAME
+
+
+def _day_dir(user_id: str | None) -> Path:
+    path = _user_root(user_id) / HISTORY_FOLDER
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _day_path(user_id: str | None, session_date: date) -> Path:
+    return _day_dir(user_id) / f"{session_date.isoformat()}.parquet"
 
 
 def _cloud_object(user_id: str, filename: str) -> str:
     return f"{user_id}/{filename}"
+
+
+def _cloud_day_object(user_id: str, session_date: date) -> str:
+    return f"{user_id}/{HISTORY_FOLDER}/{session_date.isoformat()}.parquet"
 
 
 def _auth_token() -> str:
@@ -88,19 +104,43 @@ def _context() -> dict[str, str]:
     }
 
 
+def _normalise_history(frame: pd.DataFrame) -> pd.DataFrame:
+    expected = ["date", "symbol", "open", "high", "low", "close", "volume", "vwap", "transactions"]
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=expected)
+    out = frame.copy()
+    for col in expected:
+        if col not in out.columns:
+            out[col] = pd.NA
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
+    out["symbol"] = out["symbol"].astype(str).str.upper().str.strip()
+    for col in ["open", "high", "low", "close", "volume", "vwap", "transactions"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return (
+        out.dropna(subset=["date", "symbol", "close"])
+        .drop_duplicates(["date", "symbol"], keep="last")[expected]
+        .sort_values(["symbol", "date"])
+        .reset_index(drop=True)
+    )
+
+
 def _manifest_from_history(history: pd.DataFrame) -> dict[str, Any]:
     if history is None or history.empty:
-        return {"sessions": 0, "symbols": 0, "rows": 0, "ready": False, "latest": None, "target": TARGET_SESSIONS}
+        return {
+            "sessions": 0, "symbols": 0, "rows": 0, "ready": False,
+            "latest": None, "target": TARGET_SESSIONS, "completed_dates": [],
+        }
     dates = pd.to_datetime(history["date"], errors="coerce").dropna()
-    sessions = int(dates.dt.date.nunique())
-    latest = dates.max().date().isoformat() if not dates.empty else None
+    unique_dates = sorted({d.isoformat() for d in dates.dt.date})
+    sessions = len(unique_dates)
     return {
         "sessions": sessions,
         "symbols": int(history["symbol"].nunique()),
         "rows": int(len(history)),
         "ready": sessions >= MINIMUM_READY_SESSIONS,
-        "latest": latest,
+        "latest": unique_dates[-1] if unique_dates else None,
         "target": TARGET_SESSIONS,
+        "completed_dates": unique_dates,
     }
 
 
@@ -152,10 +192,11 @@ def _cloud_download(ctx: dict[str, str], filename: str, destination: Path) -> bo
     try:
         payload = client.storage.from_(STORAGE_BUCKET).download(_cloud_object(ctx["user_id"], filename))
         if payload:
+            destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(payload)
             return True
-    except Exception:
-        return False
+    except Exception as exc:
+        LOGGER.debug("Scanner cloud download miss %s: %s", filename, exc)
     return False
 
 
@@ -167,66 +208,149 @@ def _cloud_upload(ctx: dict[str, str], filename: str, source: Path) -> bool:
         bucket = client.storage.from_(STORAGE_BUCKET)
         data = source.read_bytes()
         options = {"content-type": "application/octet-stream", "upsert": "true"}
+        object_name = _cloud_object(ctx["user_id"], filename)
         try:
-            bucket.upload(_cloud_object(ctx["user_id"], filename), data, options)
+            bucket.upload(object_name, data, options)
         except Exception:
-            bucket.update(_cloud_object(ctx["user_id"], filename), data, options)
+            bucket.update(object_name, data, options)
         return True
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("Scanner cloud upload failed for %s: %s", filename, exc)
         return False
 
 
-def _normalise_history(frame: pd.DataFrame) -> pd.DataFrame:
-    expected = ["date", "symbol", "open", "high", "low", "close", "volume", "vwap", "transactions"]
-    if frame is None or frame.empty:
-        return pd.DataFrame(columns=expected)
-    out = frame.copy()
-    for col in expected:
-        if col not in out.columns:
-            out[col] = pd.NA
-    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
-    out["symbol"] = out["symbol"].astype(str).str.upper().str.strip()
-    for col in ["open", "high", "low", "close", "volume", "vwap", "transactions"]:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    return out.dropna(subset=["date", "symbol", "close"]).drop_duplicates(["date", "symbol"], keep="last")[expected].sort_values(["symbol", "date"]).reset_index(drop=True)
-
-
-def _load_history_explicit(ctx: dict[str, str]) -> pd.DataFrame:
-    history_path, _, _ = _paths(ctx["user_id"])
-    if not history_path.exists():
-        _cloud_download(ctx, HISTORY_NAME, history_path)
-    if not history_path.exists():
-        return _normalise_history(pd.DataFrame())
+def _cloud_download_day(ctx: dict[str, str], session_date: date, destination: Path) -> bool:
+    client = _make_cloud_client(ctx)
+    if client is None:
+        return False
     try:
-        return _normalise_history(pd.read_parquet(history_path))
+        payload = client.storage.from_(STORAGE_BUCKET).download(_cloud_day_object(ctx["user_id"], session_date))
+        if payload:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            return True
     except Exception:
-        history_path.unlink(missing_ok=True)
-        return _normalise_history(pd.DataFrame())
+        pass
+    return False
 
 
-def _save_history_explicit(ctx: dict[str, str], history: pd.DataFrame, *, cloud: bool) -> dict[str, Any]:
-    history_path, _, _ = _paths(ctx["user_id"])
-    history = _normalise_history(history)
-    history.to_parquet(history_path, index=False, compression="zstd")
-    manifest = _manifest_from_history(history)
+def _cloud_upload_day(ctx: dict[str, str], session_date: date, source: Path) -> bool:
+    client = _make_cloud_client(ctx)
+    if client is None or not source.exists():
+        return False
+    try:
+        bucket = client.storage.from_(STORAGE_BUCKET)
+        data = source.read_bytes()
+        options = {"content-type": "application/octet-stream", "upsert": "true"}
+        object_name = _cloud_day_object(ctx["user_id"], session_date)
+        try:
+            bucket.upload(object_name, data, options)
+        except Exception:
+            bucket.update(object_name, data, options)
+        return True
+    except Exception as exc:
+        LOGGER.warning("Scanner day upload failed %s: %s", session_date, exc)
+        return False
+
+
+def _restore_manifest(ctx: dict[str, str]) -> dict[str, Any]:
+    _, _, manifest_path = _paths(ctx["user_id"])
+    if not manifest_path.exists():
+        _cloud_download(ctx, MANIFEST_NAME, manifest_path)
+    try:
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_manifest_explicit(ctx: dict[str, str], manifest: dict[str, Any], *, cloud: bool = True) -> dict[str, Any]:
     _write_manifest(ctx["user_id"], manifest)
     if cloud:
-        _cloud_upload(ctx, HISTORY_NAME, history_path)
         _, _, manifest_path = _paths(ctx["user_id"])
         _cloud_upload(ctx, MANIFEST_NAME, manifest_path)
     return manifest
 
 
-def _candidate_dates(existing: set[Any], target: int) -> list[Any]:
-    from datetime import timedelta
+def _save_day_explicit(ctx: dict[str, str], session_date: date, frame: pd.DataFrame) -> None:
+    path = _day_path(ctx["user_id"], session_date)
+    clean = _normalise_history(frame)
+    clean.to_parquet(path, index=False, compression="zstd")
+    if not _cloud_upload_day(ctx, session_date, path):
+        raise RuntimeError(f"Scanner v2 could not persist {session_date.isoformat()} to Supabase Storage.")
+
+
+def _completed_dates(manifest: dict[str, Any]) -> set[date]:
+    out: set[date] = set()
+    for value in manifest.get("completed_dates") or []:
+        try:
+            out.add(date.fromisoformat(str(value)))
+        except Exception:
+            pass
+    return out
+
+
+def _candidate_dates(existing: set[date], target: int) -> list[date]:
     cursor = datetime.now(timezone.utc).date() - timedelta(days=1)
-    dates = []
-    # Overscan modestly for market holidays.
+    dates: list[date] = []
     while len(existing) + len(dates) < target and len(dates) < target * 2:
         if cursor.weekday() < 5 and cursor not in existing:
             dates.append(cursor)
         cursor -= timedelta(days=1)
     return dates
+
+
+def _load_history_explicit(ctx: dict[str, str]) -> pd.DataFrame:
+    history_path, _, _ = _paths(ctx["user_id"])
+    if history_path.exists():
+        try:
+            return _normalise_history(pd.read_parquet(history_path))
+        except Exception:
+            history_path.unlink(missing_ok=True)
+    if _cloud_download(ctx, HISTORY_NAME, history_path):
+        try:
+            return _normalise_history(pd.read_parquet(history_path))
+        except Exception:
+            history_path.unlink(missing_ok=True)
+
+    # Recovery path for a bootstrap that was interrupted before compaction.
+    manifest = _restore_manifest(ctx)
+    frames: list[pd.DataFrame] = []
+    for session_date in sorted(_completed_dates(manifest)):
+        path = _day_path(ctx["user_id"], session_date)
+        if not path.exists():
+            _cloud_download_day(ctx, session_date, path)
+        if path.exists():
+            try:
+                frames.append(pd.read_parquet(path))
+            except Exception:
+                pass
+    return _normalise_history(pd.concat(frames, ignore_index=True)) if frames else _normalise_history(pd.DataFrame())
+
+
+def _compact_history(ctx: dict[str, str], manifest: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, Any]]:
+    frames: list[pd.DataFrame] = []
+    completed = sorted(_completed_dates(manifest))
+    for index, session_date in enumerate(completed, 1):
+        path = _day_path(ctx["user_id"], session_date)
+        if not path.exists():
+            _cloud_download_day(ctx, session_date, path)
+        if path.exists():
+            try:
+                frames.append(pd.read_parquet(path))
+            except Exception as exc:
+                LOGGER.warning("Scanner shard read failed %s: %s", session_date, exc)
+        if index % 25 == 0:
+            _update_job(f"bootstrap:{ctx['user_id']}", stage=f"Compacting saved history ({index}/{len(completed)})")
+    history = _normalise_history(pd.concat(frames, ignore_index=True)) if frames else _normalise_history(pd.DataFrame())
+    history_path, _, _ = _paths(ctx["user_id"])
+    history.to_parquet(history_path, index=False, compression="zstd")
+    compact_manifest = _manifest_from_history(history)
+    compact_manifest["completed_dates"] = [d.isoformat() for d in completed]
+    _save_manifest_explicit(ctx, compact_manifest, cloud=True)
+    if not _cloud_upload(ctx, HISTORY_NAME, history_path):
+        LOGGER.warning("Scanner compact history cloud upload failed; local compact history remains usable for this process.")
+    return history, compact_manifest
 
 
 def _update_job(key: str, **fields: Any) -> None:
@@ -245,56 +369,121 @@ def job_state(kind: str, user_id: str | None = None) -> dict[str, Any]:
         future = state.get("future")
         if isinstance(future, Future):
             state["running"] = not future.done()
+            if future.done() and future.exception() is not None and not state.get("error"):
+                state["error"] = str(future.exception())
             state.pop("future", None)
         return state
 
 
 def _bootstrap_worker(ctx: dict[str, str]) -> dict[str, Any]:
     key = f"bootstrap:{ctx['user_id']}"
-    history = _load_history_explicit(ctx)
-    manifest = _manifest_from_history(history)
-    existing = set(history["date"]) if not history.empty else set()
-    dates = _candidate_dates(existing, TARGET_SESSIONS)
-    _update_job(key, stage="Downloading consolidated daily market history", progress=manifest.get("sessions", 0), total=TARGET_SESSIONS, error="")
+    manifest = _restore_manifest(ctx)
+    completed = _completed_dates(manifest)
+
+    # Backward compatibility: if the previous implementation created a compact
+    # history but not completed_dates, derive durable progress from that file.
+    if not completed:
+        history = _load_history_explicit(ctx)
+        if not history.empty:
+            derived = _manifest_from_history(history)
+            completed = _completed_dates(derived)
+            manifest = derived
+            _save_manifest_explicit(ctx, manifest, cloud=True)
+
+    dates = _candidate_dates(completed, MINIMUM_READY_SESSIONS)
+    _update_job(
+        key,
+        stage="Downloading consolidated daily market history",
+        progress=len(completed),
+        total=MINIMUM_READY_SESSIONS,
+        error="",
+    )
+    LOGGER.info("Scanner bootstrap start user=%s completed=%s needed=%s", ctx["user_id"], len(completed), MINIMUM_READY_SESSIONS)
 
     last_call = 0.0
-    successful_since_cloud = 0
     for session_date in dates:
-        if manifest.get("sessions", 0) >= TARGET_SESSIONS:
+        if len(completed) >= MINIMUM_READY_SESSIONS:
             break
         elapsed = time.monotonic() - last_call
         if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
             time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)
         try:
+            LOGGER.info("Scanner Massive fetch %s (%s/%s)", session_date, len(completed) + 1, MINIMUM_READY_SESSIONS)
             day = fetch_market_day(session_date, api_key=ctx["massive_key"])
             last_call = time.monotonic()
-            if not day.empty:
-                history = _normalise_history(pd.concat([history, day], ignore_index=True))
-                manifest = _save_history_explicit(ctx, history, cloud=False)
-                successful_since_cloud += 1
-                if successful_since_cloud >= 10:
-                    _save_history_explicit(ctx, history, cloud=True)
-                    successful_since_cloud = 0
+            if day.empty:
+                LOGGER.info("Scanner Massive returned empty market day %s", session_date)
+                _update_job(key, current_date=session_date.isoformat(), note="No market data returned; skipped")
+                continue
+
+            # Durable checkpoint: persist this market day BEFORE counting it as
+            # completed. A Streamlit sleep/redeploy can then resume exactly here.
+            _save_day_explicit(ctx, session_date, day)
+            completed.add(session_date)
+            manifest = {
+                "sessions": len(completed),
+                "symbols": int(day["symbol"].nunique()),
+                "rows": int(manifest.get("rows") or 0) + int(len(day)),
+                "ready": len(completed) >= MINIMUM_READY_SESSIONS,
+                "latest": max(completed).isoformat() if completed else None,
+                "target": TARGET_SESSIONS,
+                "completed_dates": [d.isoformat() for d in sorted(completed)],
+                "last_saved_session": session_date.isoformat(),
+            }
+            _save_manifest_explicit(ctx, manifest, cloud=True)
+            LOGGER.info("Scanner saved session %s; durable sessions=%s", session_date, len(completed))
             _update_job(
                 key,
                 stage="Downloading consolidated daily market history",
-                progress=manifest.get("sessions", 0),
-                total=TARGET_SESSIONS,
+                progress=len(completed),
+                total=MINIMUM_READY_SESSIONS,
                 current_date=session_date.isoformat(),
+                last_saved_session=session_date.isoformat(),
                 ready=bool(manifest.get("ready")),
+                error="",
             )
         except Exception as exc:
             last_call = time.monotonic()
             msg = str(exc)
+            LOGGER.exception("Scanner bootstrap failed on %s: %s", session_date, msg)
             _update_job(key, error=msg, current_date=session_date.isoformat())
-            # A 429 should never cause a tight retry loop. Pause a full window.
             if "429" in msg or "rate limit" in msg.lower():
                 time.sleep(61)
             else:
-                time.sleep(2)
+                time.sleep(3)
 
-    manifest = _save_history_explicit(ctx, history, cloud=True)
-    _update_job(key, stage="History ready" if manifest.get("ready") else "History paused", progress=manifest.get("sessions", 0), total=TARGET_SESSIONS, ready=bool(manifest.get("ready")), done=True)
+    if len(completed) < MINIMUM_READY_SESSIONS:
+        manifest = dict(manifest or {})
+        manifest.update({
+            "sessions": len(completed),
+            "ready": False,
+            "completed_dates": [d.isoformat() for d in sorted(completed)],
+            "target": TARGET_SESSIONS,
+        })
+        _save_manifest_explicit(ctx, manifest, cloud=True)
+        _update_job(key, stage="History paused", progress=len(completed), total=MINIMUM_READY_SESSIONS, ready=False, done=True)
+        return manifest
+
+    _update_job(key, stage="Compacting durable market history", progress=len(completed), total=MINIMUM_READY_SESSIONS)
+    history, manifest = _compact_history(ctx, manifest)
+    _update_job(
+        key,
+        stage="History ready",
+        progress=int(manifest.get("sessions") or len(completed)),
+        total=MINIMUM_READY_SESSIONS,
+        ready=True,
+        done=True,
+        finished_at=_now(),
+    )
+    LOGGER.info("Scanner history ready sessions=%s symbols=%s", manifest.get("sessions"), manifest.get("symbols"))
+
+    # Produce the first usable candidate list immediately. The user should not
+    # have to revisit the page or press a button after a one-time bootstrap.
+    try:
+        _scan_worker(ctx, history_override=history, skip_incremental=True)
+    except Exception as exc:
+        LOGGER.exception("Scanner first scan after bootstrap failed: %s", exc)
+        _update_job(f"scan:{ctx['user_id']}", done=True, running=False, error=str(exc), stage="First scan failed")
     return manifest
 
 
@@ -304,32 +493,97 @@ def ensure_bootstrap_started() -> dict[str, Any]:
     key = f"bootstrap:{uid}"
     if not ctx.get("massive_key"):
         return {"running": False, "error": "Massive API key not configured."}
-    manifest = local_manifest(uid)
+
+    manifest = _restore_manifest(ctx)
+    if manifest and not local_manifest(uid):
+        _save_manifest_explicit(ctx, manifest, cloud=False)
     if manifest.get("ready"):
         return {**manifest, "running": False, "done": True}
+
     with _LOCK:
         existing = _JOBS.get(key) or {}
         future = existing.get("future")
         if isinstance(future, Future) and not future.done():
             return job_state("bootstrap", uid)
         future = _EXECUTOR.submit(_bootstrap_worker, ctx)
-        _JOBS[key] = {"future": future, "running": True, "stage": "Starting Scanner v2 history", "progress": int(manifest.get("sessions") or 0), "total": TARGET_SESSIONS, "started_at": _now()}
+        _JOBS[key] = {
+            "future": future,
+            "running": True,
+            "stage": "Starting Scanner v2 history",
+            "progress": int(manifest.get("sessions") or 0),
+            "total": MINIMUM_READY_SESSIONS,
+            "started_at": _now(),
+        }
     return job_state("bootstrap", uid)
 
 
-def _scan_worker(ctx: dict[str, str]) -> dict[str, Any]:
+def _latest_completed_date() -> date:
+    # Massive Basic is used for completed EOD history. The live current-session
+    # overlay comes from Alpaca, so yesterday is the safe incremental endpoint.
+    cursor = datetime.now(timezone.utc).date() - timedelta(days=1)
+    while cursor.weekday() >= 5:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _incremental_history_update(ctx: dict[str, str], history: pd.DataFrame) -> pd.DataFrame:
+    if history.empty:
+        return history
+    existing = set(history["date"])
+    latest = max(existing)
+    target = _latest_completed_date()
+    missing: list[date] = []
+    cursor = latest + timedelta(days=1)
+    while cursor <= target:
+        if cursor.weekday() < 5 and cursor not in existing:
+            missing.append(cursor)
+        cursor += timedelta(days=1)
+    if not missing:
+        return history
+
     key = f"scan:{ctx['user_id']}"
-    _update_job(key, stage="Loading scanner history", progress=0.05, error="")
-    history = _load_history_explicit(ctx)
+    last_call = 0.0
+    for idx, session_date in enumerate(missing[:5], 1):
+        elapsed = time.monotonic() - last_call
+        if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
+            time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)
+        _update_job(key, stage=f"Updating completed market history ({idx}/{min(5, len(missing))})", progress=0.08)
+        try:
+            day = fetch_market_day(session_date, api_key=ctx["massive_key"])
+            last_call = time.monotonic()
+            if not day.empty:
+                history = _normalise_history(pd.concat([history, day], ignore_index=True))
+        except Exception as exc:
+            last_call = time.monotonic()
+            LOGGER.warning("Scanner incremental history update failed %s: %s", session_date, exc)
+            break
+
+    history_path, _, _ = _paths(ctx["user_id"])
+    history.to_parquet(history_path, index=False, compression="zstd")
+    manifest = _manifest_from_history(history)
+    _save_manifest_explicit(ctx, manifest, cloud=True)
+    _cloud_upload(ctx, HISTORY_NAME, history_path)
+    return history
+
+
+def _scan_worker(
+    ctx: dict[str, str],
+    *,
+    history_override: pd.DataFrame | None = None,
+    skip_incremental: bool = False,
+) -> dict[str, Any]:
+    key = f"scan:{ctx['user_id']}"
+    _update_job(key, stage="Loading scanner history", progress=0.03, error="", running=True, done=False)
+    LOGGER.info("Scanner scan start user=%s", ctx["user_id"])
+    history = _normalise_history(history_override) if history_override is not None else _load_history_explicit(ctx)
     manifest = _manifest_from_history(history)
     if not manifest.get("ready"):
         raise RuntimeError(f"Scanner history is not ready ({manifest.get('sessions', 0)}/{MINIMUM_READY_SESSIONS} sessions).")
 
-    _update_job(key, stage="Building the strategy-aware current-session pool", progress=0.15)
-    # Massive Basic supplies consolidated EOD history. We first produce a broad
-    # strategy-aware pool locally, then overlay current Alpaca IEX prices on that
-    # bounded pool so today's EMA/reclaim/location changes can affect selection
-    # without trusting incomplete IEX volume as the liquidity source.
+    if not skip_incremental:
+        history = _incremental_history_update(ctx, history)
+
+    _update_job(key, stage="Building strategy-aware current-session pool", progress=0.15)
     from scanner_v2 import rank_universe
     broad_symbols, _broad_rank, _diag = rank_universe(history, 1500)
     _update_job(key, stage=f"Refreshing current prices for {len(broad_symbols)} strategy-relevant stocks", progress=0.25)
@@ -343,14 +597,17 @@ def _scan_worker(ctx: dict[str, str]) -> dict[str, Any]:
     _, scan_path, _ = _paths(ctx["user_id"])
     results.to_parquet(scan_path, index=False, compression="zstd")
     _cloud_upload(ctx, SCAN_NAME, scan_path)
-    _update_job(key, stage="Current candidates ready", progress=1.0, done=True, rows=int(len(results)), finished_at=_now())
+    _update_job(key, stage="Current candidates ready", progress=1.0, done=True, running=False, rows=int(len(results)), finished_at=_now(), error="")
+    LOGGER.info("Scanner scan complete rows=%s", len(results))
     return {"rows": int(len(results)), "path": str(scan_path)}
 
 
 def ensure_scan_started(*, force: bool = False) -> dict[str, Any]:
     ctx = _context()
     uid = ctx["user_id"]
-    manifest = local_manifest(uid)
+    manifest = _restore_manifest(ctx)
+    if manifest and not local_manifest(uid):
+        _save_manifest_explicit(ctx, manifest, cloud=False)
     if not manifest.get("ready"):
         ensure_bootstrap_started()
         return {"running": False, "waiting_for_history": True, "stage": "Building Scanner v2 history in the background"}
@@ -407,7 +664,9 @@ def scanner_status_text() -> str:
         return str(scan.get("stage") or "Refreshing scanner")
     if not manifest.get("ready"):
         sessions = int(manifest.get("sessions") or bootstrap.get("progress") or 0)
-        return f"Building market history in background ({sessions}/{MINIMUM_READY_SESSIONS}+ sessions needed)"
+        last_saved = manifest.get("last_saved_session") or bootstrap.get("last_saved_session")
+        suffix = f" · last saved {last_saved}" if last_saved else ""
+        return f"Building market history ({sessions}/{MINIMUM_READY_SESSIONS} durable sessions){suffix}"
     if latest_scan_is_fresh(uid, ttl_minutes=30):
         return "Current scanner candidates are fresh"
     return "Scanner candidates will refresh automatically"
@@ -461,6 +720,7 @@ def _fetch_alpaca_live_snapshots(ctx: dict[str, str], symbols: list[str]) -> dic
                     "close": close,
                     "iex_volume": daily.get("v") if isinstance(daily, dict) else None,
                 }
-        except Exception:
+        except Exception as exc:
+            LOGGER.debug("Alpaca live snapshot batch failed: %s", exc)
             continue
     return out
