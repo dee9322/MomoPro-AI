@@ -1,3 +1,4 @@
+import math
 from uuid import uuid4
 
 import pandas as pd
@@ -16,11 +17,6 @@ from alpaca_test import (
     test_alpaca_connection,
 )
 from scanner import run_scan
-from massive_market_data import render_scanner_v2_setup
-from scanner_runtime import (
-    ensure_scan_started, job_state as scanner_job_state, load_latest_scan_results,
-    latest_scan_is_fresh, scanner_status_text, local_manifest as scanner_local_manifest,
-)
 from confidence import calculate_integrated_confidence
 from market_context import get_market_context
 from relative_strength import get_relative_strength
@@ -94,45 +90,18 @@ from navigation_manager import (
     set_active_symbol, sync_symbol_widget,
 )
 from supabase_backend import is_supabase_configured
-from cloud_storage import verify_cloud_access
-from symbol_context import (
-    analyze_symbol, attach_cached_metadata, available_cached_sectors, get_company_metadata,
-    enrich_company_metadata_batch, normalize_stock_payload,
-)
 from automatic_loading import (
     initialize_automatic_loading, load_resource, force_refresh_resource,
     render_automatic_loading_worker,
     render_freshness, render_loading_skeleton, restore_saved_resource,
 )
-from app_utils import valid_value, money_text, percent_text, r_text, compact_number, reaction_text
-from data_services import (
-    secret as _secret, load_relative_strength, load_market_news, load_ticker_news,
-    load_sec_filings, load_fda_records, load_smart_money,
-    load_trade_intelligence, load_comparison_research,
-)
-from cache_policy import ttl_minutes as policy_ttl_minutes
-from diagnostics import run_startup_checks
-from logging_config import configure_logging, log_event
-from startup_profiler import profile_step
-from ui_components import render_health_monitor, render_error_diagnostic
-from ui_design_system import (
-    apply_design_system, build_reconstruction_coach, render_chart_thumbnail,
-    render_coach_summary, render_empty_state,
-)
 
-
-
-APP_LOGGER = configure_logging()
-STARTUP_TIMINGS = {}
-log_event("startup", "Application import completed")
 
 st.set_page_config(
     page_title="MomoPro AI",
     page_icon="📈",
     layout="wide",
 )
-
-apply_design_system()
 
 # App-wide readability guardrails. Important labels, values, tabs, buttons,
 # alerts, and table cells must wrap instead of being hidden behind ellipses.
@@ -212,17 +181,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with profile_step(STARTUP_TIMINGS, "authentication"):
-    auth_state = require_auth()
+auth_state = require_auth()
 
 if is_supabase_configured():
-    cloud_ok, cloud_error = verify_cloud_access()
-    if not cloud_ok:
-        st.error("Your private MomoPro cloud workspace could not be restored safely.")
-        st.info("Nothing has been reset or overwritten. Refresh the page to retry. If this continues, sign out and sign back in once.")
-        if cloud_error:
-            st.caption(f"Cloud restore detail: {cloud_error}")
-        st.stop()
     migration_result = migrate_local_json_once()
 else:
     migration_result = {"completed": False, "buckets": [], "skipped": []}
@@ -234,21 +195,11 @@ with st.sidebar:
         st.success("Cloud workspace connected")
         if migration_result.get("buckets"):
             st.caption(f"Imported {len(migration_result['buckets'])} local data areas into your private workspace.")
-        if st.button("Sign out", width="stretch", key="momopro_sign_out"):
+        if st.button("Sign out", use_container_width=True, key="momopro_sign_out"):
             sign_out()
             st.rerun()
     else:
         st.warning("Local fallback mode: add Supabase secrets before public release.")
-
-    try:
-        startup_checks = run_startup_checks(
-            supabase_configured=is_supabase_configured(),
-            secrets=list(st.secrets.keys()),
-        )
-    except Exception as exc:
-        log_event("diagnostics", "Startup checks failed", level=30, error=str(exc))
-        startup_checks = []
-    render_health_monitor(startup_checks, STARTUP_TIMINGS)
 
 st.title("📈 MomoPro AI")
 st.subheader(
@@ -256,6 +207,162 @@ st.subheader(
 )
 
 
+def valid_value(value):
+    return (
+        value is not None
+        and not pd.isna(value)
+        and (
+            not isinstance(value, float)
+            or math.isfinite(value)
+        )
+    )
+
+
+def money_text(value):
+    if not valid_value(value):
+        return "—"
+
+    return f"${float(value):.2f}"
+
+
+def percent_text(value):
+    if not valid_value(value):
+        return "—"
+
+    return f"{float(value):.2f}%"
+
+
+def r_text(value):
+    if not valid_value(value):
+        return "—"
+
+    return f"{float(value):.2f}R"
+
+
+
+def compact_number(value):
+    if not valid_value(value):
+        return "—"
+    number = float(value)
+    absolute = abs(number)
+    if absolute >= 1_000_000_000:
+        return f"{number / 1_000_000_000:.1f}B"
+    if absolute >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M"
+    if absolute >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return f"{number:,.0f}"
+
+
+def reaction_text(
+    quality,
+    touches,
+):
+    if not valid_value(touches):
+        return None
+
+    quality_text = (
+        str(quality)
+        if valid_value(quality)
+        else "Unrated"
+    )
+
+    touch_count = int(float(touches))
+
+    reaction_word = (
+        "reaction"
+        if touch_count == 1
+        else "reactions"
+    )
+
+    return (
+        f"{quality_text} · "
+        f"{touch_count} confirmed "
+        f"{reaction_word}"
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_relative_strength(symbol):
+    return get_relative_strength(
+        st.secrets["ALPACA_API_KEY"],
+        st.secrets["ALPACA_SECRET_KEY"],
+        symbol,
+    )
+
+
+def _secret(name):
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_market_news():
+    return get_market_news(
+        st.secrets["ALPACA_API_KEY"],
+        st.secrets["ALPACA_SECRET_KEY"],
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
+    )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_ticker_news(symbol):
+    return get_ticker_news(
+        st.secrets["ALPACA_API_KEY"],
+        st.secrets["ALPACA_SECRET_KEY"],
+        symbol,
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sec_filings(symbol):
+    return get_recent_filings(symbol)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_fda_records(company_name):
+    return get_fda_enforcement(company_name)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_smart_money(symbol):
+    return get_smart_money_intelligence(
+        symbol=symbol,
+        alpaca_api_key=st.secrets["ALPACA_API_KEY"],
+        alpaca_secret_key=st.secrets["ALPACA_SECRET_KEY"],
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
+    )
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_trade_intelligence(symbol, stock_payload):
+    return get_trade_intelligence(
+        api_key=st.secrets["ALPACA_API_KEY"],
+        secret_key=st.secrets["ALPACA_SECRET_KEY"],
+        symbol=symbol,
+        stock=stock_payload,
+    )
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_comparison_research(query):
+    return research_comparison(
+        query=query,
+        alpaca_api_key=st.secrets["ALPACA_API_KEY"],
+        alpaca_secret_key=st.secrets["ALPACA_SECRET_KEY"],
+        alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+        finnhub_api_key=_secret("FINNHUB_API_KEY"),
+        fmp_api_key=_secret("FMP_API_KEY"),
+    )
 
 
 initialize_automatic_loading()
@@ -357,12 +464,10 @@ active_page = st.session_state.active_page
 
 
 def _data_cache_minutes(name: str, default: int) -> int:
-    policy_default = policy_ttl_minutes(name, default)
     try:
-        return int(get_setting(f"data.{name}_cache_minutes", policy_default, st.session_state.momopro_settings) or policy_default)
-    except Exception as exc:
-        log_event("cache", "Falling back to central cache policy", level=30, resource=name, error=str(exc))
-        return policy_default
+        return int(get_setting(f"data.{name}_cache_minutes", default, st.session_state.momopro_settings) or default)
+    except Exception:
+        return default
 
 
 def _load_market_context_for_page():
@@ -386,13 +491,11 @@ def _autoload_active_page():
             ttl_minutes=market_ttl, loading_label="Loading current market context",
         )
 
-    # Scanner v2 deliberately does NOT use the generic automatic-loading queue.
-    # Whole-market work runs in scanner_runtime's isolated worker so a Scanner
-    # refresh can never hold Dashboard, News, Watchlist or navigation hostage.
-    if page in {"Dashboard", "Scanner"} and st.session_state.get("scan_results") is None:
-        restored_scan = load_latest_scan_results()
-        if restored_scan is not None and not restored_scan.empty:
-            st.session_state.scan_results = restored_scan
+    if page in {"Dashboard", "Scanner", "AI Analysis", "Watchlist"}:
+        load_resource(
+            "market_scan", "scan_results", run_scan,
+            ttl_minutes=scanner_ttl, loading_label="Loading market scan",
+        )
 
     if page in {"Dashboard", "News"}:
         load_resource(
@@ -412,7 +515,7 @@ if active_page_is("Dashboard"):
     st.caption("Market health, leadership, opportunities, alerts, open trades, and today’s plan in one place.")
     render_freshness("market_context", ttl_minutes=_data_cache_minutes("market", 15), label="Market")
     render_freshness("market_news", ttl_minutes=_data_cache_minutes("news", 15), label="News")
-    st.caption(f"Scanner: {scanner_status_text()}")
+    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
     if not st.session_state.get("market_context") or not st.session_state.get("dashboard_headlines") or st.session_state.get("scan_results") is None:
         render_loading_skeleton("market_context", rows=2, label="Preparing Dashboard market data")
         render_loading_skeleton("market_news", rows=2, label="Preparing Dashboard news")
@@ -428,9 +531,9 @@ if active_page_is("Dashboard"):
         )
         st.session_state.dashboard_universe = dashboard_universe
     with control_mid:
-        refresh_market = st.button("Refresh Market", width="stretch", key="dashboard_refresh_market")
+        refresh_market = st.button("Refresh Market", use_container_width=True, key="dashboard_refresh_market")
     with control_right:
-        refresh_news = st.button("Refresh News", width="stretch", key="dashboard_refresh_news")
+        refresh_news = st.button("Refresh News", use_container_width=True, key="dashboard_refresh_news")
 
     if refresh_market:
         with st.spinner("Refreshing the market command center..."):
@@ -502,7 +605,7 @@ if active_page_is("Dashboard"):
     st.subheader("Market Health & Index Leadership")
     index_rows = market_index_rows(dashboard_market)
     if index_rows:
-        st.dataframe(pd.DataFrame(index_rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(index_rows), use_container_width=True, hide_index=True)
     else:
         st.caption("Market context loads automatically; use Refresh Market only to force an immediate update.")
 
@@ -529,7 +632,7 @@ if active_page_is("Dashboard"):
                 sector_table.append({"Group": "Leader", "Sector": item.get("sector"), "Score": item.get("score"), "Trend": item.get("trend"), "Rotation": item.get("rotation")})
             for item in sector_laggards:
                 sector_table.append({"Group": "Laggard", "Sector": item.get("sector"), "Score": item.get("score"), "Trend": item.get("trend"), "Rotation": item.get("rotation")})
-            st.dataframe(pd.DataFrame(sector_table), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(sector_table), use_container_width=True, hide_index=True)
         else:
             st.caption("Sector leadership is not loaded.")
 
@@ -541,7 +644,7 @@ if active_page_is("Dashboard"):
             st.caption(universe_note)
         if candidates:
             candidate_df = pd.DataFrame(candidates)
-            st.dataframe(candidate_df, width="stretch", hide_index=True)
+            st.dataframe(candidate_df, use_container_width=True, hide_index=True)
             selected_dashboard_symbol = st.selectbox(
                 "Load candidate into Stock Report",
                 [item["Symbol"] for item in candidates],
@@ -566,7 +669,7 @@ if active_page_is("Dashboard"):
 
         st.markdown("#### Open Trades")
         if open_trades:
-            st.dataframe(pd.DataFrame(open_trades), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(open_trades), use_container_width=True, hide_index=True)
         else:
             st.caption("No open journal trades yet.")
 
@@ -598,10 +701,7 @@ if active_page_is("Dashboard"):
     with ai_col:
         st.subheader("Recent Independent AI Recommendations")
         if ai_recommendations:
-            ai_table = pd.DataFrame(ai_recommendations).drop(columns=["Summary"], errors="ignore")
-            if "AI Confidence" in ai_table.columns:
-                ai_table["AI Confidence"] = ai_table["AI Confidence"].map(lambda value: "—" if value in (None, "", "—") or pd.isna(value) else f"{float(value):.0f}%")
-            st.dataframe(ai_table, width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(ai_recommendations).drop(columns=["Summary"], errors="ignore"), use_container_width=True, hide_index=True)
             with st.expander("Latest AI summaries"):
                 for item in ai_recommendations[:5]:
                     st.markdown(f"**{item['Symbol']} — {item['Action']} ({item.get('AI Confidence', '—')}%)**")
@@ -699,7 +799,7 @@ if active_page_is("Market Context"):
                     "20D vs SPY": item.get("relative_20d_vs_spy"),
                 }
             )
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         st.caption(f'Volatility source: {market.get("vix_source", "Unavailable")}')
 
         st.divider()
@@ -808,7 +908,7 @@ if active_page_is("Market Context"):
 
             st.dataframe(
                 pd.DataFrame(sector_rows),
-                width="stretch",
+                use_container_width=True,
                 hide_index=True,
             )
 
@@ -859,7 +959,7 @@ if active_page_is("Market Context"):
         st.markdown("#### Index Leadership")
         st.dataframe(
             pd.DataFrame(index_rs_rows),
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
         )
 
@@ -881,7 +981,7 @@ if active_page_is("Market Context"):
 
             st.dataframe(
                 pd.DataFrame(rs_rows),
-                width="stretch",
+                use_container_width=True,
                 hide_index=True,
             )
             st.caption(
@@ -899,104 +999,37 @@ if active_page_is("Market Context"):
 # -----------------------------
 if active_page_is("Scanner"):
     st.header("Scanner")
-    st.caption(f"Scanner: {scanner_status_text()}")
+    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
 
     st.caption(
-        "Latest saved candidates appear immediately. If the scan is stale, Scanner refreshes automatically; Run New Market Scan is only a force-refresh control."
+        "Saved results open immediately. Run a new scan whenever you want fresh candidates."
     )
-
-    render_scanner_v2_setup()
-
-    # Restore the last persisted candidate list immediately, even while the
-    # Scanner v2 foundation is still building. This prevents a blank Scanner
-    # after a Streamlit sleep/redeploy.
-    current_scan = st.session_state.get("scan_results")
-    if current_scan is None or (hasattr(current_scan, "empty") and current_scan.empty):
-        persisted_scan = load_latest_scan_results()
-        if persisted_scan is not None and not persisted_scan.empty:
-            st.session_state.scan_results = persisted_scan
-
-    # Normal Scanner behavior is automatic: restore saved results immediately,
-    # then refresh in the isolated scanner worker only when stale.
-    scanner_manifest = scanner_local_manifest()
-    if scanner_manifest.get("ready"):
-        ensure_scan_started(force=False)
 
     if st.button(
         "Run New Market Scan",
         key="run_market_scan",
         type="primary",
-        width="stretch",
+        use_container_width=True,
     ):
-        ensure_scan_started(force=True)
-        st.session_state.selected_symbol = None
-        st.info("Force refresh started in the Scanner v2 worker. You can leave this page while it runs.")
+        with st.spinner(
+            "Scanning market..."
+        ):
+            st.session_state.scan_results = force_refresh_resource(
+                "market_scan", "scan_results", run_scan,
+                ttl_minutes=_data_cache_minutes("scanner", 30), loading_label="Refreshing market scan",
+            )
 
-    # Pick up a finished background result without blocking page rendering.
-    scan_state = scanner_job_state("scan")
-    if scan_state.get("done") and not scan_state.get("running"):
-        newest_scan = load_latest_scan_results()
-        if newest_scan is not None and not newest_scan.empty:
-            st.session_state.scan_results = newest_scan
-    if scan_state.get("running"):
-        progress_value = scan_state.get("progress")
-        if isinstance(progress_value, (int, float)):
-            st.progress(max(0.0, min(1.0, float(progress_value))))
-        st.caption(str(scan_state.get("stage") or "Refreshing current candidates in background"))
-    elif scan_state.get("error"):
-        st.error(f"Scanner v2 refresh failed: {scan_state.get('error')}")
-        st.caption("Your 220-session market-history foundation is preserved. Use Run New Market Scan only after the error above is addressed or to retry the candidate scan.")
+        st.session_state.selected_symbol = None
+        st.info("New scan started. You can keep using the app while it runs.")
 
     df = st.session_state.scan_results
-    if df is None or (hasattr(df, "empty") and df.empty):
-        if not scanner_manifest.get("ready"):
-            st.info("Scanner v2 is building its one-time market-history foundation in the background. The rest of MomoPro remains fully usable.")
-        else:
-            st.info("Scanner v2 is preparing the first current candidate list in the background.")
+    if df is None:
+        render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
 
     if df is not None and not df.empty:
-        # v0.98.4: enrich the current result set, not only symbols that happened
-        # to be opened previously. Provider failures are isolated per symbol.
-        enrich_company_metadata_batch(
-            df["Symbol"].astype(str).tolist(),
-            fmp_api_key=_secret("FMP_API_KEY"),
-            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-            max_workers=3,
-        )
-        df = attach_cached_metadata(df)
-        # Market cap can be safely estimated when reported shares outstanding
-        # exist and the scanner already has the current close.
-        if "Market Cap" in df.columns and "Shares Outstanding" in df.columns and "Close" in df.columns:
-            missing_cap = df["Market Cap"].isna() & df["Shares Outstanding"].notna()
-            df.loc[missing_cap, "Market Cap"] = (
-                pd.to_numeric(df.loc[missing_cap, "Close"], errors="coerce")
-                * pd.to_numeric(df.loc[missing_cap, "Shares Outstanding"], errors="coerce")
-            )
-        st.session_state.scan_results = df
-        sector_options = ["All Sectors"] + available_cached_sectors()
-        selected_sector = st.selectbox(
-            "Sector filter", sector_options, key="scanner_sector_filter",
-            help="Sector choices appear as company metadata is cached."
-        )
-        if selected_sector != "All Sectors" and "Sector" in df.columns:
-            df = df[df["Sector"].fillna("") == selected_sector].copy()
-        matched_count = len(df)
-        universe_count = int(pd.to_numeric(df.get("__Universe Count"), errors="coerce").dropna().max()) if "__Universe Count" in df.columns and not pd.to_numeric(df.get("__Universe Count"), errors="coerce").dropna().empty else None
-        prescreened_count = int(pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().max()) if "__Prescreened Count" in df.columns and not pd.to_numeric(df.get("__Prescreened Count"), errors="coerce").dropna().empty else 0
-        eligible_count = int(pd.to_numeric(df.get("__Prescreen Eligible Count"), errors="coerce").dropna().max()) if "__Prescreen Eligible Count" in df.columns and not pd.to_numeric(df.get("__Prescreen Eligible Count"), errors="coerce").dropna().empty else prescreened_count
-        bars_count = int(pd.to_numeric(df.get("__Prescreen Bars Count"), errors="coerce").dropna().max()) if "__Prescreen Bars Count" in df.columns and not pd.to_numeric(df.get("__Prescreen Bars Count"), errors="coerce").dropna().empty else None
-        scope_text = f" after full analysis of {prescreened_count:,} strategy-ranked symbols"
-        if universe_count:
-            scope_text += f" selected from {universe_count:,} eligible U.S. equities"
         st.success(
-            f"Scan complete: {matched_count} candidates matched the strategy filters{scope_text}."
-        )
-        st.caption(
-            "MomoPro now uses a strategy-aware pre-rank instead of a rigid activity-only gate. "
-            f"{eligible_count:,} symbols passed price/history eligibility"
-            + (f" from {bars_count:,} symbols with usable pre-screen data" if bars_count else "")
-            + f", and the strongest {prescreened_count:,} received the complete indicator and setup analysis. "
-            "Lower-volume stocks are ranked with a liquidity penalty rather than being discarded before the real engine sees them."
+            f"Scan complete! "
+            f"{len(df)} stocks analyzed."
         )
 
         st.caption(
@@ -1005,15 +1038,6 @@ if active_page_is("Scanner"):
         )
 
         hidden_columns = {
-            "__Universe Count": None,
-            "__Prescreened Count": None,
-            "__Prescreen Eligible Count": None,
-            "__Prescreen Bars Count": None,
-            "__Prescreen Strict Count": None,
-            "__Prescreen Standard Count": None,
-            "__Prescreen Expanded Count": None,
-            "__Prescreen Request Failures": None,
-            "__Usable History Count": None,
             "Momo Confidence": None,
             "Confidence Rating": None,
             "Trend Confidence": None,
@@ -1023,13 +1047,6 @@ if active_page_is("Scanner"):
             "Opportunity Confidence": None,
             "Risk Confidence": None,
             "Structure Confidence": None,
-            "EMA21": None,
-            "EMA50": None,
-            "EMA200": None,
-            "RSI": None,
-            "MACD": None,
-            "MACD Signal": None,
-            "MACD Histogram": None,
 
             "Support 1": None,
             "Support 2": None,
@@ -1107,46 +1124,10 @@ if active_page_is("Scanner"):
         )
 
         if selected_symbol:
-            matching_rows = df[df["Symbol"] == selected_symbol] if "Symbol" in df.columns else pd.DataFrame()
-            selected_stock = matching_rows.iloc[0].to_dict() if not matching_rows.empty else None
-
-            # A direct ticker search must build the same full report even when the
-            # symbol is absent from today's scan. The scanner is discovery only.
-            if selected_stock is None:
-                direct_cache = st.session_state.setdefault("direct_symbol_analysis_cache", {})
-                selected_stock = direct_cache.get(selected_symbol)
-                if selected_stock is None:
-                    with st.spinner(f"Building the full {selected_symbol} workspace..."):
-                        try:
-                            selected_stock = analyze_symbol(
-                                st.secrets["ALPACA_API_KEY"],
-                                st.secrets["ALPACA_SECRET_KEY"],
-                                selected_symbol,
-                            )
-                            direct_cache[selected_symbol] = selected_stock
-                        except Exception as error:
-                            st.error(f"Could not build the {selected_symbol} Stock Workspace: {error}")
-                            selected_stock = None
-
-            if selected_stock is not None:
-                metadata = get_company_metadata(
-                    selected_symbol,
-                    fmp_api_key=_secret("FMP_API_KEY"),
-                    alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-                )
-                selected_stock.update({
-                    "Company": metadata.get("company"),
-                    "Sector": metadata.get("sector"),
-                    "Industry": metadata.get("industry"),
-                    "Exchange": metadata.get("exchange"),
-                    "Country": metadata.get("country"),
-                    "Market Cap": metadata.get("market_cap"),
-                    "Float": metadata.get("float_shares"),
-                    "Shares Outstanding": metadata.get("shares_outstanding"),
-                })
-
-            if selected_stock is None:
-                st.stop()
+            selected_stock = df[
+                df["Symbol"]
+                == selected_symbol
+            ].iloc[0]
 
             st.divider()
 
@@ -1165,13 +1146,6 @@ if active_page_is("Scanner"):
                     "MomoPro AI structural "
                     "swing-trade analysis."
                 )
-                identity_parts = [
-                    selected_stock.get("Company"), selected_stock.get("Sector"),
-                    selected_stock.get("Industry"), selected_stock.get("Exchange"),
-                ]
-                identity_text = " · ".join(str(item) for item in identity_parts if item)
-                if identity_text:
-                    st.caption(identity_text)
 
             with header_right:
                 if st.button(
@@ -1405,7 +1379,7 @@ if active_page_is("Scanner"):
                 )
                 st.dataframe(
                     rs_table,
-                    width="stretch",
+                    use_container_width=True,
                     hide_index=True,
                 )
 
@@ -1559,7 +1533,7 @@ if active_page_is("Scanner"):
                     active_contracts = opts.get("active_contracts", [])
                     if active_contracts:
                         st.markdown("**Largest recent trade/quote-size candidates**")
-                        st.dataframe(pd.DataFrame(active_contracts), width="stretch", hide_index=True)
+                        st.dataframe(pd.DataFrame(active_contracts), use_container_width=True, hide_index=True)
                     else:
                         st.info("No larger recent trade or quote-size candidates were found in the returned chain.")
                     if opts.get("chain_truncated"):
@@ -1579,7 +1553,7 @@ if active_page_is("Scanner"):
                     row2[1].metric("Sales", money_text(insiders.get("sale_value")))
                     transactions = insiders.get("transactions", [])
                     if transactions:
-                        st.dataframe(pd.DataFrame(transactions), width="stretch", hide_index=True)
+                        st.dataframe(pd.DataFrame(transactions), use_container_width=True, hide_index=True)
                     st.caption(f"Source: {insiders.get('source', '—')} · {insiders.get('data_quality', 'Reported / Delayed')}")
                     st.caption(insiders.get("disclaimer", ""))
                 else:
@@ -1639,7 +1613,7 @@ if active_page_is("Scanner"):
                 key=f"trade_intelligence_{selected_symbol}",
             )
             trade_resource = f"stock_report:{selected_symbol}:trading_intelligence"
-            stock_payload = normalize_stock_payload(selected_stock)
+            stock_payload = selected_stock.to_dict()
 
             def _load_stock_trade_intelligence():
                 try:
@@ -1699,7 +1673,7 @@ if active_page_is("Scanner"):
             # single resolved plan instead of repeating fallback calculations.
             canonical_analysis = build_canonical_analysis(
                 selected_symbol,
-                dict(selected_stock),
+                selected_stock.to_dict(),
                 trading_intelligence=trade_intelligence_context,
                 market_context=report_market or {},
                 smart_money_context=smart_money_context or {},
@@ -1736,7 +1710,7 @@ if active_page_is("Scanner"):
                 row[3].metric("Trend Health", trend_data.get("score") if valid_value(trend_data.get("score")) else "—", trend_data.get("rating", "—"))
                 patterns = pattern_data.get("patterns", [])
                 if patterns:
-                    st.dataframe(pd.DataFrame(patterns), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(patterns), use_container_width=True, hide_index=True)
                 if trend_data.get("strengths"):
                     st.markdown("**Trend strengths**")
                     for item in trend_data.get("strengths", []): st.write(f"• {item}")
@@ -1751,7 +1725,7 @@ if active_page_is("Scanner"):
                 for timeframe, details in mtf_data.get("timeframes", {}).items():
                     rows.append({"Timeframe": timeframe, "Trend": details.get("trend"), "Score": details.get("score"), "Close": details.get("close")})
                 if rows:
-                    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
             entry_data = trade_intelligence_context.get("entry_quality", {})
             stop_data = trade_intelligence_context.get("adaptive_stops", {})
@@ -1774,7 +1748,7 @@ if active_page_is("Scanner"):
             with ti_tabs[3]:
                 target_rows = trade_intelligence_context.get("targets", {}).get("targets", [])
                 if target_rows:
-                    st.dataframe(pd.DataFrame(target_rows), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(target_rows), use_container_width=True, hide_index=True)
                 measured = trade_intelligence_context.get("targets", {}).get("measured_move_reference")
                 st.metric("Measured-Move Reference", money_text(measured))
 
@@ -2068,7 +2042,7 @@ if active_page_is("Scanner"):
                 if st.button(
                     button_label,
                     key=f"generate_ai_{selected_symbol}",
-                    width="stretch",
+                    use_container_width=True,
                 ):
                     try:
                         api_key = st.secrets["OPENAI_API_KEY"]
@@ -2610,7 +2584,7 @@ if active_page_is("News"):
                 if st.button(
                     "Generate AI Catalyst Analysis",
                     key=f"news_ai_{searched_symbol}",
-                    width="stretch",
+                    use_container_width=True,
                 ):
                     try:
                         with st.spinner(f"AI is analyzing news and catalysts for {searched_symbol}..."):
@@ -2774,7 +2748,7 @@ if active_page_is("AI Analysis"):
         global_submit = st.form_submit_button(
             "Research and Answer",
             type="primary",
-            width="stretch",
+            use_container_width=True,
         )
 
     global_controls = st.columns([1, 3])
@@ -2782,7 +2756,7 @@ if active_page_is("AI Analysis"):
         if st.button(
             "Clear Global Chat",
             key="clear_global_ai_chat",
-            width="stretch",
+            use_container_width=True,
         ):
             st.session_state.global_ai_history = []
             st.session_state.global_ai_last_meta = {}
@@ -2883,7 +2857,7 @@ if active_page_is("AI Analysis"):
             st.warning("The selected ticker is no longer present in the current scan.")
         else:
             analysis_stock = matching_rows.iloc[0]
-            analysis_stock_payload = normalize_stock_payload(analysis_stock)
+            analysis_stock_payload = analysis_stock.to_dict()
             analysis_market = st.session_state.market_context
 
             with st.spinner("Loading relative strength..."):
@@ -2956,7 +2930,7 @@ if active_page_is("AI Analysis"):
                 "Generate Full Independent AI Research",
                 key=f"generate_ai_research_{report_key}",
                 type="primary",
-                width="stretch",
+                use_container_width=True,
             ):
                 try:
                     with st.spinner("Researching the full MomoPro evidence package..."):
@@ -3139,7 +3113,7 @@ if active_page_is("AI Analysis"):
                 if checklist:
                     st.dataframe(
                         pd.DataFrame(checklist),
-                        width="stretch",
+                        use_container_width=True,
                         hide_index=True,
                     )
 
@@ -3157,7 +3131,7 @@ if active_page_is("AI Analysis"):
                     if breakdown:
                         st.dataframe(
                             pd.DataFrame(breakdown),
-                            width="stretch",
+                            use_container_width=True,
                             hide_index=True,
                         )
                     else:
@@ -3261,7 +3235,7 @@ if active_page_is("AI Analysis"):
             if st.button(
                 "Analyze Chart / Screenshot",
                 key=f"analyze_chart_{analysis_symbol}",
-                width="stretch",
+                use_container_width=True,
                 disabled=uploaded_chart is None,
             ):
                 try:
@@ -3350,195 +3324,42 @@ if active_page_is("Watchlist"):
     if st.session_state.scan_results is not None and not st.session_state.scan_results.empty:
         scan_lookup = {str(row.get("Symbol", "")).upper(): row.to_dict() for _, row in st.session_state.scan_results.iterrows()}
 
-    # v0.98.4: Watchlist is a view of the same symbol intelligence, not a
-    # separate blank profile. Hydrate it automatically from scanner rows,
-    # saved canonical analyses, metadata and any live module caches.
-    watchlist_changed = False
-    direct_cache = st.session_state.setdefault("direct_symbol_analysis_cache", {})
-    for item in items:
-        row = scan_lookup.get(item.symbol) or direct_cache.get(item.symbol) or {}
-        saved_analysis = get_analysis(item.symbol)
-        saved = saved_analysis.to_dict() if saved_analysis else {}
-        if not row and saved:
-            plan = saved.get("plan") or {}
-            technicals = saved.get("technicals") or {}
-            row = {
-                "Symbol": item.symbol,
-                "Company": (saved.get("identity") or {}).get("company"),
-                "Sector": (saved.get("identity") or {}).get("sector"),
-                "Industry": (saved.get("identity") or {}).get("industry"),
-                "Close": technicals.get("close") or technicals.get("price"),
-                "Grade": saved.get("grade"),
-                "Momo Score": saved.get("momo_score"),
-                "Momo Confidence": saved.get("momo_confidence"),
-                "Setup": saved.get("setup"),
-                "Reference Entry": plan.get("reference_entry"),
-                "Risk Reference": plan.get("stop"),
-                "T1": plan.get("t1"), "T2": plan.get("t2"), "T3": plan.get("t3"),
-                "T1 R": plan.get("t1_r"), "T2 R": plan.get("t2_r"), "T3 R": plan.get("t3_r"),
-            }
-        metadata = get_company_metadata(
-            item.symbol,
-            fmp_api_key=_secret("FMP_API_KEY"),
-            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-        )
-        row = dict(row or {})
-        row.update({
-            "Symbol": item.symbol,
-            "Company": row.get("Company") or metadata.get("company"),
-            "Sector": row.get("Sector") or metadata.get("sector"),
-            "Industry": row.get("Industry") or metadata.get("industry"),
-        })
-        report = st.session_state.ai_research_reports.get(item.symbol)
-        if report is None:
-            report = next((value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol), None)
-        smart_context = st.session_state.smart_money_cache.get(item.symbol) or saved.get("smart_money_context")
-        trade_context = st.session_state.trade_intelligence_cache.get(item.symbol) or saved.get("trading_intelligence")
-        market_context = saved.get("market_context") or st.session_state.market_context
-        before = item.to_dict()
-        refresh_item_from_scan(
-            item, row, ai_report=report, market_context=market_context,
-            smart_money_context=smart_context, trade_intelligence_context=trade_context,
-        )
-        if item.to_dict() != before:
-            update_watchlist_item(item)
-            watchlist_changed = True
-
-    def _refresh_one_watchlist_item(item, *, force_metadata: bool = False) -> None:
-        """Load one living profile from the same canonical pipeline used by Stock Report."""
-        row = scan_lookup.get(item.symbol) or direct_cache.get(item.symbol)
-        if not row:
-            row = analyze_symbol(
-                st.secrets["ALPACA_API_KEY"],
-                st.secrets["ALPACA_SECRET_KEY"],
-                item.symbol,
-            )
-            direct_cache[item.symbol] = row
-        row = normalize_stock_payload(row)
-        metadata = get_company_metadata(
-            item.symbol,
-            fmp_api_key=_secret("FMP_API_KEY"),
-            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-            force_refresh=force_metadata,
-        )
-        row.update({
-            "Symbol": item.symbol,
-            "Company": row.get("Company") or metadata.get("company"),
-            "Sector": row.get("Sector") or metadata.get("sector"),
-            "Industry": row.get("Industry") or metadata.get("industry"),
-            "Market Cap": row.get("Market Cap") or metadata.get("market_cap"),
-            "Float": row.get("Float") or metadata.get("float_shares"),
-            "Shares Outstanding": row.get("Shares Outstanding") or metadata.get("shares_outstanding"),
-        })
-        report = st.session_state.ai_research_reports.get(item.symbol)
-        if report is None:
-            report = next((value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol), None)
-        existing_intelligence = item.intelligence or {}
-        relative_context = existing_intelligence.get("relative_strength")
-        smart_context = (
-            st.session_state.smart_money_cache.get(item.symbol)
-            or existing_intelligence.get("smart_money")
-        )
-        trade_context = (
-            st.session_state.trade_intelligence_cache.get(item.symbol)
-            or existing_intelligence.get("trading_intelligence")
-        )
-
-        # Each provider is isolated. One unavailable module must never prevent
-        # the other watchlist snapshots from loading and being saved.
-        try:
-            relative_context = get_relative_strength(
-                st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], item.symbol
-            )
-        except Exception:
-            pass
-        try:
-            smart_context = get_smart_money_intelligence(
-                item.symbol,
-                st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"],
-                _secret("ALPHA_VANTAGE_API_KEY"), _secret("FINNHUB_API_KEY"), _secret("FMP_API_KEY"),
-            )
-        except Exception:
-            pass
-        try:
-            trade_context = get_trade_intelligence(
-                st.secrets["ALPACA_API_KEY"], st.secrets["ALPACA_SECRET_KEY"], item.symbol, row
-            )
-        except Exception:
-            pass
-
-        if smart_context:
-            st.session_state.smart_money_cache[item.symbol] = smart_context
-        if trade_context:
-            st.session_state.trade_intelligence_cache[item.symbol] = trade_context
-        refresh_item_from_scan(
-            item, row, ai_report=report,
-            market_context=st.session_state.market_context,
-            smart_money_context=smart_context,
-            trade_intelligence_context=trade_context,
-            relative_strength_context=relative_context,
-        )
-        update_watchlist_item(item)
-
-    # Automatic watchlist hydration. Saved values render immediately; missing
-    # non-AI modules are filled once per session without requiring a button.
-    auto_refresh_state = st.session_state.setdefault("watchlist_auto_refresh_state", {})
-    missing_items = []
-    for item in items:
-        intelligence = item.intelligence or {}
-        technical = item.technical or {}
-        missing_core = not technical or any(
-            not intelligence.get(key)
-            for key in ("relative_strength", "smart_money", "trading_intelligence", "market_context")
-        )
-        if missing_core and not auto_refresh_state.get(item.symbol):
-            missing_items.append(item)
-
-    if missing_items:
-        completed = 0
-        failures = []
-        with st.spinner("Loading saved watchlist intelligence and filling missing modules..."):
-            for item in missing_items[:5]:
-                auto_refresh_state[item.symbol] = True
-                try:
-                    _refresh_one_watchlist_item(item, force_metadata=False)
-                    completed += 1
-                except Exception as exc:
-                    failures.append(item.symbol)
-                    auto_refresh_state.pop(item.symbol, None)
-        if completed:
-            st.rerun()
-        elif failures:
-            st.warning(
-                "Watchlist data could not be loaded for: " + ", ".join(failures) +
-                ". Use Refresh Watchlist Data to retry."
-            )
-
     action_cols = st.columns([1, 1, 2])
-    if action_cols[0].button("Refresh Watchlist Data", key="refresh_watchlist_intelligence", disabled=not items):
+    if action_cols[0].button("Refresh Intelligence", key="refresh_watchlist_intelligence", disabled=not items):
         refreshed = 0
-        failed: list[str] = []
-        with st.spinner("Refreshing watchlist profiles from the shared symbol pipeline..."):
-            for item in items:
-                try:
-                    _refresh_one_watchlist_item(item, force_metadata=True)
-                    auto_refresh_state[item.symbol] = True
-                    refreshed += 1
-                except Exception:
-                    failed.append(item.symbol)
-                    auto_refresh_state.pop(item.symbol, None)
-        if failed:
-            st.warning(f"Refreshed {refreshed} profile(s). Could not fully refresh: {', '.join(failed)}.")
-        else:
-            st.success(f"Refreshed all {refreshed} watchlist profile(s).")
+        missing_scan = []
+        for item in items:
+            row = scan_lookup.get(item.symbol)
+            if not row:
+                missing_scan.append(item.symbol)
+                continue
+            report = st.session_state.ai_research_reports.get(item.symbol)
+            if report is None:
+                report = next(
+                    (value for key, value in st.session_state.ai_research_reports.items() if str(key).split("|", 1)[0] == item.symbol),
+                    None,
+                )
+            refresh_item_from_scan(
+                item,
+                row,
+                ai_report=report,
+                market_context=st.session_state.market_context,
+                smart_money_context=st.session_state.smart_money_cache.get(item.symbol),
+                trade_intelligence_context=st.session_state.trade_intelligence_cache.get(item.symbol),
+            )
+            update_watchlist_item(item)
+            refreshed += 1
+        message = f"Refreshed {refreshed} watchlist profile(s) from the latest scanner and saved intelligence."
+        if missing_scan:
+            message += " Not in the latest scan: " + ", ".join(missing_scan) + "."
+        st.success(message)
         st.rerun()
     if action_cols[1].button("Evaluate Alerts", key="evaluate_watchlist_alerts", disabled=not items):
         fired = evaluate_alerts({item.symbol: item for item in items})
-        for item in items:
-            update_watchlist_item(item)
+        for item in items: update_watchlist_item(item)
         st.success(f"{len(fired)} alert(s) triggered.") if fired else st.info("No alert conditions are currently met.")
         st.rerun()
-    action_cols[2].caption("Saved values display immediately. Missing non-AI modules load automatically; Refresh Watchlist Data is the force-refresh control.")
+    action_cols[2].caption("Run the scanner first for fresh technical values, then refresh intelligence.")
 
     brief = build_morning_brief(items)
     st.subheader("☀️ Morning Brief")
@@ -3552,9 +3373,7 @@ if active_page_is("Watchlist"):
     if brief["ranked"]:
         priority_rows = []
         for rank, item in enumerate(brief["ranked"], 1):
-            ai_confidence = item.ai_state.get("ai_confidence")
-            opportunity = item.ai_state.get("opportunity_score")
-            priority_rows.append({"Priority": rank, "Symbol": item.symbol, "Grade": str(item.technical.get("grade") or "—"), "AI Confidence": "—" if ai_confidence is None else f"{float(ai_confidence):.0f}%", "Opportunity": "—" if opportunity is None else f"{float(opportunity):.0f}", "AI Status": str(item.ai_state.get("thesis_status") or "Not evaluated"), "Why Now": str(item.ai_state.get("opportunity_reason") or "Run refresh intelligence.")})
+            priority_rows.append({"Priority": rank, "Symbol": item.symbol, "Grade": item.technical.get("grade", "—"), "AI Confidence": item.ai_state.get("ai_confidence", "—"), "Opportunity": item.ai_state.get("opportunity_score", "—"), "AI Status": item.ai_state.get("thesis_status", "Not evaluated"), "Why Now": item.ai_state.get("opportunity_reason", "Run refresh intelligence.")})
         st.dataframe(pd.DataFrame(priority_rows), hide_index=True, width="stretch")
 
     profile_tab, alerts_tab, history_tab = st.tabs(["Smart Watchlist", "Smart Alerts", "Alert Inbox"])
@@ -3584,17 +3403,7 @@ if active_page_is("Watchlist"):
                 tags_text = c2.text_input("Tags", value=", ".join(item.tags), key=f"tags_{item.symbol}")
                 item.tags = [x.strip() for x in tags_text.split(",") if x.strip()]
                 st.markdown("#### Technical Snapshot")
-                if tech:
-                    tech_cols = st.columns(5)
-                    tech_cols[0].metric("Price", money_text(tech.get("price")))
-                    tech_cols[1].metric("Grade", tech.get("grade") or "—")
-                    tech_cols[2].metric("Momo Score", tech.get("momo_score") if tech.get("momo_score") is not None else "—")
-                    tech_cols[3].metric("RSI", tech.get("rsi") if tech.get("rsi") is not None else "—")
-                    tech_cols[4].metric("RVOL", tech.get("rvol") if tech.get("rvol") is not None else "—")
-                    st.caption(f"Setup: {tech.get('setup') or '—'} · ATR: {tech.get('atr_pct') if tech.get('atr_pct') is not None else '—'}% · Distance from EMA21: {tech.get('distance_ema21_pct') if tech.get('distance_ema21_pct') is not None else '—'}%")
-                else:
-                    st.info("Technical data has not been loaded for this ticker. Click Refresh Watchlist Data above.")
-
+                st.json(tech if tech else {"status": "Refresh intelligence after running the scanner."}, expanded=False)
                 st.markdown("#### Independent AI Snapshot")
                 independent_ai = (item.intelligence or {}).get("independent_ai", {})
                 if independent_ai.get("status") == "Available":
@@ -3602,23 +3411,11 @@ if active_page_is("Watchlist"):
                     ai_cols[0].metric("AI Confidence", independent_ai.get("confidence", "—"))
                     ai_cols[1].metric("AI Sentiment", independent_ai.get("sentiment", "—"))
                     ai_cols[2].metric("Independent Action", independent_ai.get("independent_action", "—"))
-                    st.write(independent_ai.get("executive_summary") or "No executive summary was saved.")
+                    st.write(independent_ai.get("executive_summary") or "—")
                 else:
-                    st.info("Independent AI Research is intentionally separate and has not been generated yet. Use AI Analysis → Generate Full Independent AI Research for this ticker.")
-
+                    st.info("AI research not generated yet. Run Full Independent AI Research in the AI Analysis tab for this ticker.")
                 st.markdown("#### Intelligence Snapshot")
-                intelligence = item.intelligence or {}
-                intel_cols = st.columns(4)
-                relative = intelligence.get("relative_strength") or {}
-                smart = intelligence.get("smart_money") or {}
-                trading = intelligence.get("trading_intelligence") or {}
-                market = intelligence.get("market_context") or {}
-                intel_cols[0].metric("Relative Strength", relative.get("verdict") or relative.get("score") or "Not loaded")
-                intel_cols[1].metric("Smart Money", smart.get("verdict") or smart.get("overall_score") or "Not loaded")
-                intel_cols[2].metric("Trading Intelligence", trading.get("status") or trading.get("overall_score") or "Not loaded")
-                intel_cols[3].metric("Market Regime", market.get("market_regime") or market.get("regime") or "Not loaded")
-                if not any((relative, smart, trading, market)):
-                    st.info("No intelligence modules are saved yet. Click Refresh Watchlist Data above.")
+                st.json(item.intelligence if item.intelligence else {"status": "No intelligence snapshot saved yet."}, expanded=False)
                 if st.button("Save profile", key=f"save_profile_{item.symbol}"):
                     update_watchlist_item(item); st.success("Profile saved.")
 
@@ -3777,11 +3574,6 @@ if active_page_is("Trade Planner"):
         ),
     )
 
-    direction = st.radio(
-        "Trade Direction", ["Long", "Short"], horizontal=True,
-        index=1 if str(prefill.get("direction") or "Long").title() == "Short" else 0,
-        key="planner_direction",
-    )
     plan_cols = st.columns(5)
     entry = plan_cols[0].number_input("Entry", min_value=0.0, value=float(prefill.get("entry") or 0.0), step=0.01)
     stop = plan_cols[1].number_input("Stop", min_value=0.0, value=float(prefill.get("stop") or 0.0), step=0.01)
@@ -3794,7 +3586,6 @@ if active_page_is("Trade Planner"):
         risk_percent=risk_pct,
         entry_price=entry,
         stop_price=stop,
-        direction=direction,
     )
 
     risk_dollars = sizing["risk_budget"]
@@ -3858,33 +3649,21 @@ if active_page_is("Trade Planner"):
 
     rr_rows = []
     for name, target in [("T1", t1), ("T2", t2), ("T3", t3)]:
-        if direction == "Short":
-            reward = entry - target if entry > target > 0 else None
-        else:
-            reward = target - entry if target > entry > 0 else None
+        reward = target - entry if target > entry > 0 else None
         r_multiple = reward / risk_per_share if reward is not None and risk_per_share and risk_per_share > 0 else None
-        dollar_profit = reward * shares if reward is not None and shares > 0 else None
-        return_pct = (reward / entry) * 100 if reward is not None and entry > 0 else None
-        rr_rows.append({
-            "Target": name,
-            "Price": target if target > 0 else None,
-            "Reward / Share": round(reward, 2) if reward is not None else None,
-            "Dollar Profit": round(dollar_profit, 2) if dollar_profit is not None else None,
-            "Return %": round(return_pct, 2) if return_pct is not None else None,
-            "R Multiple": round(r_multiple, 2) if r_multiple is not None else None,
-        })
-    st.dataframe(pd.DataFrame(rr_rows), width="stretch", hide_index=True)
+        rr_rows.append({"Target": name, "Price": target if target > 0 else None, "Reward / Share": round(reward, 2) if reward is not None else None, "R Multiple": round(r_multiple, 2) if r_multiple is not None else None})
+    st.dataframe(pd.DataFrame(rr_rows), use_container_width=True, hide_index=True)
 
     st.markdown("### Plan Notes")
     plan_notes = st.text_area("Trade Thesis / Confirmation / Invalidation", key="trade_plan_notes")
     planner_action_1, planner_action_2 = st.columns(2)
-    if planner_action_1.button("Save Plan to Session", width="stretch"):
-        st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "direction": direction, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
+    if planner_action_1.button("Save Plan to Session", use_container_width=True):
+        st.session_state.trade_plan_prefill = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "notes": plan_notes}
         st.success("Trade plan saved in this session.")
-    if planner_action_2.button("Send Plan to Journal", width="stretch"):
+    if planner_action_2.button("Send Plan to Journal", use_container_width=True):
         plan_id = f"MP-{planner_symbol}-{uuid4().hex[:10].upper()}"
         plan_created_at = utc_now()
-        plan_snapshot = {"symbol": planner_symbol, "direction": direction, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "shares": shares, "thesis": plan_notes, "created_at": plan_created_at}
+        plan_snapshot = {"symbol": planner_symbol, "entry": entry, "stop": stop, "t1": t1, "t2": t2, "t3": t3, "shares": shares, "thesis": plan_notes, "created_at": plan_created_at}
         st.session_state.journal_prefill = {
             "symbol": planner_symbol, "entry_price": entry, "shares": shares,
             "initial_stop": stop, "t1": t1, "t2": t2, "t3": t3,
@@ -3922,7 +3701,7 @@ if active_page_is("Journal"):
             st.info("No open trades yet. Create one manually or send a plan from the Trade Planner.")
         else:
             open_rows = [trade_summary(trade) for trade in journal_open]
-            st.dataframe(pd.DataFrame(open_rows), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(open_rows), use_container_width=True, hide_index=True)
             for trade in journal_open:
                 with st.expander(f"{trade.symbol} · {trade.status.title()} · {trade.remaining_shares:g} shares remaining"):
                     summary_cols = st.columns(5)
@@ -3942,7 +3721,7 @@ if active_page_is("Journal"):
                             st.write(update.note or "No note entered.")
                     if trade.exits:
                         st.markdown("**Partial Exits**")
-                        st.dataframe(pd.DataFrame([{"Date": item.date, "Shares": item.shares, "Price": item.price, "Reason": item.reason} for item in trade.exits]), width="stretch", hide_index=True)
+                        st.dataframe(pd.DataFrame([{"Date": item.date, "Shares": item.shares, "Price": item.price, "Reason": item.reason} for item in trade.exits]), use_container_width=True, hide_index=True)
 
     with new_tab:
         st.subheader("Create Trade Record")
@@ -4005,7 +3784,7 @@ if active_page_is("Journal"):
         journal_notes = st.text_area("Personal Notes", key="journal_new_notes")
         journal_image = st.file_uploader("Chart Screenshot (optional)", type=["png", "jpg", "jpeg", "webp"], key="journal_new_image")
 
-        if st.button("Save Trade to Journal", type="primary", width="stretch", key="journal_create_trade"):
+        if st.button("Save Trade to Journal", type="primary", use_container_width=True, key="journal_create_trade"):
             try:
                 created = create_trade(
                     symbol=journal_symbol, status=journal_status, direction=journal_direction,
@@ -4052,7 +3831,7 @@ if active_page_is("Journal"):
                     edit_t3 = edit_4.number_input("T3", min_value=0.0, value=float(selected_trade.t3 or 0.0), step=0.01, key=f"edit_t3_{selected_trade.id}")
                     edit_thesis = st.text_area("Current Thesis", value=selected_trade.thesis, key=f"edit_thesis_{selected_trade.id}")
                     edit_notes = st.text_area("Notes", value=selected_trade.notes, key=f"edit_notes_{selected_trade.id}")
-                    if st.button("Save Trade Changes", width="stretch", key=f"save_edit_{selected_trade.id}"):
+                    if st.button("Save Trade Changes", use_container_width=True, key=f"save_edit_{selected_trade.id}"):
                         update_trade(selected_trade.id, current_stop=edit_stop or None, t1=edit_t1 or None, t2=edit_t2 or None, t3=edit_t3 or None, thesis=edit_thesis, notes=edit_notes)
                         st.success("Trade updated.")
                         st.rerun()
@@ -4063,7 +3842,7 @@ if active_page_is("Journal"):
                     management_price = management_cols[0].number_input("Current Price (optional)", min_value=0.0, value=0.0, step=0.01, key=f"manage_price_{selected_trade.id}")
                     management_stop = management_cols[1].number_input("New Stop (optional)", min_value=0.0, value=float(selected_trade.current_stop or 0.0), step=0.01, key=f"manage_stop_{selected_trade.id}")
                     management_note = st.text_area("What changed?", key=f"manage_note_{selected_trade.id}")
-                    if st.button("Add Management Update", width="stretch", key=f"add_update_{selected_trade.id}"):
+                    if st.button("Add Management Update", use_container_width=True, key=f"add_update_{selected_trade.id}"):
                         add_management_update(selected_trade.id, management_type, management_note, management_stop or None, management_price or None)
                         st.success("Management update added.")
                         st.rerun()
@@ -4075,7 +3854,7 @@ if active_page_is("Journal"):
                     exit_date = exit_cols[2].date_input("Exit Date", key=f"exit_date_{selected_trade.id}")
                     exit_reason = st.selectbox("Exit Reason", ["Target Hit", "Stop Hit", "Thesis Invalidated", "Momentum Faded", "Risk Reduction", "Earnings / Catalyst Risk", "Manual Exit", "Other"], key=f"exit_reason_{selected_trade.id}")
                     exit_notes = st.text_area("Exit Notes", key=f"exit_notes_{selected_trade.id}")
-                    if st.button("Record Exit", type="primary", width="stretch", key=f"record_exit_{selected_trade.id}"):
+                    if st.button("Record Exit", type="primary", use_container_width=True, key=f"record_exit_{selected_trade.id}"):
                         try:
                             add_exit(selected_trade.id, exit_shares, exit_price, exit_reason, exit_notes, f"{exit_date.isoformat()}T00:00:00+00:00")
                             st.success("Exit recorded. The trade was closed if all remaining shares were exited.")
@@ -4092,10 +3871,10 @@ if active_page_is("Journal"):
     with closed_tab:
         st.subheader("Closed Trades & Post-Trade Review")
         if not journal_closed:
-            render_empty_state("No closed trades yet", "Closed trades will appear here after the final exit is recorded.", "📒")
+            st.info("Closed trades will appear here after the final exit is recorded.")
         else:
             closed_rows = [trade_summary(trade) for trade in journal_closed]
-            st.dataframe(pd.DataFrame(closed_rows), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(closed_rows), use_container_width=True, hide_index=True)
             closed_id = st.selectbox(
                 "Review Trade",
                 [trade.id for trade in journal_closed],
@@ -4113,7 +3892,7 @@ if active_page_is("Journal"):
                 intel_cols[2].metric("Evidence Categories", len(closed_trade.evidence))
                 if closed_trade.evidence:
                     with st.expander("Broker & Plan Evidence", expanded=False):
-                        st.dataframe(pd.DataFrame([{"Evidence": e.get("label"), "Source": e.get("source"), "Confidence": e.get("confidence"), "Observed": e.get("observed_at")} for e in closed_trade.evidence]), width="stretch", hide_index=True)
+                        st.dataframe(pd.DataFrame([{"Evidence": e.get("label"), "Source": e.get("source"), "Confidence": e.get("confidence"), "Observed": e.get("observed_at")} for e in closed_trade.evidence]), use_container_width=True, hide_index=True)
                 if closed_trade.timeline:
                     with st.expander("Complete Trade Timeline", expanded=False):
                         st.dataframe(pd.DataFrame([{
@@ -4122,7 +3901,7 @@ if active_page_is("Journal"):
                             "Details": e.get("description"),
                             "Source": e.get("source"),
                             "Confidence": e.get("confidence"),
-                        } for e in closed_trade.timeline]), width="stretch", hide_index=True)
+                        } for e in closed_trade.timeline]), use_container_width=True, hide_index=True)
                 if closed_trade.review_mode == "historical_reconstruction":
                     st.markdown("#### Historical Reconstruction")
                     if st.button("Reconstruct Historical Entry", key=f"reconstruct_{closed_trade.id}"):
@@ -4146,12 +3925,6 @@ if active_page_is("Journal"):
                         rc_cols[4].metric("Evidence Confidence", f"{float(reconstruction_confidence):.0f}%")
                         quality_label = rc.get("reconstruction_quality") or ("Excellent" if float(reconstruction_confidence) >= 90 else "Good" if float(reconstruction_confidence) >= 75 else "Limited")
                         st.caption(f"Reconstruction Quality: {quality_label}")
-
-                        st.markdown("#### Chart Snapshot")
-                        render_chart_thumbnail(rc.get("chart_snapshot"), f"{closed_trade.symbol} · pre-entry daily context")
-
-                        st.markdown("#### AI Coach Summary")
-                        render_coach_summary(build_reconstruction_coach(rc))
 
                         st.caption(
                             f"Broker entry: {str(rc.get('entry_execution_time') or '—').replace('T', ' ')} · "
@@ -4215,7 +3988,7 @@ if active_page_is("Journal"):
                 mistakes = st.text_area("What Went Wrong / Biggest Mistake", value=closed_trade.mistakes, key=f"review_mistakes_{closed_trade.id}")
                 lessons = st.text_area("Lessons Learned", value=closed_trade.lessons, key=f"review_lessons_{closed_trade.id}")
                 ai_review = st.text_area("AI Coaching / Post-Trade Review", value=closed_trade.ai_review, help="This field stores the AI review when one is generated or pasted. Automated coaching is expanded in the Learning phase.", key=f"review_ai_{closed_trade.id}")
-                if st.button("Save Post-Trade Review", type="primary", width="stretch", key=f"save_review_{closed_trade.id}"):
+                if st.button("Save Post-Trade Review", type="primary", use_container_width=True, key=f"save_review_{closed_trade.id}"):
                     update_trade(closed_trade.id, planned_exit_followed=followed, rule_following_score=rule_score, strengths=strengths, mistakes=mistakes, lessons=lessons, ai_review=ai_review)
                     st.success("Post-trade review saved.")
                     st.rerun()
@@ -4292,7 +4065,7 @@ if active_page_is("Journal"):
         sync_clicked = sync_cols[1].button(
             "Sync Webull Now",
             type="primary",
-            width="stretch",
+            use_container_width=True,
             disabled=not bool(webull_api_key and webull_api_secret),
             key="sync_webull_openapi",
         )
@@ -4336,7 +4109,7 @@ if active_page_is("Journal"):
                 "Market Value": item.get("market_value"),
                 "Unrealized P/L": item.get("unrealized_pnl"),
                 "Realized P/L": item.get("realized_pnl"),
-            } for item in balances]), width="stretch", hide_index=True)
+            } for item in balances]), use_container_width=True, hide_index=True)
 
         live_positions = [item for item in webull_snapshot.get("positions", []) if item.get("symbol")]
         if live_positions:
@@ -4348,7 +4121,7 @@ if active_page_is("Journal"):
                 "Last Price": item.get("last_price"),
                 "Market Value": item.get("market_value"),
                 "Unrealized P/L": item.get("unrealized_pnl"),
-            } for item in live_positions]), width="stretch", hide_index=True)
+            } for item in live_positions]), use_container_width=True, hide_index=True)
 
         recent_orders = [
             item for item in (webull_snapshot.get("orders", []) or [])
@@ -4367,7 +4140,7 @@ if active_page_is("Journal"):
                     "Average Price": item.get("average_price"),
                     "Stop Price": item.get("stop_price"),
                     "Order ID": item.get("order_id"),
-                } for item in recent_orders]), width="stretch", hide_index=True)
+                } for item in recent_orders]), use_container_width=True, hide_index=True)
 
         permanent_orders = load_broker_orders()
         canceled_orders = [o for o in permanent_orders if o.status.upper().replace(" ", "_") in {"CANCELED", "CANCELLED"}]
@@ -4387,7 +4160,7 @@ if active_page_is("Journal"):
                     "Classification": o.purpose,
                     "Confidence": o.purpose_confidence,
                     "Trade ID": o.matched_trade_id or "—",
-                } for o in sorted(canceled_orders, key=lambda x: x.cancelled_at or x.updated_at or x.submitted_at or "", reverse=True)[:250]]), width="stretch", hide_index=True)
+                } for o in sorted(canceled_orders, key=lambda x: x.cancelled_at or x.updated_at or x.submitted_at or "", reverse=True)[:250]]), use_container_width=True, hide_index=True)
 
         sync_summary = webull_snapshot.get("sync_summary") or {}
         sync_warnings = sync_summary.get("errors") or []
@@ -4451,7 +4224,7 @@ if active_page_is("Journal"):
                     for key, value in preview.get("mapping", {}).items()
                 ]
                 with st.expander("Detected column mapping"):
-                    st.dataframe(pd.DataFrame(mapping_rows), width="stretch", hide_index=True)
+                    st.dataframe(pd.DataFrame(mapping_rows), use_container_width=True, hide_index=True)
                 preview_rows = preview.get("rows", [])[:25]
                 if preview_rows:
                     st.dataframe(
@@ -4467,7 +4240,7 @@ if active_page_is("Journal"):
                             }
                             for row in preview_rows
                         ]),
-                        width="stretch",
+                        use_container_width=True,
                         hide_index=True,
                     )
                 if preview.get("skipped"):
@@ -4478,7 +4251,7 @@ if active_page_is("Journal"):
                     "Review the preview before importing. Importing the same file again is safe because "
                     "each execution has a stable duplicate fingerprint."
                 )
-                if st.button("Import and Reconcile Webull History", type="primary", width="stretch", key="import_webull_csv"):
+                if st.button("Import and Reconcile Webull History", type="primary", use_container_width=True, key="import_webull_csv"):
                     try:
                         result = import_webull_history(csv_bytes, webull_file.name)
                         imported = result.get("import", {})
@@ -4512,7 +4285,7 @@ if active_page_is("Journal"):
                     }
                     for item in imports[:20]
                 ]),
-                width="stretch",
+                use_container_width=True,
                 hide_index=True,
             )
 
@@ -4537,7 +4310,7 @@ if active_page_is("Journal"):
                     }
                     for item in unmatched
                 ]),
-                width="stretch",
+                use_container_width=True,
                 hide_index=True,
             )
 
@@ -4685,14 +4458,14 @@ if active_page_is("Performance"):
                 if curve.empty:
                     st.caption("Exit dates are required to draw the equity curve.")
                 else:
-                    st.line_chart(curve.set_index("Date")[["Cumulative P/L"]], width="stretch")
+                    st.line_chart(curve.set_index("Date")[["Cumulative P/L"]], use_container_width=True)
             with chart_cols[1]:
                 st.markdown("### Monthly Net P/L")
                 monthly = monthly_performance(performance_frame)
                 if monthly.empty:
                     st.caption("Monthly results will appear when dated exits are available.")
                 else:
-                    st.bar_chart(monthly.set_index("Month")[["Net P/L"]], width="stretch")
+                    st.bar_chart(monthly.set_index("Month")[["Net P/L"]], use_container_width=True)
 
             perf_tabs = st.tabs([
                 "Monthly",
@@ -4709,42 +4482,42 @@ if active_page_is("Performance"):
                 if monthly.empty:
                     st.info("No dated monthly performance is available.")
                 else:
-                    st.dataframe(monthly, width="stretch", hide_index=True)
+                    st.dataframe(monthly, use_container_width=True, hide_index=True)
 
             with perf_tabs[1]:
                 strategy_cols = st.columns(3)
                 with strategy_cols[0]:
                     st.markdown("#### By Setup")
                     setup_table = group_performance(performance_frame, "setup", "Setup")
-                    st.dataframe(setup_table, width="stretch", hide_index=True) if not setup_table.empty else st.caption("No setup labels yet.")
+                    st.dataframe(setup_table, use_container_width=True, hide_index=True) if not setup_table.empty else st.caption("No setup labels yet.")
                 with strategy_cols[1]:
                     st.markdown("#### By Grade")
                     grade_table = group_performance(performance_frame, "grade", "Grade")
-                    st.dataframe(grade_table, width="stretch", hide_index=True) if not grade_table.empty else st.caption("No grades yet.")
+                    st.dataframe(grade_table, use_container_width=True, hide_index=True) if not grade_table.empty else st.caption("No grades yet.")
                 with strategy_cols[2]:
                     st.markdown("#### By Hold Time")
                     hold_table = group_performance(performance_frame, "hold_bucket", "Hold Time")
-                    st.dataframe(hold_table, width="stretch", hide_index=True)
+                    st.dataframe(hold_table, use_container_width=True, hide_index=True)
 
                 secondary_strategy = st.columns(2)
                 with secondary_strategy[0]:
                     st.markdown("#### By Price Range")
-                    st.dataframe(group_performance(performance_frame, "price_range", "Price Range"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "price_range", "Price Range"), use_container_width=True, hide_index=True)
                 with secondary_strategy[1]:
                     st.markdown("#### By Trade Source")
-                    st.dataframe(group_performance(performance_frame, "source", "Source"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "source", "Source"), use_container_width=True, hide_index=True)
 
             with perf_tabs[2]:
                 score_cols = st.columns(3)
                 with score_cols[0]:
                     st.markdown("#### Momo Score")
-                    st.dataframe(group_performance(performance_frame, "momo_score_band", "Momo Score"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "momo_score_band", "Momo Score"), use_container_width=True, hide_index=True)
                 with score_cols[1]:
                     st.markdown("#### Opportunity Score")
-                    st.dataframe(group_performance(performance_frame, "opportunity_band", "Opportunity Score"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "opportunity_band", "Opportunity Score"), use_container_width=True, hide_index=True)
                 with score_cols[2]:
                     st.markdown("#### Independent AI Confidence")
-                    st.dataframe(group_performance(performance_frame, "ai_confidence_band", "AI Confidence"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "ai_confidence_band", "AI Confidence"), use_container_width=True, hide_index=True)
 
                 ai_accuracy = decision_accuracy(
                     performance_frame,
@@ -4764,10 +4537,10 @@ if active_page_is("Performance"):
                 condition_cols = st.columns(2)
                 with condition_cols[0]:
                     st.markdown("#### Market Regime")
-                    st.dataframe(group_performance(performance_frame, "market_regime", "Market Regime"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "market_regime", "Market Regime"), use_container_width=True, hide_index=True)
                 with condition_cols[1]:
                     st.markdown("#### Sector")
-                    st.dataframe(group_performance(performance_frame, "sector", "Sector"), width="stretch", hide_index=True)
+                    st.dataframe(group_performance(performance_frame, "sector", "Sector"), use_container_width=True, hide_index=True)
 
             with perf_tabs[4]:
                 discipline_cols = st.columns(6)
@@ -4780,7 +4553,7 @@ if active_page_is("Performance"):
 
                 planned_table = group_performance(performance_frame, "planned_exit_followed", "Planned Exit Followed")
                 st.markdown("#### Planned vs. Actual Exit")
-                st.dataframe(planned_table, width="stretch", hide_index=True)
+                st.dataframe(planned_table, use_container_width=True, hide_index=True)
 
                 mistake_rows = performance_frame[performance_frame["mistakes"].astype(str).str.strip() != ""]
                 if not mistake_rows.empty:
@@ -4790,7 +4563,7 @@ if active_page_is("Performance"):
                             "exit_date": "Exit Date", "symbol": "Symbol", "net_pnl": "Net P/L",
                             "mistakes": "Mistakes", "lessons": "Lessons",
                         }),
-                        width="stretch",
+                        use_container_width=True,
                         hide_index=True,
                     )
                 else:
@@ -4807,7 +4580,7 @@ if active_page_is("Performance"):
                     "net_pnl": "Net P/L", "realized_r": "R", "outcome": "Outcome",
                     "days_held": "Days Held", "setup": "Setup", "grade": "Grade",
                 })
-                st.dataframe(history_display.sort_values("Exit Date", ascending=False), width="stretch", hide_index=True)
+                st.dataframe(history_display.sort_values("Exit Date", ascending=False), use_container_width=True, hide_index=True)
 
                 selected_history_id = st.selectbox(
                     "Review trade timeline",
@@ -4824,7 +4597,7 @@ if active_page_is("Performance"):
                 selected_trade = next((trade for trade in performance_trades if trade.id == selected_history_id), None)
                 if selected_trade:
                     timeline = trade_timeline(selected_trade)
-                    st.dataframe(timeline, width="stretch", hide_index=True)
+                    st.dataframe(timeline, use_container_width=True, hide_index=True)
                     review_cols = st.columns(2)
                     with review_cols[0]:
                         st.markdown("**Original thesis**")
@@ -4856,7 +4629,7 @@ if active_page_is("Performance"):
                 coverage_frame["Coverage %"] = (
                     coverage_frame["Coverage"] / coverage_frame["Total"].replace(0, pd.NA) * 100
                 ).round(2)
-                st.dataframe(coverage_frame, width="stretch", hide_index=True)
+                st.dataframe(coverage_frame, use_container_width=True, hide_index=True)
 
                 st.markdown("#### Measurement Availability")
                 st.write("• Scanner-to-trade conversion requires persistent historical scan snapshots, scheduled for the Learning/Data phases.")
@@ -4945,7 +4718,7 @@ if active_page_is("Learning"):
             else:
                 st.dataframe(
                     edges[["Dimension", "Group", "Trades", "Win Rate %", "Net P/L", "Expectancy", "Average R", "Average Hold Days", "Evidence"]],
-                    width="stretch",
+                    use_container_width=True,
                     hide_index=True,
                 )
             st.markdown("#### Coaching: What Is Working")
@@ -4961,7 +4734,7 @@ if active_page_is("Learning"):
                     if table.empty:
                         st.caption("Not enough labeled trades for this dimension.")
                     else:
-                        st.dataframe(table, width="stretch", hide_index=True)
+                        st.dataframe(table, use_container_width=True, hide_index=True)
 
         with learning_tabs[1]:
             st.markdown("#### Weak Areas")
@@ -4971,7 +4744,7 @@ if active_page_is("Learning"):
             else:
                 st.dataframe(
                     weaknesses[["Dimension", "Group", "Trades", "Win Rate %", "Net P/L", "Expectancy", "Average R", "Evidence"]],
-                    width="stretch",
+                    use_container_width=True,
                     hide_index=True,
                 )
 
@@ -4980,7 +4753,7 @@ if active_page_is("Learning"):
             if mistakes.empty:
                 st.caption("No structured mistakes have been recorded in post-trade reviews yet.")
             else:
-                st.dataframe(mistakes, width="stretch", hide_index=True)
+                st.dataframe(mistakes, use_container_width=True, hide_index=True)
 
             st.markdown("#### Behavioral Signals")
             signals = report["behavior"].get("signals", [])
@@ -4998,13 +4771,13 @@ if active_page_is("Learning"):
         with learning_tabs[2]:
             st.markdown("#### Independent AI Confidence Calibration")
             ai_calibration = report["ai_calibration"]
-            st.dataframe(ai_calibration, width="stretch", hide_index=True) if not ai_calibration.empty else st.caption("AI Confidence was not saved on enough completed trades.")
+            st.dataframe(ai_calibration, use_container_width=True, hide_index=True) if not ai_calibration.empty else st.caption("AI Confidence was not saved on enough completed trades.")
             st.markdown("#### Momo Score Calibration")
             momo_calibration = report["momo_calibration"]
-            st.dataframe(momo_calibration, width="stretch", hide_index=True) if not momo_calibration.empty else st.caption("Momo Score coverage is not sufficient.")
+            st.dataframe(momo_calibration, use_container_width=True, hide_index=True) if not momo_calibration.empty else st.caption("Momo Score coverage is not sufficient.")
             st.markdown("#### Opportunity Score Calibration")
             opportunity_calibration = report["opportunity_calibration"]
-            st.dataframe(opportunity_calibration, width="stretch", hide_index=True) if not opportunity_calibration.empty else st.caption("Opportunity Score coverage is not sufficient.")
+            st.dataframe(opportunity_calibration, use_container_width=True, hide_index=True) if not opportunity_calibration.empty else st.caption("Opportunity Score coverage is not sufficient.")
             st.caption(
                 "Calibration compares recorded score bands with actual outcomes. It does not change scanner or AI thresholds automatically. "
                 "Any strategy rule must be reviewed and approved below."
@@ -5037,7 +4810,7 @@ if active_page_is("Learning"):
             else:
                 st.caption("No repeated risk has enough evidence yet.")
 
-            if st.button("Save Current Learning Snapshot", width="stretch", key="save_learning_snapshot"):
+            if st.button("Save Current Learning Snapshot", use_container_width=True, key="save_learning_snapshot"):
                 top_edge = None if report["edges"].empty else report["edges"].iloc[0].to_dict()
                 top_weakness = None if report["weaknesses"].empty else report["weaknesses"].iloc[0].to_dict()
                 save_learning_snapshot({
@@ -5064,7 +4837,7 @@ if active_page_is("Learning"):
             if setup_table is None or setup_table.empty:
                 st.info("Historical Webull trades may not have setup labels. Future MomoPro-planned trades will build pattern probabilities automatically.")
             else:
-                st.dataframe(setup_table, width="stretch", hide_index=True)
+                st.dataframe(setup_table, use_container_width=True, hide_index=True)
             st.caption(
                 "Pattern probabilities come only from completed trades whose setup was recorded. The engine labels sample strength and never treats a small sample as a proven edge."
             )
@@ -5077,7 +4850,7 @@ if active_page_is("Learning"):
             with st.form("new_learning_rule_form"):
                 proposed_rule = st.text_input("Rule", placeholder="Example: Avoid entries more than 6% above EMA21")
                 proposed_rationale = st.text_area("Evidence / rationale")
-                if st.form_submit_button("Add Approved Rule", width="stretch"):
+                if st.form_submit_button("Add Approved Rule", use_container_width=True):
                     try:
                         add_approved_rule(proposed_rule, proposed_rationale)
                         st.success("Strategy rule saved.")
@@ -5118,7 +4891,7 @@ if active_page_is("Learning"):
                         "Top Edge": (snapshot.get("top_edge") or {}).get("Group"),
                         "Top Weakness": (snapshot.get("top_weakness") or {}).get("Group"),
                     })
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 # -----------------------------
@@ -5176,7 +4949,7 @@ if active_page_is("Settings"):
                 default=profile.get("preferred_sectors", []),
             )
             preferred_universes = st.multiselect("Preferred universes", UNIVERSE_OPTIONS, default=[x for x in profile.get("preferred_universes", []) if x in UNIVERSE_OPTIONS])
-            if st.form_submit_button("Save Profile", width="stretch"):
+            if st.form_submit_button("Save Profile", use_container_width=True):
                 update_section("profile", {
                     "display_name": display_name.strip() or "Dee", "trading_style": trading_style,
                     "typical_hold_days": typical_hold_days, "preferred_setups": preferred_setups,
@@ -5200,7 +4973,7 @@ if active_page_is("Settings"):
             stop_style = st.selectbox("Default stop style", stop_options, index=stop_options.index(risk.get("stop_style", "Structure / Support")) if risk.get("stop_style") in stop_options else 0)
             profit_options = ["Scale at T1 / T2 / T3", "Full exit at target", "Trail after T1", "Manual"]
             profit_style = st.selectbox("Partial-profit preference", profit_options, index=profit_options.index(risk.get("partial_profit_style", profit_options[0])) if risk.get("partial_profit_style") in profit_options else 0)
-            if st.form_submit_button("Save Risk Settings", width="stretch"):
+            if st.form_submit_button("Save Risk Settings", use_container_width=True):
                 update_section("risk", {
                     "account_size": account_size_setting, "risk_per_trade_pct": risk_per_trade,
                     "max_position_pct": max_position_pct, "max_open_positions": max_open_positions,
@@ -5228,7 +5001,7 @@ if active_page_is("Settings"):
             default_universe = st.selectbox("Default scanner universe", UNIVERSE_OPTIONS, index=UNIVERSE_OPTIONS.index(scan.get("default_universe", "Entire Market")) if scan.get("default_universe") in UNIVERSE_OPTIONS else 0)
             exclude_etfs = st.checkbox("Exclude ETFs/funds", value=bool(scan.get("exclude_etfs", True)))
             exclude_otc = st.checkbox("Exclude OTC securities", value=bool(scan.get("exclude_otc", True)))
-            if st.form_submit_button("Save Scanner Settings", width="stretch"):
+            if st.form_submit_button("Save Scanner Settings", use_container_width=True):
                 if price_max < price_min: st.error("Maximum price must be at least the minimum price.")
                 else:
                     update_section("scanner", {
@@ -5257,7 +5030,7 @@ if active_page_is("Settings"):
             macd_signal = c9.number_input("MACD signal", 1, 100, int(ind.get("macd_signal", 9)))
             primary_tf = st.selectbox("Primary timeframe", ["Daily", "4H", "1H", "15m"], index=["Daily", "4H", "1H", "15m"].index(ind.get("primary_timeframe", "Daily")))
             confirmation_tfs = st.multiselect("Confirmation timeframes", ["Weekly", "Daily", "4H", "1H", "15m", "5m"], default=ind.get("confirmation_timeframes", ["4H", "1H", "15m"]))
-            if st.form_submit_button("Save Indicator Settings", width="stretch"):
+            if st.form_submit_button("Save Indicator Settings", use_container_width=True):
                 update_section("indicators", {
                     "ema_fast": ema_fast, "ema_mid": ema_mid, "ema_slow": ema_slow,
                     "rsi_length": rsi_length, "atr_length": atr_length, "rvol_lookback": rvol_lookback,
@@ -5286,7 +5059,7 @@ if active_page_is("Settings"):
             buy_threshold = t1.number_input("Buy threshold", 0, 100, int(ai.get("buy_threshold", 85)))
             watch_threshold = t2.number_input("Watch threshold", 0, 100, int(ai.get("watch_threshold", 70)))
             wait_threshold = t3.number_input("Wait threshold", 0, 100, int(ai.get("wait_threshold", 50)))
-            if st.form_submit_button("Save AI Behavior", width="stretch"):
+            if st.form_submit_button("Save AI Behavior", use_container_width=True):
                 if not (buy_threshold >= watch_threshold >= wait_threshold): st.error("Thresholds must descend: Buy ≥ Watch ≥ Wait.")
                 elif tech_w + market_w + news_w + smart_w + hist_w != 100: st.error("AI evidence weights must total exactly 100%.")
                 else:
@@ -5313,7 +5086,7 @@ if active_page_is("Settings"):
             }
             cols = st.columns(2)
             for idx, (key, label) in enumerate(labels.items()): dashboard_toggles[key] = cols[idx % 2].checkbox(label, value=bool(dash.get(key, True)), key=f"dash_setting_{key}")
-            if st.form_submit_button("Save Dashboard Settings", width="stretch"):
+            if st.form_submit_button("Save Dashboard Settings", use_container_width=True):
                 update_section("dashboard", {"default_universe": default_dash_universe, "candidate_count": candidate_count, "morning_brief_enabled": morning_brief, **dashboard_toggles})
                 st.session_state.dashboard_universe = default_dash_universe
                 st.session_state.momopro_settings = get_settings(); st.success("Dashboard preferences saved."); st.rerun()
@@ -5336,7 +5109,7 @@ if active_page_is("Settings"):
             show_equity = st.checkbox("Show equity curve", value=bool(perf.get("show_equity_curve", True)))
             show_ai_acc = st.checkbox("Show AI accuracy", value=bool(perf.get("show_ai_accuracy", True)))
             show_discipline = st.checkbox("Show discipline metrics", value=bool(perf.get("show_discipline_metrics", True)))
-            if st.form_submit_button("Save Journal & Performance Settings", width="stretch"):
+            if st.form_submit_button("Save Journal & Performance Settings", use_container_width=True):
                 update_section("journal", {"default_direction": default_direction, "default_broker": default_broker, "require_entry_thesis": require_thesis, "require_exit_review": require_review, "save_chart_screenshots": save_screens})
                 update_section("performance", {"default_source_filter": perf_source, "default_period": perf_period, "pnl_display": pnl_display, "show_fees": show_fees, "show_equity_curve": show_equity, "show_ai_accuracy": show_ai_acc, "show_discipline_metrics": show_discipline})
                 st.session_state.momopro_settings = get_settings(); st.success("Journal and Performance preferences saved."); st.rerun()
@@ -5352,7 +5125,7 @@ if active_page_is("Settings"):
             q1, q2 = st.columns(2)
             quiet_start = q1.text_input("Quiet hours start (24h)", value=str(alert_settings.get("quiet_hours_start", "21:00")))
             quiet_end = q2.text_input("Quiet hours end (24h)", value=str(alert_settings.get("quiet_hours_end", "06:00")))
-            if st.form_submit_button("Save Alert Settings", width="stretch"):
+            if st.form_submit_button("Save Alert Settings", use_container_width=True):
                 update_section("alerts", {"default_cooldown_hours": cooldown_setting, "minimum_priority": priority, "morning_brief_alert_summary": brief_alerts, "quiet_hours_enabled": quiet_enabled, "quiet_hours_start": quiet_start, "quiet_hours_end": quiet_end})
                 st.session_state.momopro_settings = get_settings(); st.success("Alert preferences saved."); st.rerun()
 
@@ -5365,7 +5138,7 @@ if active_page_is("Settings"):
             {"Integration": "Webull OpenAPI", "Status": str(webull_connection_status().get("status", "Not Connected")).replace("_", " ").title(), "Role": "Official read-only daily sync"},
             {"Integration": "TradingView", "Status": data.get("tradingview_status", "Planned for v0.95"), "Role": "Execution ecosystem"},
         ]
-        st.dataframe(pd.DataFrame(provider_rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(provider_rows), use_container_width=True, hide_index=True)
         with st.form("settings_data_form"):
             c1, c2, c3 = st.columns(3)
             market_cache = c1.number_input("Market cache (minutes)", 1, 1440, int(data.get("market_cache_minutes", 15)))
@@ -5373,7 +5146,7 @@ if active_page_is("Settings"):
             scanner_cache = c3.number_input("Scanner cache (minutes)", 1, 1440, int(data.get("scanner_cache_minutes", 30)))
             auto_refresh = st.checkbox("Auto-refresh Dashboard when supported", value=bool(data.get("auto_refresh_dashboard", False)))
             webull_csv = st.checkbox("Enable Webull CSV import", value=bool(data.get("webull_csv_enabled", True)))
-            if st.form_submit_button("Save Data Preferences", width="stretch"):
+            if st.form_submit_button("Save Data Preferences", use_container_width=True):
                 update_section("data", {"market_cache_minutes": market_cache, "news_cache_minutes": news_cache, "scanner_cache_minutes": scanner_cache, "auto_refresh_dashboard": auto_refresh, "webull_csv_enabled": webull_csv})
                 st.session_state.momopro_settings = get_settings(); st.success("Data preferences saved."); st.rerun()
 
@@ -5381,16 +5154,16 @@ if active_page_is("Settings"):
         st.markdown("#### Current settings JSON")
         st.json(settings, expanded=False)
         export_payload = __import__("json").dumps(settings, indent=2)
-        st.download_button("Download Settings Backup", export_payload, "momopro_settings.json", "application/json", width="stretch")
+        st.download_button("Download Settings Backup", export_payload, "momopro_settings.json", "application/json", use_container_width=True)
         uploaded_settings = st.file_uploader("Restore settings backup", type=["json"], key="settings_restore_upload")
-        if uploaded_settings is not None and st.button("Restore Uploaded Settings", width="stretch"):
+        if uploaded_settings is not None and st.button("Restore Uploaded Settings", use_container_width=True):
             try:
                 restored = __import__("json").loads(uploaded_settings.getvalue().decode("utf-8"))
                 save_settings(restored); st.session_state.momopro_settings = get_settings(); st.success("Settings restored."); st.rerun()
             except Exception as error:
                 st.error(f"Could not restore settings: {error}")
         st.warning("Resetting restores MomoPro defaults. It does not delete trades, watchlists, alerts, AI reports, or broker history.")
-        if st.button("Reset All Settings to Defaults", type="secondary", width="stretch"):
+        if st.button("Reset All Settings to Defaults", type="secondary", use_container_width=True):
             reset_settings(); st.session_state.momopro_settings = get_settings(); st.session_state.dashboard_universe = get_setting("dashboard.default_universe", "Entire Market", st.session_state.momopro_settings); st.success("Settings reset."); st.rerun()
 
 
@@ -5427,7 +5200,7 @@ if active_page_is("Live Chart"):
     with controls[2]:
         chart_candles = st.selectbox("Candles", [100, 200, 300, 500], key="live_chart_candles", on_change=_persist_live_chart_controls)
     with controls[3]:
-        refresh_chart = st.button("Refresh Chart", width="stretch", key="refresh_live_chart")
+        refresh_chart = st.button("Refresh Chart", use_container_width=True, key="refresh_live_chart")
 
     with st.expander("Chart display controls", expanded=False):
         overlay_choices = st.multiselect(
@@ -5497,7 +5270,7 @@ if active_page_is("Live Chart"):
         snapshot_cols[5].metric("RVOL", "—" if latest.get("rvol") is None else f"{latest['rvol']:.2f}x")
         st.plotly_chart(
             build_live_chart(frame, chart_symbol, chart_timeframe, plan, chart_display_options),
-            width="stretch",
+            use_container_width=True,
             config={
                 "displaylogo": False,
                 "scrollZoom": True,
@@ -5515,18 +5288,18 @@ if active_page_is("Live Chart"):
         tv_payload = build_tradingview_payload(analysis, chart_timeframe)
         bridge_cols = st.columns([1, 1, 1])
         with bridge_cols[0]:
-            st.link_button("Open in TradingView", tradingview_chart_url(chart_symbol, chart_timeframe), width="stretch")
+            st.link_button("Open in TradingView", tradingview_chart_url(chart_symbol, chart_timeframe), use_container_width=True)
         with bridge_cols[1]:
             st.download_button(
                 "Download Official Plan JSON", payload_json(tv_payload),
                 file_name=f"momopro_{chart_symbol}_{tv_payload['trade_id']}.json",
-                mime="application/json", width="stretch",
+                mime="application/json", use_container_width=True,
             )
         with bridge_cols[2]:
             st.download_button(
                 "Download Pine Input Block", pine_input_block(tv_payload),
                 file_name=f"momopro_{chart_symbol}_pine_inputs.txt",
-                mime="text/plain", width="stretch",
+                mime="text/plain", use_container_width=True,
             )
 
         export_tabs = st.tabs(["Official Plan", "Official Plan Mode", "JSON Payload"])
@@ -5547,7 +5320,7 @@ if active_page_is("Live Chart"):
                 {"Field": "Grade", "Value": tv_payload.get("grade")},
                 {"Field": "AI Confidence", "Value": tv_payload.get("ai_confidence")},
             ])
-            st.dataframe(official, hide_index=True, width="stretch")
+            st.dataframe(official, hide_index=True, use_container_width=True)
             if analysis.thesis:
                 st.markdown("**Trade thesis**")
                 st.write(analysis.thesis)
