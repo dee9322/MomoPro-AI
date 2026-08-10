@@ -1,3 +1,9 @@
+## Scanner v2 final-bootstrap completion fix
+- Fixed a bootstrap edge case where the builder requested exactly the number of missing weekdays, allowing market holidays/empty sessions to permanently strand progress below 220.
+- The builder now walks farther backward through candidate dates and stops only after the required number of successful, durably saved trading sessions has been reached.
+- Existing durable progress is preserved; a scanner at 212/220 resumes from 212 rather than rebuilding history.
+- The same holiday-safe candidate logic is applied to the fallback Massive history updater.
+
 
 ## Scanner v2 durable-bootstrap repair
 - Removed the repeating automatic-loading fragment timer that was producing invalid-fragment rerun storms in Streamlit.

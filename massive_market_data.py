@@ -275,12 +275,12 @@ def history_status(frame: pd.DataFrame | None = None) -> dict[str, Any]:
 
 
 def _candidate_dates(existing: set[date], target_sessions: int) -> list[date]:
+    """Build a lookback pool large enough to survive holidays/empty days."""
     dates: list[date] = []
-    cursor = datetime.now(timezone.utc).date()
-    # Free plan is end-of-day. Start with yesterday so an incomplete current day
-    # never contaminates daily indicators.
-    cursor -= timedelta(days=1)
-    while len(existing) + len(dates) < target_sessions and len(dates) < target_sessions * 2:
+    cursor = datetime.now(timezone.utc).date() - timedelta(days=1)
+    missing = max(0, int(target_sessions) - len(existing))
+    max_candidates = max(40, missing * 6)
+    while len(dates) < max_candidates:
         if cursor.weekday() < 5 and cursor not in existing:
             dates.append(cursor)
         cursor -= timedelta(days=1)
@@ -312,6 +312,8 @@ def build_or_update_history(
     last_call = 0.0
 
     for idx, session_date in enumerate(dates, start=1):
+        if len(existing) >= int(target_sessions):
+            break
         elapsed = time.monotonic() - last_call
         if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
             time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)

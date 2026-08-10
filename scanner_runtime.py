@@ -291,9 +291,21 @@ def _completed_dates(manifest: dict[str, Any]) -> set[date]:
 
 
 def _candidate_dates(existing: set[date], target: int) -> list[date]:
+    """Return a generous pool of older weekday candidates.
+
+    A candidate date is not the same thing as a valid trading session: U.S.
+    market holidays and occasional empty/provider-error days must not consume
+    the remaining quota.  Generate enough lookback headroom for the bootstrap
+    worker to keep walking backward until it has *target* successful sessions.
+    """
     cursor = datetime.now(timezone.utc).date() - timedelta(days=1)
     dates: list[date] = []
-    while len(existing) + len(dates) < target and len(dates) < target * 2:
+    missing = max(0, int(target) - len(existing))
+    # Roughly 252 trading sessions exist in a calendar year.  Eight missing
+    # sessions can easily intersect several holidays, so give the worker ample
+    # headroom without allowing an unbounded loop.
+    max_candidates = max(40, missing * 6)
+    while len(dates) < max_candidates:
         if cursor.weekday() < 5 and cursor not in existing:
             dates.append(cursor)
         cursor -= timedelta(days=1)
@@ -461,7 +473,7 @@ def _bootstrap_worker(ctx: dict[str, str]) -> dict[str, Any]:
             "target": TARGET_SESSIONS,
         })
         _save_manifest_explicit(ctx, manifest, cloud=True)
-        _update_job(key, stage="History paused", progress=len(completed), total=MINIMUM_READY_SESSIONS, ready=False, done=True)
+        _update_job(key, stage="History paused — retry will continue from saved sessions", progress=len(completed), total=MINIMUM_READY_SESSIONS, ready=False, done=True)
         return manifest
 
     _update_job(key, stage="Compacting durable market history", progress=len(completed), total=MINIMUM_READY_SESSIONS)
