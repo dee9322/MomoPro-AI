@@ -597,13 +597,15 @@ def _scan_worker(
 
     _update_job(key, stage="Building strategy-aware current-session pool", progress=0.15)
     from scanner_v2 import rank_universe
-    broad_symbols, _broad_rank, _diag = rank_universe(history, 1500)
+    broad_symbols, broad_rank, broad_diag = rank_universe(history, 1500)
     _update_job(key, stage=f"Refreshing current prices for {len(broad_symbols)} strategy-relevant stocks", progress=0.25)
     live_snapshots = _fetch_alpaca_live_snapshots(ctx, broad_symbols)
     results = run_scan_v2(
         history=history,
         live_snapshots=live_snapshots,
         candidate_pool=broad_symbols,
+        ranking_override=broad_rank,
+        diagnostics_override=broad_diag,
         progress_callback=lambda stage, pct: _update_job(key, stage=stage, progress=pct),
     )
     _, scan_path, _ = _paths(ctx["user_id"])
@@ -663,8 +665,17 @@ def latest_scan_timestamp(user_id: str | None = None) -> float | None:
 
 
 def latest_scan_is_fresh(user_id: str | None = None, *, ttl_minutes: int = 30) -> bool:
-    stamp = latest_scan_timestamp(user_id)
-    return bool(stamp and time.time() - stamp < max(1, int(ttl_minutes)) * 60)
+    """A scan is fresh only when a recent, readable, non-empty result exists.
+
+    A freshly downloaded/rewritten empty parquet must never suppress the first
+    real Scanner v2 run.  This was the cause of the 220/220 + no-results state.
+    """
+    uid = str(user_id or current_user_id() or "anonymous")
+    stamp = latest_scan_timestamp(uid)
+    if not stamp or time.time() - stamp >= max(1, int(ttl_minutes)) * 60:
+        return False
+    results = load_latest_scan_results(uid)
+    return bool(results is not None and not results.empty and "Symbol" in results.columns)
 
 
 def scanner_status_text() -> str:

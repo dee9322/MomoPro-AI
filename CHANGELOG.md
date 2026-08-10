@@ -1,3 +1,11 @@
+## Scanner v2 first-scan activation + ranking performance fix
+- Fixed the 220/220 Ready state incorrectly reporting “Current scanner candidates are fresh” when the saved scan parquet was empty.
+- Freshness now requires a recent, readable, non-empty candidate result containing symbols.
+- Scanner automatically starts the first real candidate scan after the 220-session foundation is ready.
+- Removed a duplicate whole-market ranking pass: the initial strategy ranking is now reused by the full Scanner v2 analysis.
+- Scanner-page background errors are now shown explicitly instead of leaving the page apparently loading forever.
+- Existing 220-session history is preserved; no bootstrap rebuild is required.
+
 ## Scanner v2 final-bootstrap completion fix
 - Fixed a bootstrap edge case where the builder requested exactly the number of missing weekdays, allowing market holidays/empty sessions to permanently strand progress below 220.
 - The builder now walks farther backward through candidate dates and stops only after the required number of successful, durably saved trading sessions has been reached.

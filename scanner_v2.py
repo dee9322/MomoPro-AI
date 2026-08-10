@@ -199,6 +199,8 @@ def run_scan_v2(
     progress_callback=None,
     live_snapshots: dict[str, dict[str, Any]] | None = None,
     candidate_pool: list[str] | None = None,
+    ranking_override: pd.DataFrame | None = None,
+    diagnostics_override: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     if history is None:
         status = history_status()
@@ -207,9 +209,18 @@ def run_scan_v2(
                 f"Scanner v2 market database is not ready ({status['sessions']}/{MINIMUM_READY_SESSIONS} required sessions)."
             )
         history = load_history()
-    if progress_callback:
-        progress_callback("Ranking the eligible market", 0.30)
-    _symbols, ranking, diagnostics = rank_universe(history, max(SCAN_LIMIT, len(candidate_pool or [])))
+    if ranking_override is not None and not ranking_override.empty:
+        ranking = ranking_override.copy()
+        diagnostics = dict(diagnostics_override or {})
+        diagnostics.setdefault("universe_count", int(history["symbol"].nunique()))
+        diagnostics.setdefault("usable_history_count", int(history.groupby("symbol").size().ge(MINIMUM_DAILY_BARS).sum()))
+        diagnostics.setdefault("eligible_count", int(len(ranking)))
+        if progress_callback:
+            progress_callback("Using cached whole-market strategy ranking", 0.30)
+    else:
+        if progress_callback:
+            progress_callback("Ranking the eligible market", 0.30)
+        _symbols, ranking, diagnostics = rank_universe(history, max(SCAN_LIMIT, len(candidate_pool or [])))
     current_ranking = _live_adjusted_ranking(ranking, live_snapshots, candidate_pool, SCAN_LIMIT)
     symbols = current_ranking["Symbol"].astype(str).tolist()
     diagnostics["selected_count"] = len(symbols)

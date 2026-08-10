@@ -943,6 +943,9 @@ if active_page_is("Scanner"):
         if isinstance(progress_value, (int, float)):
             st.progress(max(0.0, min(1.0, float(progress_value))))
         st.caption(str(scan_state.get("stage") or "Refreshing current candidates in background"))
+    elif scan_state.get("error"):
+        st.error(f"Scanner v2 refresh failed: {scan_state.get('error')}")
+        st.caption("Your 220-session market-history foundation is preserved. Use Run New Market Scan only after the error above is addressed or to retry the candidate scan.")
 
     df = st.session_state.scan_results
     if df is None or (hasattr(df, "empty") and df.empty):
