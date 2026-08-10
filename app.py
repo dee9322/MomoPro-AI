@@ -17,6 +17,14 @@ from alpaca_test import (
     test_alpaca_connection,
 )
 from scanner import run_scan
+from massive_market_data import render_scanner_v2_setup
+from scanner_runtime import (
+    ensure_scan_started,
+    job_state as scanner_job_state,
+    load_latest_scan_results,
+    local_manifest as scanner_local_manifest,
+    scanner_status_text,
+)
 from confidence import calculate_integrated_confidence
 from market_context import get_market_context
 from relative_strength import get_relative_strength
@@ -491,12 +499,6 @@ def _autoload_active_page():
             ttl_minutes=market_ttl, loading_label="Loading current market context",
         )
 
-    if page in {"Dashboard", "Scanner", "AI Analysis", "Watchlist"}:
-        load_resource(
-            "market_scan", "scan_results", run_scan,
-            ttl_minutes=scanner_ttl, loading_label="Loading market scan",
-        )
-
     if page in {"Dashboard", "News"}:
         load_resource(
             "market_news", "dashboard_headlines", _load_ranked_market_news_for_page,
@@ -515,11 +517,9 @@ if active_page_is("Dashboard"):
     st.caption("Market health, leadership, opportunities, alerts, open trades, and today’s plan in one place.")
     render_freshness("market_context", ttl_minutes=_data_cache_minutes("market", 15), label="Market")
     render_freshness("market_news", ttl_minutes=_data_cache_minutes("news", 15), label="News")
-    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
-    if not st.session_state.get("market_context") or not st.session_state.get("dashboard_headlines") or st.session_state.get("scan_results") is None:
+    if not st.session_state.get("market_context") or not st.session_state.get("dashboard_headlines"):
         render_loading_skeleton("market_context", rows=2, label="Preparing Dashboard market data")
         render_loading_skeleton("market_news", rows=2, label="Preparing Dashboard news")
-        render_loading_skeleton("market_scan", rows=2, label="Preparing Dashboard opportunities")
 
     control_left, control_mid, control_right = st.columns([2, 1, 1])
     with control_left:
@@ -999,11 +999,22 @@ if active_page_is("Market Context"):
 # -----------------------------
 if active_page_is("Scanner"):
     st.header("Scanner")
-    render_freshness("market_scan", ttl_minutes=_data_cache_minutes("scanner", 30), label="Scanner")
-
+    st.caption(f"Scanner: {scanner_status_text()}")
     st.caption(
-        "Saved results open immediately. Run a new scan whenever you want fresh candidates."
+        "Latest saved candidates appear immediately. If the scan is stale, Scanner v2 refreshes automatically; "
+        "Run New Market Scan is only a force-refresh control."
     )
+
+    render_scanner_v2_setup()
+
+    # Restore the latest completed Scanner v2 candidates immediately.
+    if st.session_state.get("scan_results") is None or getattr(st.session_state.get("scan_results"), "empty", True):
+        restored_scan = load_latest_scan_results()
+        if restored_scan is not None and not restored_scan.empty:
+            st.session_state.scan_results = restored_scan
+
+    # Start/continue the isolated Scanner v2 worker. This call itself is non-blocking.
+    scan_state = ensure_scan_started(force=False)
 
     if st.button(
         "Run New Market Scan",
@@ -1011,20 +1022,47 @@ if active_page_is("Scanner"):
         type="primary",
         use_container_width=True,
     ):
-        with st.spinner(
-            "Scanning market..."
-        ):
-            st.session_state.scan_results = force_refresh_resource(
-                "market_scan", "scan_results", run_scan,
-                ttl_minutes=_data_cache_minutes("scanner", 30), loading_label="Refreshing market scan",
-            )
-
+        ensure_scan_started(force=True)
         st.session_state.selected_symbol = None
-        st.info("New scan started. You can keep using the app while it runs.")
+        st.info("Fresh Scanner v2 refresh started in the background.")
+
+    # Poll only the scanner status fragment. A completed scan triggers one app
+    # rerun, guarded by finished_at, so the result table updates without a loop.
+    @st.fragment(run_every=2.0)
+    def _scanner_v2_poller():
+        state = scanner_job_state("scan")
+        if state.get("running"):
+            stage = str(state.get("stage") or "Refreshing current candidates")
+            progress = state.get("progress")
+            if isinstance(progress, (int, float)):
+                st.progress(max(0.0, min(1.0, float(progress))))
+            st.caption(stage)
+            return
+
+        if state.get("error"):
+            st.error(f"Scanner v2 refresh failed: {state.get('error')}")
+            return
+
+        finished_at = str(state.get("finished_at") or "")
+        if state.get("done") and finished_at:
+            ack_key = "_scanner_v2_finished_ack"
+            if st.session_state.get(ack_key) != finished_at:
+                latest = load_latest_scan_results()
+                if latest is not None and not latest.empty:
+                    st.session_state.scan_results = latest
+                st.session_state[ack_key] = finished_at
+                st.rerun(scope="app")
+
+    _scanner_v2_poller()
 
     df = st.session_state.scan_results
-    if df is None:
-        render_loading_skeleton("market_scan", rows=5, label="Restoring or running the market scan")
+    if df is None or df.empty:
+        if scan_state.get("waiting_for_history"):
+            st.info("Scanner v2 is finishing its market-history foundation in the background.")
+        elif scan_state.get("running"):
+            st.info(str(scan_state.get("stage") or "Running Scanner v2 market scan…"))
+        else:
+            st.info("Scanner v2 is preparing the first candidate list.")
 
     if df is not None and not df.empty:
         st.success(

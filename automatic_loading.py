@@ -75,11 +75,23 @@ def _bucket(resource: str) -> str:
 
 
 def initialize_automatic_loading() -> dict[str, Any]:
-    """Initialize in-memory state only. Never perform network I/O here."""
+    """Initialize in-memory state only. Never perform network I/O here.
+
+    Scanner v2 is owned exclusively by scanner_runtime.py.  Old browser/session
+    state can retain a legacy ``market_scan`` job after a redeploy, so purge it
+    defensively to prevent the load -> rerun -> load loop.
+    """
     st.session_state.setdefault(STATE_KEY, {})
     st.session_state.setdefault(STATUS_KEY, {})
     st.session_state.setdefault(QUEUE_KEY, [])
     st.session_state.setdefault(JOBS_KEY, {})
+
+    queue = list(st.session_state.get(QUEUE_KEY) or [])
+    if "market_scan" in queue:
+        st.session_state[QUEUE_KEY] = [item for item in queue if item != "market_scan"]
+    st.session_state[JOBS_KEY].pop("market_scan", None)
+    st.session_state[STATUS_KEY].pop("market_scan", None)
+
     return st.session_state[STATE_KEY]
 
 
@@ -127,6 +139,9 @@ def _queue_job(
     force: bool,
 ) -> None:
     initialize_automatic_loading()
+    if str(resource) == "market_scan":
+        # Scanner v2 must never run in the generic fragment worker.
+        return
     jobs = st.session_state[JOBS_KEY]
     queued = st.session_state[QUEUE_KEY]
     jobs[resource] = {
@@ -198,6 +213,11 @@ def render_automatic_loading_worker() -> None:
         return
 
     resource = queue[0]
+    if str(resource) == "market_scan":
+        queue.pop(0)
+        st.session_state.get(JOBS_KEY, {}).pop("market_scan", None)
+        st.session_state.get(STATUS_KEY, {}).pop("market_scan", None)
+        return
     job = (st.session_state.get(JOBS_KEY) or {}).get(resource)
     if not isinstance(job, dict):
         queue.pop(0)

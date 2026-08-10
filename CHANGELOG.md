@@ -1,3 +1,11 @@
+## Scanner v2 ZIP 42 runtime-loop repair
+- Removed legacy `market_scan` from the generic automatic-loading fragment worker.
+- Purges stale market-scan jobs left in surviving Streamlit browser sessions.
+- Scanner page now uses the isolated scanner_runtime worker and restores completed Scanner v2 results immediately.
+- Added guarded Scanner-only polling so one completed scan causes one UI refresh instead of an endless rerun loop.
+- Dashboard no longer waits on Scanner v2.
+- Existing 220-session durable history is preserved.
+
 ## Scanner v2 first-scan activation + ranking performance fix
 - Fixed the 220/220 Ready state incorrectly reporting “Current scanner candidates are fresh” when the saved scan parquet was empty.
 - Freshness now requires a recent, readable, non-empty candidate result containing symbols.
