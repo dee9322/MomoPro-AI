@@ -1076,70 +1076,64 @@ if active_page_is("Scanner"):
             "Stock Report."
         )
 
-        hidden_columns = {
-            "Momo Confidence": None,
-            "Confidence Rating": None,
-            "Trend Confidence": None,
-            "Location Confidence": None,
-            "Momentum Confidence": None,
-            "Volume Confidence": None,
-            "Opportunity Confidence": None,
-            "Risk Confidence": None,
-            "Structure Confidence": None,
-
-            "Support 1": None,
-            "Support 2": None,
-            "Support 3": None,
-
-            "Resistance 1": None,
-            "Resistance 2": None,
-            "Resistance 3": None,
-
-            "Support 1 Quality": None,
-            "Support 2 Quality": None,
-            "Support 3 Quality": None,
-
-            "Resistance 1 Quality": None,
-            "Resistance 2 Quality": None,
-            "Resistance 3 Quality": None,
-
-            "Support 1 Touches": None,
-            "Support 2 Touches": None,
-            "Support 3 Touches": None,
-
-            "Resistance 1 Touches": None,
-            "Resistance 2 Touches": None,
-            "Resistance 3 Touches": None,
-
-            "Reference Entry": None,
-            "Risk Reference": None,
-            "Reward Reference": None,
-            "Risk Per Share": None,
-            "Reward Per Share": None,
-            "Risk Reward": None,
-            "Risk Reward Status": None,
-
-            "T1": None,
-            "T1 Upside %": None,
-            "T1 R": None,
-
-            "T2": None,
-            "T2 Upside %": None,
-            "T2 R": None,
-
-            "T3": None,
-            "T3 Upside %": None,
-            "T3 R": None,
+        # Scanner v2 carries internal diagnostics on each candidate row so the
+        # engine can be audited, but those fields should never clutter the
+        # trader-facing Scanner table. Show the diagnostics once, then render
+        # only the columns that are useful for making a trading decision.
+        diagnostic_fields = {
+            "Universe": "__Universe Count",
+            "Strategy eligible": "__Prescreen Eligible Count",
+            "Full analysis": "__Prescreened Count",
+            "Usable history": "__Usable History Count",
         }
+        diagnostic_parts = []
+        first_row = df.iloc[0]
+        for label, column in diagnostic_fields.items():
+            if column in df.columns:
+                value = first_row.get(column)
+                if pd.notna(value):
+                    try:
+                        value = f"{int(value):,}"
+                    except Exception:
+                        value = str(value)
+                    diagnostic_parts.append(f"{label}: {value}")
+        if diagnostic_parts:
+            st.caption(" • ".join(diagnostic_parts) + f" • Final candidates: {len(df):,}")
+
+        scanner_visible_columns = [
+            "Symbol",
+            "Grade",
+            "Momo Score",
+            "Dee Fit",
+            "Score",
+            "Setup",
+            "Close",
+            "ATR %",
+            "RVOL",
+            "Distance EMA21 %",
+            "Reasons",
+            "Company",
+            "Sector",
+            "Industry",
+            "Exchange",
+            "Country",
+            "Market Cap",
+            "Float",
+            "Shares Outstanding",
+        ]
+        scanner_visible_columns = [
+            column for column in scanner_visible_columns
+            if column in df.columns
+        ]
+        display_df = df.loc[:, scanner_visible_columns].copy()
 
         table_event = st.dataframe(
-            df,
+            display_df,
             width="stretch",
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
             key="scanner_table",
-            column_config=hidden_columns,
         )
 
         selected_rows = (
