@@ -26,6 +26,7 @@ from scanner_runtime import (
     scanner_status_text,
 )
 from confidence import calculate_integrated_confidence
+from symbol_context import analyze_symbol
 from market_context import get_market_context
 from relative_strength import get_relative_strength
 from news_intelligence import (
@@ -1162,504 +1163,576 @@ if active_page_is("Scanner"):
         )
 
         if selected_symbol:
-            selected_stock = df[
-                df["Symbol"]
-                == selected_symbol
-            ].iloc[0]
+            # A workspace can stay open even when a fresh Scanner v2 result no
+            # longer contains that symbol. Never assume the selected symbol is
+            # present in the current candidate DataFrame.
+            matching_stock = df[
+                df["Symbol"].astype(str).str.upper()
+                == str(selected_symbol).upper()
+            ]
 
-            st.divider()
-
-            (
-                header_left,
-                header_right,
-            ) = st.columns([4, 1])
-
-            with header_left:
-                st.header(
-                    f"{selected_symbol} "
-                    "Stock Report"
-                )
-
-                st.caption(
-                    "MomoPro AI structural "
-                    "swing-trade analysis."
-                )
-
-            with header_right:
-                if st.button(
-                    "Close Report",
-                    key=(
-                        "close_stock_report"
-                    ),
-                ):
-                    close_active_stock_tab()
-
-            metric_columns = st.columns(6)
-
-            metric_columns[0].metric(
-                "Grade",
-                selected_stock.get(
-                    "Grade",
-                    "—",
-                ),
-            )
-
-            metric_columns[1].metric(
-                "Momo Score",
-                selected_stock.get(
-                    "Momo Score",
-                    "—",
-                ),
-            )
-
-            metric_columns[2].metric(
-                "Dee Fit",
-                selected_stock.get(
-                    "Dee Fit",
-                    "—",
-                ),
-            )
-
-            metric_columns[3].metric(
-                "Technical Score",
-                selected_stock.get(
-                    "Score",
-                    "—",
-                ),
-            )
-
-            metric_columns[4].metric(
-                "Momo Confidence",
-                percent_text(
-                    selected_stock.get(
-                        "Momo Confidence"
-                    )
-                ),
-                selected_stock.get(
-                    "Confidence Rating",
-                    "—",
-                ),
-            )
-
-            metric_columns[5].metric(
-                "Close",
-                money_text(
-                    selected_stock.get(
-                        "Close"
-                    )
-                ),
-            )
-
-            st.subheader("Setup")
-
-            st.write(
-                selected_stock.get(
-                    "Setup",
-                    "Not classified",
-                )
-            )
-
-            st.subheader(
-                "Current Scanner Read"
-            )
-
-            st.write(
-                selected_stock.get(
-                    "Reasons",
-                    "No reasons available.",
-                )
-            )
-
-            detail_columns = st.columns(3)
-
-            detail_columns[0].metric(
-                "ATR %",
-                selected_stock.get(
-                    "ATR %",
-                    "—",
-                ),
-            )
-
-            detail_columns[1].metric(
-                "RVOL",
-                selected_stock.get(
-                    "RVOL",
-                    "—",
-                ),
-            )
-
-            detail_columns[2].metric(
-                "Distance From EMA21",
-                percent_text(
-                    selected_stock.get(
-                        "Distance EMA21 %"
-                    )
-                ),
-            )
-
-            # -------------------------
-            # Market Backdrop
-            # -------------------------
-            st.divider()
-            st.subheader("Market Backdrop")
-            report_market = st.session_state.market_context
-            if report_market:
-                report_breadth = report_market.get("breadth", {})
-                report_sentiment = report_market.get("sentiment", {})
-                report_sectors = report_market.get("sectors", {})
-                top_sector = (report_sectors.get("leaders") or [{}])[0]
-                mc = st.columns(6)
-                mc[0].metric("Market", report_market.get("market_trend", "—"))
-                mc[1].metric("Risk", report_market.get("risk_environment", "—"))
-                mc[2].metric("Market Score", report_market.get("market_score", "—"))
-                mc[3].metric("Breadth", report_breadth.get("breadth_status", "—"))
-                mc[4].metric("Sentiment", report_sentiment.get("fear_greed_label", "—"))
-                mc[5].metric(
-                    "Leading Sector",
-                    top_sector.get("sector", "—"),
-                    (
-                        f'{top_sector.get("score")}/100'
-                        if top_sector.get("score") is not None
-                        else None
-                    ),
-                )
-                st.caption(report_market.get("summary", ""))
-                st.info(
-                    "Open the Market Context tab for the full index, breadth, "
-                    "sentiment, and sector-rotation breakdown."
-                )
+            if not matching_stock.empty:
+                selected_stock = matching_stock.iloc[0]
             else:
-                st.caption("Market Context has not been loaded for this session.")
+                # Preserve the universal-stock-workspace behavior: directly
+                # analyze the selected ticker instead of crashing with
+                # ``single positional indexer is out-of-bounds``.
+                st.session_state.setdefault("_direct_stock_rows", {})
+                direct_cache = st.session_state["_direct_stock_rows"]
+                cached_row = direct_cache.get(str(selected_symbol).upper())
 
-            # -------------------------
-            # Relative Strength
-            # -------------------------
-            st.divider()
-            st.subheader("Relative Strength")
-            st.caption(
-                "Compares this stock with SPY, QQQ, and an approximate "
-                "sector ETF derived from the company’s SEC SIC classification."
-            )
+                if cached_row:
+                    selected_stock = pd.Series(cached_row)
+                else:
+                    try:
+                        with st.spinner(
+                            f"Loading {selected_symbol} Stock Report..."
+                        ):
+                            direct_row = analyze_symbol(
+                                st.secrets["ALPACA_API_KEY"],
+                                st.secrets["ALPACA_SECRET_KEY"],
+                                selected_symbol,
+                            )
+                        direct_cache[str(selected_symbol).upper()] = direct_row
+                        selected_stock = pd.Series(direct_row)
+                    except Exception as exc:
+                        st.error(
+                            f"{selected_symbol} is not in the current Scanner "
+                            "candidate list and its direct Stock Report could "
+                            f"not be loaded: {exc}"
+                        )
+                        selected_stock = None
 
-            rs_refresh = st.button(
-                "Refresh Relative Strength",
-                key=f"relative_strength_{selected_symbol}",
-            )
+            if selected_stock is not None:
+                st.divider()
 
-            rs_resource = f"stock_report:{selected_symbol}:relative_strength"
-            if rs_refresh:
-                load_relative_strength.clear()
-                relative_strength = force_refresh_resource(
-                    rs_resource,
-                    f"stock_report_rs_{selected_symbol}",
-                    lambda: load_relative_strength(selected_symbol),
-                    ttl_minutes=60,
-                    loading_label=f"Refreshing relative strength for {selected_symbol}",
-                )
-            else:
-                relative_strength = load_resource(
-                    rs_resource,
-                    f"stock_report_rs_{selected_symbol}",
-                    lambda: load_relative_strength(selected_symbol),
-                    ttl_minutes=60,
-                    loading_label=f"Comparing {selected_symbol} with market benchmarks",
-                )
-            if relative_strength is None:
-                render_loading_skeleton(rs_resource, rows=3, label=f"Comparing {selected_symbol} with market benchmarks")
-                relative_strength = {"status": "Loading", "summary": "Relative strength is loading automatically."}
+                (
+                    header_left,
+                    header_right,
+                ) = st.columns([4, 1])
 
-            if relative_strength.get("status") == "Available":
-                rs_top = st.columns(4)
-                rs_top[0].metric(
-                    "RS Score",
-                    relative_strength.get("score", "—"),
-                )
-                rs_top[1].metric(
-                    "Verdict",
-                    relative_strength.get("verdict", "—"),
-                )
-                rs_top[2].metric(
-                    "RS Trend",
-                    relative_strength.get("trend", "—"),
-                )
-                rs_top[3].metric(
-                    "Sector",
-                    relative_strength.get("sector_name", "—"),
-                    relative_strength.get("sector_etf"),
-                )
+                with header_left:
+                    st.header(
+                        f"{selected_symbol} "
+                        "Stock Report"
+                    )
 
-                st.write(relative_strength.get("summary", ""))
-
-                rs_table = pd.DataFrame(
-                    [
-                        {
-                            "Period": "5 Days",
-                            "Stock Return %": relative_strength.get("stock_return_5d"),
-                            "vs SPY %": relative_strength.get("vs_spy_5d"),
-                            "vs QQQ %": relative_strength.get("vs_qqq_5d"),
-                            "vs Sector %": relative_strength.get("vs_sector_5d"),
-                        },
-                        {
-                            "Period": "20 Days",
-                            "Stock Return %": relative_strength.get("stock_return_20d"),
-                            "vs SPY %": relative_strength.get("vs_spy_20d"),
-                            "vs QQQ %": relative_strength.get("vs_qqq_20d"),
-                            "vs Sector %": relative_strength.get("vs_sector_20d"),
-                        },
-                        {
-                            "Period": "60 Days",
-                            "Stock Return %": relative_strength.get("stock_return_60d"),
-                            "vs SPY %": relative_strength.get("vs_spy_60d"),
-                            "vs QQQ %": relative_strength.get("vs_qqq_60d"),
-                            "vs Sector %": relative_strength.get("vs_sector_60d"),
-                        },
-                    ]
-                )
-                st.dataframe(
-                    rs_table,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                sic_description = relative_strength.get("sic_description")
-                if sic_description:
                     st.caption(
-                        f"Sector mapping source: SEC SIC "
-                        f"{relative_strength.get('sic')} — {sic_description}. "
-                        "Sector ETF classification is approximate and is used "
-                        "as a comparison benchmark, not as a company profile."
+                        "MomoPro AI structural "
+                        "swing-trade analysis."
                     )
-            else:
-                st.warning(relative_strength.get("summary", "Relative strength is unavailable."))
 
-            # -------------------------
-            # Smart Money Intelligence
-            # -------------------------
-            st.divider()
-            st.subheader("Smart Money Intelligence")
-            st.caption(
-                "Combines institutional-style price/volume behavior with available "
-                "options, insider, ownership, float, and delayed short-interest data."
-            )
+                with header_right:
+                    if st.button(
+                        "Close Report",
+                        key=(
+                            "close_stock_report"
+                        ),
+                    ):
+                        close_active_stock_tab()
 
-            smart_refresh = st.button(
-                "Refresh Smart Money",
-                key=f"smart_money_{selected_symbol}",
-            )
-            smart_resource = f"stock_report:{selected_symbol}:smart_money"
+                metric_columns = st.columns(6)
 
-            def _load_stock_smart_money():
-                try:
-                    return load_smart_money(selected_symbol)
-                except Exception:
-                    return {
-                        "status": "Unavailable",
+                metric_columns[0].metric(
+                    "Grade",
+                    selected_stock.get(
+                        "Grade",
+                        "—",
+                    ),
+                )
+
+                metric_columns[1].metric(
+                    "Momo Score",
+                    selected_stock.get(
+                        "Momo Score",
+                        "—",
+                    ),
+                )
+
+                metric_columns[2].metric(
+                    "Dee Fit",
+                    selected_stock.get(
+                        "Dee Fit",
+                        "—",
+                    ),
+                )
+
+                metric_columns[3].metric(
+                    "Technical Score",
+                    selected_stock.get(
+                        "Score",
+                        "—",
+                    ),
+                )
+
+                metric_columns[4].metric(
+                    "Momo Confidence",
+                    percent_text(
+                        selected_stock.get(
+                            "Momo Confidence"
+                        )
+                    ),
+                    selected_stock.get(
+                        "Confidence Rating",
+                        "—",
+                    ),
+                )
+
+                metric_columns[5].metric(
+                    "Close",
+                    money_text(
+                        selected_stock.get(
+                            "Close"
+                        )
+                    ),
+                )
+
+                st.subheader("Setup")
+
+                st.write(
+                    selected_stock.get(
+                        "Setup",
+                        "Not classified",
+                    )
+                )
+
+                st.subheader(
+                    "Current Scanner Read"
+                )
+
+                st.write(
+                    selected_stock.get(
+                        "Reasons",
+                        "No reasons available.",
+                    )
+                )
+
+                detail_columns = st.columns(3)
+
+                detail_columns[0].metric(
+                    "ATR %",
+                    selected_stock.get(
+                        "ATR %",
+                        "—",
+                    ),
+                )
+
+                detail_columns[1].metric(
+                    "RVOL",
+                    selected_stock.get(
+                        "RVOL",
+                        "—",
+                    ),
+                )
+
+                detail_columns[2].metric(
+                    "Distance From EMA21",
+                    percent_text(
+                        selected_stock.get(
+                            "Distance EMA21 %"
+                        )
+                    ),
+                )
+
+                # -------------------------
+                # Market Backdrop
+                # -------------------------
+                st.divider()
+                st.subheader("Market Backdrop")
+                report_market = st.session_state.market_context
+                if report_market:
+                    report_breadth = report_market.get("breadth", {})
+                    report_sentiment = report_market.get("sentiment", {})
+                    report_sectors = report_market.get("sectors", {})
+                    top_sector = (report_sectors.get("leaders") or [{}])[0]
+                    mc = st.columns(6)
+                    mc[0].metric("Market", report_market.get("market_trend", "—"))
+                    mc[1].metric("Risk", report_market.get("risk_environment", "—"))
+                    mc[2].metric("Market Score", report_market.get("market_score", "—"))
+                    mc[3].metric("Breadth", report_breadth.get("breadth_status", "—"))
+                    mc[4].metric("Sentiment", report_sentiment.get("fear_greed_label", "—"))
+                    mc[5].metric(
+                        "Leading Sector",
+                        top_sector.get("sector", "—"),
+                        (
+                            f'{top_sector.get("score")}/100'
+                            if top_sector.get("score") is not None
+                            else None
+                        ),
+                    )
+                    st.caption(report_market.get("summary", ""))
+                    st.info(
+                        "Open the Market Context tab for the full index, breadth, "
+                        "sentiment, and sector-rotation breakdown."
+                    )
+                else:
+                    st.caption("Market Context has not been loaded for this session.")
+
+                # -------------------------
+                # Relative Strength
+                # -------------------------
+                st.divider()
+                st.subheader("Relative Strength")
+                st.caption(
+                    "Compares this stock with SPY, QQQ, and an approximate "
+                    "sector ETF derived from the company’s SEC SIC classification."
+                )
+
+                rs_refresh = st.button(
+                    "Refresh Relative Strength",
+                    key=f"relative_strength_{selected_symbol}",
+                )
+
+                rs_resource = f"stock_report:{selected_symbol}:relative_strength"
+                if rs_refresh:
+                    load_relative_strength.clear()
+                    relative_strength = force_refresh_resource(
+                        rs_resource,
+                        f"stock_report_rs_{selected_symbol}",
+                        lambda: load_relative_strength(selected_symbol),
+                        ttl_minutes=60,
+                        loading_label=f"Refreshing relative strength for {selected_symbol}",
+                    )
+                else:
+                    relative_strength = load_resource(
+                        rs_resource,
+                        f"stock_report_rs_{selected_symbol}",
+                        lambda: load_relative_strength(selected_symbol),
+                        ttl_minutes=60,
+                        loading_label=f"Comparing {selected_symbol} with market benchmarks",
+                    )
+                if relative_strength is None:
+                    render_loading_skeleton(rs_resource, rows=3, label=f"Comparing {selected_symbol} with market benchmarks")
+                    relative_strength = {"status": "Loading", "summary": "Relative strength is loading automatically."}
+
+                if relative_strength.get("status") == "Available":
+                    rs_top = st.columns(4)
+                    rs_top[0].metric(
+                        "RS Score",
+                        relative_strength.get("score", "—"),
+                    )
+                    rs_top[1].metric(
+                        "Verdict",
+                        relative_strength.get("verdict", "—"),
+                    )
+                    rs_top[2].metric(
+                        "RS Trend",
+                        relative_strength.get("trend", "—"),
+                    )
+                    rs_top[3].metric(
+                        "Sector",
+                        relative_strength.get("sector_name", "—"),
+                        relative_strength.get("sector_etf"),
+                    )
+
+                    st.write(relative_strength.get("summary", ""))
+
+                    rs_table = pd.DataFrame(
+                        [
+                            {
+                                "Period": "5 Days",
+                                "Stock Return %": relative_strength.get("stock_return_5d"),
+                                "vs SPY %": relative_strength.get("vs_spy_5d"),
+                                "vs QQQ %": relative_strength.get("vs_qqq_5d"),
+                                "vs Sector %": relative_strength.get("vs_sector_5d"),
+                            },
+                            {
+                                "Period": "20 Days",
+                                "Stock Return %": relative_strength.get("stock_return_20d"),
+                                "vs SPY %": relative_strength.get("vs_spy_20d"),
+                                "vs QQQ %": relative_strength.get("vs_qqq_20d"),
+                                "vs Sector %": relative_strength.get("vs_sector_20d"),
+                            },
+                            {
+                                "Period": "60 Days",
+                                "Stock Return %": relative_strength.get("stock_return_60d"),
+                                "vs SPY %": relative_strength.get("vs_spy_60d"),
+                                "vs QQQ %": relative_strength.get("vs_qqq_60d"),
+                                "vs Sector %": relative_strength.get("vs_sector_60d"),
+                            },
+                        ]
+                    )
+                    st.dataframe(
+                        rs_table,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    sic_description = relative_strength.get("sic_description")
+                    if sic_description:
+                        st.caption(
+                            f"Sector mapping source: SEC SIC "
+                            f"{relative_strength.get('sic')} — {sic_description}. "
+                            "Sector ETF classification is approximate and is used "
+                            "as a comparison benchmark, not as a company profile."
+                        )
+                else:
+                    st.warning(relative_strength.get("summary", "Relative strength is unavailable."))
+
+                # -------------------------
+                # Smart Money Intelligence
+                # -------------------------
+                st.divider()
+                st.subheader("Smart Money Intelligence")
+                st.caption(
+                    "Combines institutional-style price/volume behavior with available "
+                    "options, insider, ownership, float, and delayed short-interest data."
+                )
+
+                smart_refresh = st.button(
+                    "Refresh Smart Money",
+                    key=f"smart_money_{selected_symbol}",
+                )
+                smart_resource = f"stock_report:{selected_symbol}:smart_money"
+
+                def _load_stock_smart_money():
+                    try:
+                        return load_smart_money(selected_symbol)
+                    except Exception:
+                        return {
+                            "status": "Unavailable",
+                            "overall_score": None,
+                            "verdict": "Unavailable",
+                            "read_status": "Unavailable",
+                            "coverage_pct": 0,
+                            "available_modules": 0,
+                            "total_modules": 5,
+                            "summary": "Smart Money data could not be loaded from the connected providers.",
+                        }
+
+                if smart_refresh:
+                    load_smart_money.clear()
+                    st.session_state.smart_money_cache.pop(selected_symbol, None)
+                    smart_money_context = force_refresh_resource(
+                        smart_resource,
+                        f"stock_report_smart_money_{selected_symbol}",
+                        _load_stock_smart_money,
+                        ttl_minutes=30,
+                        loading_label=f"Refreshing Smart Money data for {selected_symbol}",
+                    )
+                else:
+                    smart_money_context = load_resource(
+                        smart_resource,
+                        f"stock_report_smart_money_{selected_symbol}",
+                        _load_stock_smart_money,
+                        ttl_minutes=30,
+                        loading_label=f"Loading Smart Money data for {selected_symbol}",
+                    )
+                if smart_money_context:
+                    st.session_state.smart_money_cache[selected_symbol] = smart_money_context
+
+                if smart_money_context is None:
+                    render_loading_skeleton(smart_resource, rows=4, label=f"Loading Smart Money data for {selected_symbol}")
+                    smart_money_context = {
+                        "status": "Not Loaded",
                         "overall_score": None,
-                        "verdict": "Unavailable",
-                        "read_status": "Unavailable",
+                        "verdict": "Load to Analyze",
+                        "read_status": "Not Loaded",
                         "coverage_pct": 0,
                         "available_modules": 0,
                         "total_modules": 5,
-                        "summary": "Smart Money data could not be loaded from the connected providers.",
+                        "institutional_activity": {},
+                        "options_activity": {},
+                        "insider_activity": {},
+                        "ownership": {},
+                        "float": {},
+                        "summary": "Smart Money data is loading automatically for this ticker.",
+                        "data_note": "Smart Money refreshes automatically and can also be refreshed manually.",
                     }
 
-            if smart_refresh:
-                load_smart_money.clear()
-                st.session_state.smart_money_cache.pop(selected_symbol, None)
-                smart_money_context = force_refresh_resource(
-                    smart_resource,
-                    f"stock_report_smart_money_{selected_symbol}",
-                    _load_stock_smart_money,
-                    ttl_minutes=30,
-                    loading_label=f"Refreshing Smart Money data for {selected_symbol}",
-                )
-            else:
-                smart_money_context = load_resource(
-                    smart_resource,
-                    f"stock_report_smart_money_{selected_symbol}",
-                    _load_stock_smart_money,
-                    ttl_minutes=30,
-                    loading_label=f"Loading Smart Money data for {selected_symbol}",
-                )
-            if smart_money_context:
-                st.session_state.smart_money_cache[selected_symbol] = smart_money_context
+                score_value = smart_money_context.get("overall_score")
+                coverage_value = smart_money_context.get("coverage_pct")
+                available_modules = smart_money_context.get("available_modules", 0)
+                total_modules = smart_money_context.get("total_modules", 5)
 
-            if smart_money_context is None:
-                render_loading_skeleton(smart_resource, rows=4, label=f"Loading Smart Money data for {selected_symbol}")
-                smart_money_context = {
-                    "status": "Not Loaded",
-                    "overall_score": None,
-                    "verdict": "Load to Analyze",
-                    "read_status": "Not Loaded",
-                    "coverage_pct": 0,
-                    "available_modules": 0,
-                    "total_modules": 5,
-                    "institutional_activity": {},
-                    "options_activity": {},
-                    "insider_activity": {},
-                    "ownership": {},
-                    "float": {},
-                    "summary": "Smart Money data is loading automatically for this ticker.",
-                    "data_note": "Smart Money refreshes automatically and can also be refreshed manually.",
-                }
+                header_cols = st.columns(4)
+                header_cols[0].metric("Smart Money Score", score_value if valid_value(score_value) else "—")
+                header_cols[1].metric("Data Coverage", percent_text(coverage_value))
+                header_cols[2].metric("Read Status", smart_money_context.get("read_status", "—"))
+                header_cols[3].metric("Modules", f"{available_modules} / {total_modules}")
+                st.markdown(f"**Verdict:** {smart_money_context.get('verdict', '—')}")
+                st.write(smart_money_context.get("summary", ""))
 
-            score_value = smart_money_context.get("overall_score")
-            coverage_value = smart_money_context.get("coverage_pct")
-            available_modules = smart_money_context.get("available_modules", 0)
-            total_modules = smart_money_context.get("total_modules", 5)
+                inst = smart_money_context.get("institutional_activity", {})
+                opts = smart_money_context.get("options_activity", {})
+                insiders = smart_money_context.get("insider_activity", {})
+                ownership = smart_money_context.get("ownership", {})
+                float_data = smart_money_context.get("float", {})
 
-            header_cols = st.columns(4)
-            header_cols[0].metric("Smart Money Score", score_value if valid_value(score_value) else "—")
-            header_cols[1].metric("Data Coverage", percent_text(coverage_value))
-            header_cols[2].metric("Read Status", smart_money_context.get("read_status", "—"))
-            header_cols[3].metric("Modules", f"{available_modules} / {total_modules}")
-            st.markdown(f"**Verdict:** {smart_money_context.get('verdict', '—')}")
-            st.write(smart_money_context.get("summary", ""))
+                status_line = []
+                for label, section in [
+                    ("Accumulation", inst),
+                    ("Options", opts),
+                    ("Insiders", insiders),
+                    ("Ownership", ownership),
+                    ("Float", float_data),
+                ]:
+                    status_line.append(f"{'✓' if section.get('status') == 'Available' else '—'} {label}")
+                st.caption("  ·  ".join(status_line))
 
-            inst = smart_money_context.get("institutional_activity", {})
-            opts = smart_money_context.get("options_activity", {})
-            insiders = smart_money_context.get("insider_activity", {})
-            ownership = smart_money_context.get("ownership", {})
-            float_data = smart_money_context.get("float", {})
+                sm_tabs = st.tabs([
+                    "Accumulation / Distribution",
+                    "Options Activity",
+                    "Insiders",
+                    "Ownership",
+                    "Float & Short Interest",
+                ])
 
-            status_line = []
-            for label, section in [
-                ("Accumulation", inst),
-                ("Options", opts),
-                ("Insiders", insiders),
-                ("Ownership", ownership),
-                ("Float", float_data),
-            ]:
-                status_line.append(f"{'✓' if section.get('status') == 'Available' else '—'} {label}")
-            st.caption("  ·  ".join(status_line))
-
-            sm_tabs = st.tabs([
-                "Accumulation / Distribution",
-                "Options Activity",
-                "Insiders",
-                "Ownership",
-                "Float & Short Interest",
-            ])
-
-            with sm_tabs[0]:
-                if inst.get("status") == "Available":
-                    row = st.columns(3)
-                    row[0].metric("Activity Score", inst.get("score", "—"))
-                    row[1].metric("Verdict", inst.get("verdict", "—"))
-                    row[2].metric("Up/Down Volume", inst.get("up_down_volume_ratio", "—"))
-                    row2 = st.columns(2)
-                    row2[0].metric("Accumulation Days", inst.get("accumulation_days", "—"))
-                    row2[1].metric("Distribution Days", inst.get("distribution_days", "—"))
-                    st.write(inst.get("summary", ""))
-                    st.caption(f"Source: {inst.get('source', 'Calculated OHLCV')} · {inst.get('data_quality', 'Calculated / Inferred')}")
-                    st.caption(inst.get("disclaimer", ""))
-                else:
-                    st.info(inst.get("summary", "Accumulation analysis is unavailable."))
-
-            with sm_tabs[1]:
-                if opts.get("status") == "Available":
-                    st.caption(f"Data: {opts.get('data_source', 'Alpaca Indicative')} · {opts.get('data_quality', 'Delayed / Indicative')}")
-                    row = st.columns(3)
-                    row[0].metric("Activity Score", opts.get("score") if valid_value(opts.get("score")) else "—")
-                    row[1].metric("Directional Read", opts.get("bias", "—"))
-                    row[2].metric("Contracts Analyzed", compact_number(opts.get("contracts_analyzed")))
-                    row2 = st.columns(3)
-                    row2[0].metric("Avg. IV", percent_text(opts.get("average_implied_volatility_pct")))
-                    row2[1].metric("Put/Call Activity", opts.get("put_call_activity_ratio") if valid_value(opts.get("put_call_activity_ratio")) else "—")
-                    row2[2].metric("Leading Expiration", opts.get("most_active_expiration") or "—")
-                    st.write(opts.get("summary", ""))
-                    active_contracts = opts.get("active_contracts", [])
-                    if active_contracts:
-                        st.markdown("**Largest recent trade/quote-size candidates**")
-                        st.dataframe(pd.DataFrame(active_contracts), use_container_width=True, hide_index=True)
+                with sm_tabs[0]:
+                    if inst.get("status") == "Available":
+                        row = st.columns(3)
+                        row[0].metric("Activity Score", inst.get("score", "—"))
+                        row[1].metric("Verdict", inst.get("verdict", "—"))
+                        row[2].metric("Up/Down Volume", inst.get("up_down_volume_ratio", "—"))
+                        row2 = st.columns(2)
+                        row2[0].metric("Accumulation Days", inst.get("accumulation_days", "—"))
+                        row2[1].metric("Distribution Days", inst.get("distribution_days", "—"))
+                        st.write(inst.get("summary", ""))
+                        st.caption(f"Source: {inst.get('source', 'Calculated OHLCV')} · {inst.get('data_quality', 'Calculated / Inferred')}")
+                        st.caption(inst.get("disclaimer", ""))
                     else:
-                        st.info("No larger recent trade or quote-size candidates were found in the returned chain.")
-                    if opts.get("chain_truncated"):
-                        st.warning("The chain reached the safety page limit, so this read may be incomplete.")
-                    st.caption(opts.get("disclaimer", ""))
+                        st.info(inst.get("summary", "Accumulation analysis is unavailable."))
+
+                with sm_tabs[1]:
+                    if opts.get("status") == "Available":
+                        st.caption(f"Data: {opts.get('data_source', 'Alpaca Indicative')} · {opts.get('data_quality', 'Delayed / Indicative')}")
+                        row = st.columns(3)
+                        row[0].metric("Activity Score", opts.get("score") if valid_value(opts.get("score")) else "—")
+                        row[1].metric("Directional Read", opts.get("bias", "—"))
+                        row[2].metric("Contracts Analyzed", compact_number(opts.get("contracts_analyzed")))
+                        row2 = st.columns(3)
+                        row2[0].metric("Avg. IV", percent_text(opts.get("average_implied_volatility_pct")))
+                        row2[1].metric("Put/Call Activity", opts.get("put_call_activity_ratio") if valid_value(opts.get("put_call_activity_ratio")) else "—")
+                        row2[2].metric("Leading Expiration", opts.get("most_active_expiration") or "—")
+                        st.write(opts.get("summary", ""))
+                        active_contracts = opts.get("active_contracts", [])
+                        if active_contracts:
+                            st.markdown("**Largest recent trade/quote-size candidates**")
+                            st.dataframe(pd.DataFrame(active_contracts), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("No larger recent trade or quote-size candidates were found in the returned chain.")
+                        if opts.get("chain_truncated"):
+                            st.warning("The chain reached the safety page limit, so this read may be incomplete.")
+                        st.caption(opts.get("disclaimer", ""))
+                    else:
+                        st.info(opts.get("summary", "Basic options activity is unavailable right now."))
+
+                with sm_tabs[2]:
+                    if insiders.get("status") == "Available":
+                        row = st.columns(3)
+                        row[0].metric("Insider Score", insiders.get("score", "—"))
+                        row[1].metric("Verdict", insiders.get("verdict", "—"))
+                        row[2].metric("Transactions", insiders.get("transaction_count", "—"))
+                        row2 = st.columns(2)
+                        row2[0].metric("Purchases", money_text(insiders.get("purchase_value")))
+                        row2[1].metric("Sales", money_text(insiders.get("sale_value")))
+                        transactions = insiders.get("transactions", [])
+                        if transactions:
+                            st.dataframe(pd.DataFrame(transactions), use_container_width=True, hide_index=True)
+                        st.caption(f"Source: {insiders.get('source', '—')} · {insiders.get('data_quality', 'Reported / Delayed')}")
+                        st.caption(insiders.get("disclaimer", ""))
+                    else:
+                        st.info(insiders.get("display_message") or insiders.get("summary", "Insider data is unavailable."))
+
+                with sm_tabs[3]:
+                    if ownership.get("status") == "Available":
+                        row = st.columns(3)
+                        row[0].metric("Ownership Score", ownership.get("score", "—"))
+                        row[1].metric("Institutional %", percent_text(ownership.get("institutional_ownership_pct")))
+                        row[2].metric("Trend", ownership.get("trend", "—"))
+                        row2 = st.columns(3)
+                        row2[0].metric("Insider %", percent_text(ownership.get("insider_ownership_pct")))
+                        row2[1].metric("Institutions", compact_number(ownership.get("institution_count")))
+                        row2[2].metric("Institutional Shares", compact_number(ownership.get("institutional_shares")))
+                        st.write(ownership.get("summary", ""))
+                        st.caption(f"Source: {ownership.get('source') or 'Connected provider'} · {ownership.get('data_quality', 'Delayed / Reported')}")
+                        st.caption(ownership.get("disclaimer", ""))
+                    else:
+                        st.info(ownership.get("summary", "Ownership data is unavailable on the connected plans."))
+
+                with sm_tabs[4]:
+                    if float_data.get("status") == "Available":
+                        row = st.columns(3)
+                        row[0].metric("Float", compact_number(float_data.get("float_shares")))
+                        row[1].metric("Shares Outstanding", compact_number(float_data.get("shares_outstanding")))
+                        row[2].metric("Float Type", float_data.get("float_category", "—"))
+                        row2 = st.columns(3)
+                        row2[0].metric("Short % Float", percent_text(float_data.get("short_interest_pct_float")))
+                        row2[1].metric("Days to Cover", float_data.get("days_to_cover") if valid_value(float_data.get("days_to_cover")) else "—")
+                        row2[2].metric("Short Risk", float_data.get("short_risk") or "—")
+                        row3 = st.columns(3)
+                        row3[0].metric("Shares Short", compact_number(float_data.get("shares_short")))
+                        row3[1].metric("Short Interest Change", percent_text(float_data.get("short_interest_change_pct")))
+                        row3[2].metric("Squeeze Score", float_data.get("squeeze_score") if valid_value(float_data.get("squeeze_score")) else "—")
+                        st.write(float_data.get("summary", ""))
+                        st.caption(f"Source: {float_data.get('source') or 'Connected provider'} · {float_data.get('data_quality', 'Delayed / Reported')}")
+                        st.caption(float_data.get("disclaimer", ""))
+                    else:
+                        st.info(float_data.get("summary", "Float and short-interest data is unavailable."))
+
+                st.caption(smart_money_context.get("data_note", ""))
+
+                # -------------------------
+                # Trading Intelligence
+                # -------------------------
+                st.divider()
+                st.subheader("Trading Intelligence")
+                st.caption(
+                    "Pattern recognition, trend health, multi-timeframe alignment, "
+                    "entry quality, adaptive stops, target intelligence, exit warnings, "
+                    "and same-symbol historical analogues."
+                )
+
+                trade_refresh = st.button(
+                    "Refresh Trading Intelligence",
+                    key=f"trade_intelligence_{selected_symbol}",
+                )
+                trade_resource = f"stock_report:{selected_symbol}:trading_intelligence"
+                stock_payload = selected_stock.to_dict()
+
+                def _load_stock_trade_intelligence():
+                    try:
+                        return load_trade_intelligence(selected_symbol, stock_payload)
+                    except Exception:
+                        return {
+                            "overall_score": None,
+                            "status": "Unavailable",
+                            "pattern": {},
+                            "trend_health": {},
+                            "multi_timeframe": {},
+                            "entry_quality": {},
+                            "adaptive_stops": {},
+                            "targets": {"targets": []},
+                            "exit_management": {},
+                            "historical_setup": {},
+                        }
+
+                if trade_refresh:
+                    load_trade_intelligence.clear()
+                    st.session_state.trade_intelligence_cache.pop(selected_symbol, None)
+                    trade_intelligence_context = force_refresh_resource(
+                        trade_resource,
+                        f"stock_report_trade_intelligence_{selected_symbol}",
+                        _load_stock_trade_intelligence,
+                        ttl_minutes=30,
+                        loading_label=f"Refreshing trading structure for {selected_symbol}",
+                    )
                 else:
-                    st.info(opts.get("summary", "Basic options activity is unavailable right now."))
+                    trade_intelligence_context = load_resource(
+                        trade_resource,
+                        f"stock_report_trade_intelligence_{selected_symbol}",
+                        _load_stock_trade_intelligence,
+                        ttl_minutes=30,
+                        loading_label=f"Analyzing trading structure for {selected_symbol}",
+                    )
+                if trade_intelligence_context:
+                    st.session_state.trade_intelligence_cache[selected_symbol] = trade_intelligence_context
 
-            with sm_tabs[2]:
-                if insiders.get("status") == "Available":
-                    row = st.columns(3)
-                    row[0].metric("Insider Score", insiders.get("score", "—"))
-                    row[1].metric("Verdict", insiders.get("verdict", "—"))
-                    row[2].metric("Transactions", insiders.get("transaction_count", "—"))
-                    row2 = st.columns(2)
-                    row2[0].metric("Purchases", money_text(insiders.get("purchase_value")))
-                    row2[1].metric("Sales", money_text(insiders.get("sale_value")))
-                    transactions = insiders.get("transactions", [])
-                    if transactions:
-                        st.dataframe(pd.DataFrame(transactions), use_container_width=True, hide_index=True)
-                    st.caption(f"Source: {insiders.get('source', '—')} · {insiders.get('data_quality', 'Reported / Delayed')}")
-                    st.caption(insiders.get("disclaimer", ""))
-                else:
-                    st.info(insiders.get("display_message") or insiders.get("summary", "Insider data is unavailable."))
-
-            with sm_tabs[3]:
-                if ownership.get("status") == "Available":
-                    row = st.columns(3)
-                    row[0].metric("Ownership Score", ownership.get("score", "—"))
-                    row[1].metric("Institutional %", percent_text(ownership.get("institutional_ownership_pct")))
-                    row[2].metric("Trend", ownership.get("trend", "—"))
-                    row2 = st.columns(3)
-                    row2[0].metric("Insider %", percent_text(ownership.get("insider_ownership_pct")))
-                    row2[1].metric("Institutions", compact_number(ownership.get("institution_count")))
-                    row2[2].metric("Institutional Shares", compact_number(ownership.get("institutional_shares")))
-                    st.write(ownership.get("summary", ""))
-                    st.caption(f"Source: {ownership.get('source') or 'Connected provider'} · {ownership.get('data_quality', 'Delayed / Reported')}")
-                    st.caption(ownership.get("disclaimer", ""))
-                else:
-                    st.info(ownership.get("summary", "Ownership data is unavailable on the connected plans."))
-
-            with sm_tabs[4]:
-                if float_data.get("status") == "Available":
-                    row = st.columns(3)
-                    row[0].metric("Float", compact_number(float_data.get("float_shares")))
-                    row[1].metric("Shares Outstanding", compact_number(float_data.get("shares_outstanding")))
-                    row[2].metric("Float Type", float_data.get("float_category", "—"))
-                    row2 = st.columns(3)
-                    row2[0].metric("Short % Float", percent_text(float_data.get("short_interest_pct_float")))
-                    row2[1].metric("Days to Cover", float_data.get("days_to_cover") if valid_value(float_data.get("days_to_cover")) else "—")
-                    row2[2].metric("Short Risk", float_data.get("short_risk") or "—")
-                    row3 = st.columns(3)
-                    row3[0].metric("Shares Short", compact_number(float_data.get("shares_short")))
-                    row3[1].metric("Short Interest Change", percent_text(float_data.get("short_interest_change_pct")))
-                    row3[2].metric("Squeeze Score", float_data.get("squeeze_score") if valid_value(float_data.get("squeeze_score")) else "—")
-                    st.write(float_data.get("summary", ""))
-                    st.caption(f"Source: {float_data.get('source') or 'Connected provider'} · {float_data.get('data_quality', 'Delayed / Reported')}")
-                    st.caption(float_data.get("disclaimer", ""))
-                else:
-                    st.info(float_data.get("summary", "Float and short-interest data is unavailable."))
-
-            st.caption(smart_money_context.get("data_note", ""))
-
-            # -------------------------
-            # Trading Intelligence
-            # -------------------------
-            st.divider()
-            st.subheader("Trading Intelligence")
-            st.caption(
-                "Pattern recognition, trend health, multi-timeframe alignment, "
-                "entry quality, adaptive stops, target intelligence, exit warnings, "
-                "and same-symbol historical analogues."
-            )
-
-            trade_refresh = st.button(
-                "Refresh Trading Intelligence",
-                key=f"trade_intelligence_{selected_symbol}",
-            )
-            trade_resource = f"stock_report:{selected_symbol}:trading_intelligence"
-            stock_payload = selected_stock.to_dict()
-
-            def _load_stock_trade_intelligence():
-                try:
-                    return load_trade_intelligence(selected_symbol, stock_payload)
-                except Exception:
-                    return {
+                if trade_intelligence_context is None:
+                    render_loading_skeleton(trade_resource, rows=4, label=f"Analyzing trading structure for {selected_symbol}")
+                    trade_intelligence_context = {
                         "overall_score": None,
-                        "status": "Unavailable",
+                        "status": "Not Loaded",
                         "pattern": {},
                         "trend_health": {},
                         "multi_timeframe": {},
@@ -1670,825 +1743,789 @@ if active_page_is("Scanner"):
                         "historical_setup": {},
                     }
 
-            if trade_refresh:
-                load_trade_intelligence.clear()
-                st.session_state.trade_intelligence_cache.pop(selected_symbol, None)
-                trade_intelligence_context = force_refresh_resource(
-                    trade_resource,
-                    f"stock_report_trade_intelligence_{selected_symbol}",
-                    _load_stock_trade_intelligence,
-                    ttl_minutes=30,
-                    loading_label=f"Refreshing trading structure for {selected_symbol}",
+                # v0.95A: Resolve and persist one canonical analysis object. Existing
+                # engines remain untouched; all downstream plan consumers use this
+                # single resolved plan instead of repeating fallback calculations.
+                canonical_analysis = build_canonical_analysis(
+                    selected_symbol,
+                    selected_stock.to_dict(),
+                    trading_intelligence=trade_intelligence_context,
+                    market_context=report_market or {},
+                    smart_money_context=smart_money_context or {},
+                    ai_report=st.session_state.ai_research_reports.get(selected_symbol, {}),
                 )
-            else:
-                trade_intelligence_context = load_resource(
-                    trade_resource,
-                    f"stock_report_trade_intelligence_{selected_symbol}",
-                    _load_stock_trade_intelligence,
-                    ttl_minutes=30,
-                    loading_label=f"Analyzing trading structure for {selected_symbol}",
-                )
-            if trade_intelligence_context:
-                st.session_state.trade_intelligence_cache[selected_symbol] = trade_intelligence_context
+                st.session_state.canonical_analysis_cache[selected_symbol] = canonical_analysis.to_dict()
+                try:
+                    save_analysis(canonical_analysis)
+                except Exception:
+                    pass
 
-            if trade_intelligence_context is None:
-                render_loading_skeleton(trade_resource, rows=4, label=f"Analyzing trading structure for {selected_symbol}")
-                trade_intelligence_context = {
-                    "overall_score": None,
-                    "status": "Not Loaded",
-                    "pattern": {},
-                    "trend_health": {},
-                    "multi_timeframe": {},
-                    "entry_quality": {},
-                    "adaptive_stops": {},
-                    "targets": {"targets": []},
-                    "exit_management": {},
-                    "historical_setup": {},
-                }
+                ti_top = st.columns(4)
+                ti_top[0].metric("Trading Intelligence", trade_intelligence_context.get("overall_score") if valid_value(trade_intelligence_context.get("overall_score")) else "—")
+                ti_top[1].metric("Status", trade_intelligence_context.get("status", "—"))
+                ti_top[2].metric("Entry Grade", trade_intelligence_context.get("entry_quality", {}).get("grade", "—"))
+                ti_top[3].metric("MTF Alignment", trade_intelligence_context.get("multi_timeframe", {}).get("alignment", "—"))
 
-            # v0.95A: Resolve and persist one canonical analysis object. Existing
-            # engines remain untouched; all downstream plan consumers use this
-            # single resolved plan instead of repeating fallback calculations.
-            canonical_analysis = build_canonical_analysis(
-                selected_symbol,
-                selected_stock.to_dict(),
-                trading_intelligence=trade_intelligence_context,
-                market_context=report_market or {},
-                smart_money_context=smart_money_context or {},
-                ai_report=st.session_state.ai_research_reports.get(selected_symbol, {}),
-            )
-            st.session_state.canonical_analysis_cache[selected_symbol] = canonical_analysis.to_dict()
-            try:
-                save_analysis(canonical_analysis)
-            except Exception:
-                pass
+                ti_tabs = st.tabs([
+                    "Pattern & Trend",
+                    "Multi-Timeframe",
+                    "Entry & Stops",
+                    "Targets",
+                    "Exit Management",
+                    "Historical Setup",
+                ])
 
-            ti_top = st.columns(4)
-            ti_top[0].metric("Trading Intelligence", trade_intelligence_context.get("overall_score") if valid_value(trade_intelligence_context.get("overall_score")) else "—")
-            ti_top[1].metric("Status", trade_intelligence_context.get("status", "—"))
-            ti_top[2].metric("Entry Grade", trade_intelligence_context.get("entry_quality", {}).get("grade", "—"))
-            ti_top[3].metric("MTF Alignment", trade_intelligence_context.get("multi_timeframe", {}).get("alignment", "—"))
+                pattern_data = trade_intelligence_context.get("pattern", {})
+                trend_data = trade_intelligence_context.get("trend_health", {})
+                with ti_tabs[0]:
+                    row = st.columns(4)
+                    row[0].metric("Primary Pattern", pattern_data.get("primary_pattern", "—"))
+                    row[1].metric("Pattern Score", pattern_data.get("pattern_score") if valid_value(pattern_data.get("pattern_score")) else "—")
+                    row[2].metric("Pattern Maturity", pattern_data.get("maturity", "—"))
+                    row[3].metric("Trend Health", trend_data.get("score") if valid_value(trend_data.get("score")) else "—", trend_data.get("rating", "—"))
+                    patterns = pattern_data.get("patterns", [])
+                    if patterns:
+                        st.dataframe(pd.DataFrame(patterns), use_container_width=True, hide_index=True)
+                    if trend_data.get("strengths"):
+                        st.markdown("**Trend strengths**")
+                        for item in trend_data.get("strengths", []): st.write(f"• {item}")
+                    if trend_data.get("warnings"):
+                        st.markdown("**Trend warnings**")
+                        for item in trend_data.get("warnings", []): st.write(f"• {item}")
 
-            ti_tabs = st.tabs([
-                "Pattern & Trend",
-                "Multi-Timeframe",
-                "Entry & Stops",
-                "Targets",
-                "Exit Management",
-                "Historical Setup",
-            ])
+                mtf_data = trade_intelligence_context.get("multi_timeframe", {})
+                with ti_tabs[1]:
+                    st.metric("Alignment Score", mtf_data.get("alignment_score") if valid_value(mtf_data.get("alignment_score")) else "—", mtf_data.get("alignment", "—"))
+                    rows = []
+                    for timeframe, details in mtf_data.get("timeframes", {}).items():
+                        rows.append({"Timeframe": timeframe, "Trend": details.get("trend"), "Score": details.get("score"), "Close": details.get("close")})
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            pattern_data = trade_intelligence_context.get("pattern", {})
-            trend_data = trade_intelligence_context.get("trend_health", {})
-            with ti_tabs[0]:
-                row = st.columns(4)
-                row[0].metric("Primary Pattern", pattern_data.get("primary_pattern", "—"))
-                row[1].metric("Pattern Score", pattern_data.get("pattern_score") if valid_value(pattern_data.get("pattern_score")) else "—")
-                row[2].metric("Pattern Maturity", pattern_data.get("maturity", "—"))
-                row[3].metric("Trend Health", trend_data.get("score") if valid_value(trend_data.get("score")) else "—", trend_data.get("rating", "—"))
-                patterns = pattern_data.get("patterns", [])
-                if patterns:
-                    st.dataframe(pd.DataFrame(patterns), use_container_width=True, hide_index=True)
-                if trend_data.get("strengths"):
-                    st.markdown("**Trend strengths**")
-                    for item in trend_data.get("strengths", []): st.write(f"• {item}")
-                if trend_data.get("warnings"):
-                    st.markdown("**Trend warnings**")
-                    for item in trend_data.get("warnings", []): st.write(f"• {item}")
+                entry_data = trade_intelligence_context.get("entry_quality", {})
+                stop_data = trade_intelligence_context.get("adaptive_stops", {})
+                with ti_tabs[2]:
+                    row = st.columns(3)
+                    row[0].metric("Entry Score", entry_data.get("score") if valid_value(entry_data.get("score")) else "—")
+                    row[1].metric("Entry Grade", entry_data.get("grade", "—"))
+                    row[2].metric("Entry Status", entry_data.get("status", "—"))
+                    stop_row = st.columns(3)
+                    stop_row[0].metric("Aggressive Stop", money_text(stop_data.get("aggressive")))
+                    stop_row[1].metric("Standard Stop", money_text(stop_data.get("standard")))
+                    stop_row[2].metric("Conservative Stop", money_text(stop_data.get("conservative")))
+                    if entry_data.get("reasons"):
+                        st.markdown("**Why the entry scores well**")
+                        for item in entry_data.get("reasons", []): st.write(f"• {item}")
+                    if entry_data.get("warnings"):
+                        st.markdown("**Entry concerns**")
+                        for item in entry_data.get("warnings", []): st.write(f"• {item}")
 
-            mtf_data = trade_intelligence_context.get("multi_timeframe", {})
-            with ti_tabs[1]:
-                st.metric("Alignment Score", mtf_data.get("alignment_score") if valid_value(mtf_data.get("alignment_score")) else "—", mtf_data.get("alignment", "—"))
-                rows = []
-                for timeframe, details in mtf_data.get("timeframes", {}).items():
-                    rows.append({"Timeframe": timeframe, "Trend": details.get("trend"), "Score": details.get("score"), "Close": details.get("close")})
-                if rows:
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                with ti_tabs[3]:
+                    target_rows = trade_intelligence_context.get("targets", {}).get("targets", [])
+                    if target_rows:
+                        st.dataframe(pd.DataFrame(target_rows), use_container_width=True, hide_index=True)
+                    measured = trade_intelligence_context.get("targets", {}).get("measured_move_reference")
+                    st.metric("Measured-Move Reference", money_text(measured))
 
-            entry_data = trade_intelligence_context.get("entry_quality", {})
-            stop_data = trade_intelligence_context.get("adaptive_stops", {})
-            with ti_tabs[2]:
-                row = st.columns(3)
-                row[0].metric("Entry Score", entry_data.get("score") if valid_value(entry_data.get("score")) else "—")
-                row[1].metric("Entry Grade", entry_data.get("grade", "—"))
-                row[2].metric("Entry Status", entry_data.get("status", "—"))
-                stop_row = st.columns(3)
-                stop_row[0].metric("Aggressive Stop", money_text(stop_data.get("aggressive")))
-                stop_row[1].metric("Standard Stop", money_text(stop_data.get("standard")))
-                stop_row[2].metric("Conservative Stop", money_text(stop_data.get("conservative")))
-                if entry_data.get("reasons"):
-                    st.markdown("**Why the entry scores well**")
-                    for item in entry_data.get("reasons", []): st.write(f"• {item}")
-                if entry_data.get("warnings"):
-                    st.markdown("**Entry concerns**")
-                    for item in entry_data.get("warnings", []): st.write(f"• {item}")
+                exit_data = trade_intelligence_context.get("exit_management", {})
+                with ti_tabs[4]:
+                    st.metric("Warning Severity", exit_data.get("severity", "—"))
+                    if exit_data.get("warnings"):
+                        st.markdown("**Current warnings**")
+                        for item in exit_data.get("warnings", []): st.write(f"• {item}")
+                    if exit_data.get("management_actions"):
+                        st.markdown("**Management ideas**")
+                        for item in exit_data.get("management_actions", []): st.write(f"• {item}")
 
-            with ti_tabs[3]:
-                target_rows = trade_intelligence_context.get("targets", {}).get("targets", [])
-                if target_rows:
-                    st.dataframe(pd.DataFrame(target_rows), use_container_width=True, hide_index=True)
-                measured = trade_intelligence_context.get("targets", {}).get("measured_move_reference")
-                st.metric("Measured-Move Reference", money_text(measured))
+                history_data = trade_intelligence_context.get("historical_setup", {})
+                with ti_tabs[5]:
+                    row = st.columns(4)
+                    row[0].metric("Samples", history_data.get("sample_size", 0))
+                    row[1].metric("Win Rate", percent_text(history_data.get("win_rate")))
+                    row[2].metric("Avg. Return", percent_text(history_data.get("average_return")))
+                    row[3].metric("Avg. Drawdown", percent_text(history_data.get("average_drawdown")))
+                    st.caption(history_data.get("note", ""))
 
-            exit_data = trade_intelligence_context.get("exit_management", {})
-            with ti_tabs[4]:
-                st.metric("Warning Severity", exit_data.get("severity", "—"))
-                if exit_data.get("warnings"):
-                    st.markdown("**Current warnings**")
-                    for item in exit_data.get("warnings", []): st.write(f"• {item}")
-                if exit_data.get("management_actions"):
-                    st.markdown("**Management ideas**")
-                    for item in exit_data.get("management_actions", []): st.write(f"• {item}")
+                if trade_intelligence_context.get("overall_score") is not None:
+                    if st.button("Send to Trade Planner", key=f"send_to_planner_{selected_symbol}"):
+                        st.session_state.trade_plan_prefill = planner_prefill(canonical_analysis)
+                        navigate_to("Trade Planner", symbol=selected_symbol)
 
-            history_data = trade_intelligence_context.get("historical_setup", {})
-            with ti_tabs[5]:
-                row = st.columns(4)
-                row[0].metric("Samples", history_data.get("sample_size", 0))
-                row[1].metric("Win Rate", percent_text(history_data.get("win_rate")))
-                row[2].metric("Avg. Return", percent_text(history_data.get("average_return")))
-                row[3].metric("Avg. Drawdown", percent_text(history_data.get("average_drawdown")))
-                st.caption(history_data.get("note", ""))
+                # -------------------------
+                # Canonical MomoPro Plan
+                # -------------------------
+                st.divider()
+                st.subheader("Official MomoPro Plan")
+                st.caption("v0.95A single source of truth used by Stock Report, Trade Planner, and future integrations.")
+                canonical_plan = canonical_analysis.plan
+                cp1 = st.columns(4)
+                entry_display = canonical_plan.reference_entry
+                if valid_value(canonical_plan.entry_low) and valid_value(canonical_plan.entry_high) and canonical_plan.entry_low != canonical_plan.entry_high:
+                    entry_display = f"{money_text(canonical_plan.entry_low)} – {money_text(canonical_plan.entry_high)}"
+                else:
+                    entry_display = money_text(canonical_plan.reference_entry)
+                cp1[0].metric("Official Entry", entry_display)
+                cp1[1].metric("Official Stop", money_text(canonical_plan.stop))
+                cp1[2].metric("Official T1", money_text(canonical_plan.t1))
+                cp1[3].metric("Official T2", money_text(canonical_plan.t2))
+                cp2 = st.columns(4)
+                cp2[0].metric("Official T3", money_text(canonical_plan.t3))
+                cp2[1].metric("Setup", canonical_analysis.setup or "—")
+                cp2[2].metric("Grade", canonical_analysis.grade or "—")
+                cp2[3].metric("Plan Source", canonical_plan.source)
 
-            if trade_intelligence_context.get("overall_score") is not None:
-                if st.button("Send to Trade Planner", key=f"send_to_planner_{selected_symbol}"):
-                    st.session_state.trade_plan_prefill = planner_prefill(canonical_analysis)
-                    navigate_to("Trade Planner", symbol=selected_symbol)
+                # -------------------------
+                # Momo Engine Confidence
+                # -------------------------
+                st.divider()
 
-            # -------------------------
-            # Canonical MomoPro Plan
-            # -------------------------
-            st.divider()
-            st.subheader("Official MomoPro Plan")
-            st.caption("v0.95A single source of truth used by Stock Report, Trade Planner, and future integrations.")
-            canonical_plan = canonical_analysis.plan
-            cp1 = st.columns(4)
-            entry_display = canonical_plan.reference_entry
-            if valid_value(canonical_plan.entry_low) and valid_value(canonical_plan.entry_high) and canonical_plan.entry_low != canonical_plan.entry_high:
-                entry_display = f"{money_text(canonical_plan.entry_low)} – {money_text(canonical_plan.entry_high)}"
-            else:
-                entry_display = money_text(canonical_plan.reference_entry)
-            cp1[0].metric("Official Entry", entry_display)
-            cp1[1].metric("Official Stop", money_text(canonical_plan.stop))
-            cp1[2].metric("Official T1", money_text(canonical_plan.t1))
-            cp1[3].metric("Official T2", money_text(canonical_plan.t2))
-            cp2 = st.columns(4)
-            cp2[0].metric("Official T3", money_text(canonical_plan.t3))
-            cp2[1].metric("Setup", canonical_analysis.setup or "—")
-            cp2[2].metric("Grade", canonical_analysis.grade or "—")
-            cp2[3].metric("Plan Source", canonical_plan.source)
+                st.subheader("Momo Engine Confidence")
 
-            # -------------------------
-            # Momo Engine Confidence
-            # -------------------------
-            st.divider()
-
-            st.subheader("Momo Engine Confidence")
-
-            integrated_confidence = calculate_integrated_confidence(
-                technical_confidence=selected_stock.get("Momo Confidence"),
-                market_context=report_market,
-                relative_strength=relative_strength,
-                smart_money_context=smart_money_context,
-                trade_intelligence_context=trade_intelligence_context,
-            )
-
-            confidence_columns = st.columns(4)
-            confidence_columns[0].metric(
-                "Technical Confidence",
-                percent_text(selected_stock.get("Momo Confidence")),
-                selected_stock.get("Confidence Rating", "—"),
-            )
-            confidence_columns[1].metric(
-                "Market-Adjusted",
-                percent_text(integrated_confidence.get("Integrated Confidence")),
-                integrated_confidence.get("Integrated Rating", "—"),
-            )
-            confidence_columns[2].metric(
-                "Market Component",
-                percent_text(
-                    integrated_confidence.get("Integrated Breakdown", {}).get("Market")
-                ),
-            )
-            confidence_columns[3].metric(
-                "Relative Strength",
-                percent_text(
-                    integrated_confidence.get("Integrated Breakdown", {}).get(
-                        "Relative Strength"
-                    )
-                ),
-            )
-
-            adjustment = integrated_confidence.get("Adjustment")
-            if adjustment is not None:
-                direction = "raised" if adjustment > 0 else "lowered" if adjustment < 0 else "left unchanged"
-                st.caption(
-                    f"Market, sector, and relative-strength context {direction} "
-                    f"the technical confidence by {abs(adjustment):.0f} point(s)."
-                )
-            else:
-                st.caption(
-                    "Market-adjusted confidence will populate after Market Context "
-                    "and Relative Strength are available."
+                integrated_confidence = calculate_integrated_confidence(
+                    technical_confidence=selected_stock.get("Momo Confidence"),
+                    market_context=report_market,
+                    relative_strength=relative_strength,
+                    smart_money_context=smart_money_context,
+                    trade_intelligence_context=trade_intelligence_context,
                 )
 
-            with st.expander(
-                "See confidence breakdown"
-            ):
-                confidence_breakdown = [
-                    (
-                        "Trend",
-                        "Trend Confidence",
+                confidence_columns = st.columns(4)
+                confidence_columns[0].metric(
+                    "Technical Confidence",
+                    percent_text(selected_stock.get("Momo Confidence")),
+                    selected_stock.get("Confidence Rating", "—"),
+                )
+                confidence_columns[1].metric(
+                    "Market-Adjusted",
+                    percent_text(integrated_confidence.get("Integrated Confidence")),
+                    integrated_confidence.get("Integrated Rating", "—"),
+                )
+                confidence_columns[2].metric(
+                    "Market Component",
+                    percent_text(
+                        integrated_confidence.get("Integrated Breakdown", {}).get("Market")
                     ),
-                    (
-                        "Location",
-                        "Location Confidence",
-                    ),
-                    (
-                        "Momentum",
-                        "Momentum Confidence",
-                    ),
-                    (
-                        "Volume",
-                        "Volume Confidence",
-                    ),
-                    (
-                        "Opportunity",
-                        "Opportunity Confidence",
-                    ),
-                    (
-                        "Risk",
-                        "Risk Confidence",
-                    ),
-                    (
-                        "Structure",
-                        "Structure Confidence",
-                    ),
-                ]
-
-                context_breakdown = integrated_confidence.get(
-                    "Integrated Breakdown", {}
                 )
-                context_row = st.columns(6)
-                context_row[0].metric(
-                    "Technical", percent_text(context_breakdown.get("Technical"))
-                )
-                context_row[1].metric(
-                    "Market", percent_text(context_breakdown.get("Market"))
-                )
-                context_row[2].metric(
-                    "Sector", percent_text(context_breakdown.get("Sector"))
-                )
-                context_row[3].metric(
+                confidence_columns[3].metric(
                     "Relative Strength",
-                    percent_text(context_breakdown.get("Relative Strength")),
+                    percent_text(
+                        integrated_confidence.get("Integrated Breakdown", {}).get(
+                            "Relative Strength"
+                        )
+                    ),
                 )
-                context_row[4].metric(
-                    "Smart Money",
-                    percent_text(context_breakdown.get("Smart Money")),
-                )
-                context_row[5].metric(
-                    "Trading Intelligence",
-                    percent_text(context_breakdown.get("Trading Intelligence")),
-                )
-                st.markdown("**Technical module breakdown**")
 
-                first_row = st.columns(4)
-                second_row = st.columns(3)
-
-                for index, (label, key) in enumerate(
-                    confidence_breakdown
-                ):
-                    column = (
-                        first_row[index]
-                        if index < 4
-                        else second_row[index - 4]
+                adjustment = integrated_confidence.get("Adjustment")
+                if adjustment is not None:
+                    direction = "raised" if adjustment > 0 else "lowered" if adjustment < 0 else "left unchanged"
+                    st.caption(
+                        f"Market, sector, and relative-strength context {direction} "
+                        f"the technical confidence by {abs(adjustment):.0f} point(s)."
+                    )
+                else:
+                    st.caption(
+                        "Market-adjusted confidence will populate after Market Context "
+                        "and Relative Strength are available."
                     )
 
-                    column.metric(
-                        label,
-                        percent_text(
-                            selected_stock.get(key)
+                with st.expander(
+                    "See confidence breakdown"
+                ):
+                    confidence_breakdown = [
+                        (
+                            "Trend",
+                            "Trend Confidence",
                         ),
-                    )
+                        (
+                            "Location",
+                            "Location Confidence",
+                        ),
+                        (
+                            "Momentum",
+                            "Momentum Confidence",
+                        ),
+                        (
+                            "Volume",
+                            "Volume Confidence",
+                        ),
+                        (
+                            "Opportunity",
+                            "Opportunity Confidence",
+                        ),
+                        (
+                            "Risk",
+                            "Risk Confidence",
+                        ),
+                        (
+                            "Structure",
+                            "Structure Confidence",
+                        ),
+                    ]
 
-            # -------------------------
-            # Latest News
-            # -------------------------
-            st.divider()
-            st.subheader("Latest News")
-            st.caption("Top recent headlines for this stock. Open the News tab for full research.")
-            try:
-                selected_news = rank_news(load_ticker_news(selected_symbol))
-                selected_news_summary = summarize_news(selected_news)
-                news_metrics = st.columns(3)
-                news_metrics[0].metric("News Sentiment", selected_news_summary.get("overall_sentiment", "—"))
-                news_metrics[1].metric("High Impact", selected_news_summary.get("high_impact", 0))
-                news_metrics[2].metric("Recent Headlines", len(selected_news))
-                source_counts = selected_news_summary.get("source_counts", {})
-                if source_counts:
-                    st.caption(
-                        "Coverage: "
-                        + " · ".join(
-                            f"{source}: {count}"
-                            for source, count in sorted(
-                                source_counts.items(),
-                                key=lambda pair: pair[1],
-                                reverse=True,
+                    context_breakdown = integrated_confidence.get(
+                        "Integrated Breakdown", {}
+                    )
+                    context_row = st.columns(6)
+                    context_row[0].metric(
+                        "Technical", percent_text(context_breakdown.get("Technical"))
+                    )
+                    context_row[1].metric(
+                        "Market", percent_text(context_breakdown.get("Market"))
+                    )
+                    context_row[2].metric(
+                        "Sector", percent_text(context_breakdown.get("Sector"))
+                    )
+                    context_row[3].metric(
+                        "Relative Strength",
+                        percent_text(context_breakdown.get("Relative Strength")),
+                    )
+                    context_row[4].metric(
+                        "Smart Money",
+                        percent_text(context_breakdown.get("Smart Money")),
+                    )
+                    context_row[5].metric(
+                        "Trading Intelligence",
+                        percent_text(context_breakdown.get("Trading Intelligence")),
+                    )
+                    st.markdown("**Technical module breakdown**")
+
+                    first_row = st.columns(4)
+                    second_row = st.columns(3)
+
+                    for index, (label, key) in enumerate(
+                        confidence_breakdown
+                    ):
+                        column = (
+                            first_row[index]
+                            if index < 4
+                            else second_row[index - 4]
+                        )
+
+                        column.metric(
+                            label,
+                            percent_text(
+                                selected_stock.get(key)
+                            ),
+                        )
+
+                # -------------------------
+                # Latest News
+                # -------------------------
+                st.divider()
+                st.subheader("Latest News")
+                st.caption("Top recent headlines for this stock. Open the News tab for full research.")
+                try:
+                    selected_news = rank_news(load_ticker_news(selected_symbol))
+                    selected_news_summary = summarize_news(selected_news)
+                    news_metrics = st.columns(3)
+                    news_metrics[0].metric("News Sentiment", selected_news_summary.get("overall_sentiment", "—"))
+                    news_metrics[1].metric("High Impact", selected_news_summary.get("high_impact", 0))
+                    news_metrics[2].metric("Recent Headlines", len(selected_news))
+                    source_counts = selected_news_summary.get("source_counts", {})
+                    if source_counts:
+                        st.caption(
+                            "Coverage: "
+                            + " · ".join(
+                                f"{source}: {count}"
+                                for source, count in sorted(
+                                    source_counts.items(),
+                                    key=lambda pair: pair[1],
+                                    reverse=True,
+                                )
                             )
                         )
-                    )
 
-                for item in selected_news[:5]:
-                    if item.get("url"):
-                        st.markdown(f'**[{item.get("headline")}]({item.get("url")})**')
-                    else:
-                        st.markdown(f'**{item.get("headline")}**')
-                    st.caption(
-                        f'{item.get("category")} · {item.get("impact")} impact · '
-                        f'{item.get("sentiment")} · {item.get("source")}'
-                    )
-                    st.write(item.get("why_it_matters", ""))
-            except Exception as error:
-                selected_news = []
-                st.warning(f"Stock news could not be loaded: {error}")
-
-            # -------------------------
-            # Engine and AI Decisions
-            # -------------------------
-            st.divider()
-
-            st.subheader("Decision Center")
-
-            engine_decision = build_momo_engine_decision(
-                selected_stock,
-                market_context=report_market,
-                relative_strength=relative_strength,
-                news_context={
-                    "summary": summarize_news(selected_news),
-                    "headlines": selected_news[:10],
-                },
-                smart_money_context=smart_money_context,
-                trade_intelligence_context=trade_intelligence_context,
-            )
-
-            engine_col, ai_col = st.columns(2)
-
-            with engine_col:
-                st.markdown("### Momo Engine Decision")
-                st.metric(
-                    "Rule-Based Decision",
-                    engine_decision["decision"],
-                )
-                st.write(engine_decision["summary"])
-
-                if engine_decision["strengths"]:
-                    st.markdown("**What the engine likes**")
-                    for item in engine_decision["strengths"]:
-                        st.write(f"• {item}")
-
-                if engine_decision["concerns"]:
-                    st.markdown("**Main concerns**")
-                    for item in engine_decision["concerns"]:
-                        st.write(f"• {item}")
-
-                with st.expander("Engine confirmation and invalidation"):
-                    st.markdown("**What would strengthen it**")
-                    for item in engine_decision["confirmation"]:
-                        st.write(f"• {item}")
-
-                    st.markdown("**What would invalidate it**")
-                    for item in engine_decision["invalidation"]:
-                        st.write(f"• {item}")
-
-            with ai_col:
-                st.markdown("### Independent AI Decision")
-                st.caption(
-                    "The AI uses the technical, market, relative-strength, "
-                    "verified news, and available Smart Money data in this report."
-                )
-
-                cached_ai = st.session_state.ai_commentary_cache.get(
-                    selected_symbol
-                )
-
-                button_label = (
-                    "Refresh AI Decision"
-                    if cached_ai
-                    else "Generate AI Decision"
-                )
-
-                if st.button(
-                    button_label,
-                    key=f"generate_ai_{selected_symbol}",
-                    use_container_width=True,
-                ):
-                    try:
-                        api_key = st.secrets["OPENAI_API_KEY"]
-
-                        with st.spinner(
-                            f"AI is analyzing {selected_symbol}..."
-                        ):
-                            cached_ai = generate_ai_decision(
-                                api_key=api_key,
-                                stock=selected_stock,
-                                market_context=report_market,
-                                relative_strength=relative_strength,
-                                news_context={
-                                    "summary": summarize_news(selected_news),
-                                    "headlines": selected_news[:10],
-                                },
-                                smart_money_context=smart_money_context,
-                                trade_intelligence_context=trade_intelligence_context,
-                            )
-
-                        st.session_state.ai_commentary_cache[
-                            selected_symbol
-                        ] = cached_ai
-
-                    except KeyError:
-                        st.error(
-                            "OPENAI_API_KEY is missing from Streamlit "
-                            "secrets."
+                    for item in selected_news[:5]:
+                        if item.get("url"):
+                            st.markdown(f'**[{item.get("headline")}]({item.get("url")})**')
+                        else:
+                            st.markdown(f'**{item.get("headline")}**')
+                        st.caption(
+                            f'{item.get("category")} · {item.get("impact")} impact · '
+                            f'{item.get("sentiment")} · {item.get("source")}'
                         )
-                    except Exception as error:
-                        st.error(
-                            "The AI decision could not be generated. "
-                            f"Details: {error}"
-                        )
+                        st.write(item.get("why_it_matters", ""))
+                except Exception as error:
+                    selected_news = []
+                    st.warning(f"Stock news could not be loaded: {error}")
 
-                if cached_ai:
+                # -------------------------
+                # Engine and AI Decisions
+                # -------------------------
+                st.divider()
+
+                st.subheader("Decision Center")
+
+                engine_decision = build_momo_engine_decision(
+                    selected_stock,
+                    market_context=report_market,
+                    relative_strength=relative_strength,
+                    news_context={
+                        "summary": summarize_news(selected_news),
+                        "headlines": selected_news[:10],
+                    },
+                    smart_money_context=smart_money_context,
+                    trade_intelligence_context=trade_intelligence_context,
+                )
+
+                engine_col, ai_col = st.columns(2)
+
+                with engine_col:
+                    st.markdown("### Momo Engine Decision")
                     st.metric(
-                        "AI Decision",
-                        cached_ai["decision"],
-                        f'{cached_ai["confidence"]}% AI confidence',
+                        "Rule-Based Decision",
+                        engine_decision["decision"],
                     )
+                    st.write(engine_decision["summary"])
 
-                    st.write(cached_ai["summary"])
-
-                    if cached_ai["strengths"]:
-                        st.markdown("**AI strengths**")
-                        for item in cached_ai["strengths"]:
+                    if engine_decision["strengths"]:
+                        st.markdown("**What the engine likes**")
+                        for item in engine_decision["strengths"]:
                             st.write(f"• {item}")
 
-                    if cached_ai["concerns"]:
-                        st.markdown("**AI concerns**")
-                        for item in cached_ai["concerns"]:
+                    if engine_decision["concerns"]:
+                        st.markdown("**Main concerns**")
+                        for item in engine_decision["concerns"]:
                             st.write(f"• {item}")
 
-                    with st.expander("AI improvement and invalidation"):
-                        st.markdown("**What would improve the setup**")
-                        for item in cached_ai["what_improves_setup"]:
+                    with st.expander("Engine confirmation and invalidation"):
+                        st.markdown("**What would strengthen it**")
+                        for item in engine_decision["confirmation"]:
                             st.write(f"• {item}")
 
                         st.markdown("**What would invalidate it**")
-                        for item in cached_ai["invalidation"]:
+                        for item in engine_decision["invalidation"]:
                             st.write(f"• {item}")
-                else:
-                    st.info(
-                        "Generate the AI Decision when you want an "
-                        "independent second opinion. It runs only on "
-                        "demand, so scanning the market does not create "
-                        "an API charge for every stock."
+
+                with ai_col:
+                    st.markdown("### Independent AI Decision")
+                    st.caption(
+                        "The AI uses the technical, market, relative-strength, "
+                        "verified news, and available Smart Money data in this report."
                     )
 
-            # -------------------------
-            # Support / Resistance v2
-            # -------------------------
-            st.divider()
-
-            st.subheader(
-                "Support and Resistance"
-            )
-
-            st.caption(
-                "Zones are based on "
-                "historical swing reactions, "
-                "touch count, candle rejection, "
-                "volume interaction, and recency."
-            )
-
-            (
-                support_col,
-                resistance_col,
-            ) = st.columns(2)
-
-            with support_col:
-                st.markdown(
-                    "#### Support"
-                )
-
-                for label in [
-                    "Support 1",
-                    "Support 2",
-                    "Support 3",
-                ]:
-                    value = (
-                        selected_stock.get(
-                            label
-                        )
+                    cached_ai = st.session_state.ai_commentary_cache.get(
+                        selected_symbol
                     )
 
-                    quality = (
-                        selected_stock.get(
-                            f"{label} Quality"
-                        )
+                    button_label = (
+                        "Refresh AI Decision"
+                        if cached_ai
+                        else "Generate AI Decision"
                     )
 
-                    touches = (
-                        selected_stock.get(
-                            f"{label} Touches"
-                        )
-                    )
+                    if st.button(
+                        button_label,
+                        key=f"generate_ai_{selected_symbol}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            api_key = st.secrets["OPENAI_API_KEY"]
 
-                    if valid_value(value):
+                            with st.spinner(
+                                f"AI is analyzing {selected_symbol}..."
+                            ):
+                                cached_ai = generate_ai_decision(
+                                    api_key=api_key,
+                                    stock=selected_stock,
+                                    market_context=report_market,
+                                    relative_strength=relative_strength,
+                                    news_context={
+                                        "summary": summarize_news(selected_news),
+                                        "headlines": selected_news[:10],
+                                    },
+                                    smart_money_context=smart_money_context,
+                                    trade_intelligence_context=trade_intelligence_context,
+                                )
+
+                            st.session_state.ai_commentary_cache[
+                                selected_symbol
+                            ] = cached_ai
+
+                        except KeyError:
+                            st.error(
+                                "OPENAI_API_KEY is missing from Streamlit "
+                                "secrets."
+                            )
+                        except Exception as error:
+                            st.error(
+                                "The AI decision could not be generated. "
+                                f"Details: {error}"
+                            )
+
+                    if cached_ai:
                         st.metric(
-                            label,
-                            money_text(value),
+                            "AI Decision",
+                            cached_ai["decision"],
+                            f'{cached_ai["confidence"]}% AI confidence',
                         )
 
-                        reaction = (
-                            reaction_text(
-                                quality,
-                                touches,
-                            )
-                        )
+                        st.write(cached_ai["summary"])
 
-                        if reaction:
-                            st.caption(
-                                reaction
-                            )
+                        if cached_ai["strengths"]:
+                            st.markdown("**AI strengths**")
+                            for item in cached_ai["strengths"]:
+                                st.write(f"• {item}")
 
+                        if cached_ai["concerns"]:
+                            st.markdown("**AI concerns**")
+                            for item in cached_ai["concerns"]:
+                                st.write(f"• {item}")
+
+                        with st.expander("AI improvement and invalidation"):
+                            st.markdown("**What would improve the setup**")
+                            for item in cached_ai["what_improves_setup"]:
+                                st.write(f"• {item}")
+
+                            st.markdown("**What would invalidate it**")
+                            for item in cached_ai["invalidation"]:
+                                st.write(f"• {item}")
                     else:
-                        st.write(
-                            f"{label}: "
-                            "Not available"
+                        st.info(
+                            "Generate the AI Decision when you want an "
+                            "independent second opinion. It runs only on "
+                            "demand, so scanning the market does not create "
+                            "an API charge for every stock."
                         )
 
-            with resistance_col:
-                st.markdown(
-                    "#### Resistance"
+                # -------------------------
+                # Support / Resistance v2
+                # -------------------------
+                st.divider()
+
+                st.subheader(
+                    "Support and Resistance"
                 )
 
-                for label in [
-                    "Resistance 1",
-                    "Resistance 2",
-                    "Resistance 3",
-                ]:
-                    value = (
-                        selected_stock.get(
-                            label
-                        )
+                st.caption(
+                    "Zones are based on "
+                    "historical swing reactions, "
+                    "touch count, candle rejection, "
+                    "volume interaction, and recency."
+                )
+
+                (
+                    support_col,
+                    resistance_col,
+                ) = st.columns(2)
+
+                with support_col:
+                    st.markdown(
+                        "#### Support"
                     )
 
-                    quality = (
-                        selected_stock.get(
-                            f"{label} Quality"
+                    for label in [
+                        "Support 1",
+                        "Support 2",
+                        "Support 3",
+                    ]:
+                        value = (
+                            selected_stock.get(
+                                label
+                            )
                         )
+
+                        quality = (
+                            selected_stock.get(
+                                f"{label} Quality"
+                            )
+                        )
+
+                        touches = (
+                            selected_stock.get(
+                                f"{label} Touches"
+                            )
+                        )
+
+                        if valid_value(value):
+                            st.metric(
+                                label,
+                                money_text(value),
+                            )
+
+                            reaction = (
+                                reaction_text(
+                                    quality,
+                                    touches,
+                                )
+                            )
+
+                            if reaction:
+                                st.caption(
+                                    reaction
+                                )
+
+                        else:
+                            st.write(
+                                f"{label}: "
+                                "Not available"
+                            )
+
+                with resistance_col:
+                    st.markdown(
+                        "#### Resistance"
                     )
 
-                    touches = (
-                        selected_stock.get(
-                            f"{label} Touches"
+                    for label in [
+                        "Resistance 1",
+                        "Resistance 2",
+                        "Resistance 3",
+                    ]:
+                        value = (
+                            selected_stock.get(
+                                label
+                            )
                         )
-                    )
 
-                    if valid_value(value):
-                        upside = (
-                            (
-                                float(value)
-                                - float(
+                        quality = (
+                            selected_stock.get(
+                                f"{label} Quality"
+                            )
+                        )
+
+                        touches = (
+                            selected_stock.get(
+                                f"{label} Touches"
+                            )
+                        )
+
+                        if valid_value(value):
+                            upside = (
+                                (
+                                    float(value)
+                                    - float(
+                                        selected_stock[
+                                            "Close"
+                                        ]
+                                    )
+                                )
+                                / float(
                                     selected_stock[
                                         "Close"
                                     ]
                                 )
+                            ) * 100
+
+                            st.metric(
+                                label,
+                                money_text(value),
+                                (
+                                    f"{upside:.1f}% "
+                                    "upside"
+                                ),
                             )
-                            / float(
-                                selected_stock[
-                                    "Close"
-                                ]
+
+                            reaction = (
+                                reaction_text(
+                                    quality,
+                                    touches,
+                                )
                             )
-                        ) * 100
+
+                            if reaction:
+                                st.caption(
+                                    reaction
+                                )
+
+                        else:
+                            st.write(
+                                f"{label}: "
+                                "Not available"
+                            )
+
+                # -------------------------
+                # Risk / Reward
+                # -------------------------
+                st.divider()
+
+                st.subheader(
+                    "Structural Risk / Reward"
+                )
+
+                rr_columns = st.columns(4)
+
+                reference_entry = (
+                    selected_stock.get(
+                        "Reference Entry"
+                    )
+                )
+
+                risk_reference = (
+                    selected_stock.get(
+                        "Risk Reference"
+                    )
+                )
+
+                reward_reference = (
+                    selected_stock.get(
+                        "Reward Reference"
+                    )
+                )
+
+                risk_reward = (
+                    selected_stock.get(
+                        "Risk Reward"
+                    )
+                )
+
+                rr_columns[0].metric(
+                    "Reference Entry",
+                    money_text(
+                        reference_entry
+                    ),
+                )
+
+                rr_columns[1].metric(
+                    "Risk Reference",
+                    money_text(
+                        risk_reference
+                    ),
+                )
+
+                rr_columns[2].metric(
+                    "Reward Reference",
+                    money_text(
+                        reward_reference
+                    ),
+                )
+
+                rr_columns[3].metric(
+                    "Risk / Reward",
+                    r_text(
+                        risk_reward
+                    ),
+                )
+
+                risk_detail_columns = (
+                    st.columns(3)
+                )
+
+                risk_per_share = (
+                    selected_stock.get(
+                        "Risk Per Share"
+                    )
+                )
+
+                reward_per_share = (
+                    selected_stock.get(
+                        "Reward Per Share"
+                    )
+                )
+
+                rr_status = (
+                    selected_stock.get(
+                        "Risk Reward Status",
+                        "Not available",
+                    )
+                )
+
+                risk_detail_columns[0].metric(
+                    "Risk Per Share",
+                    money_text(
+                        risk_per_share
+                    ),
+                )
+
+                risk_detail_columns[1].metric(
+                    "Reward Per Share",
+                    money_text(
+                        reward_per_share
+                    ),
+                )
+
+                risk_detail_columns[2].metric(
+                    "Structure Rating",
+                    rr_status,
+                )
+
+                st.caption(
+                    "This is a structural "
+                    "reference using the current "
+                    "close, nearest confirmed "
+                    "support zone, and nearest "
+                    "confirmed resistance zone."
+                )
+
+                # -------------------------
+                # T1 / T2 / T3
+                # -------------------------
+                st.divider()
+
+                st.subheader(
+                    "Structural Targets"
+                )
+
+                target_columns = st.columns(3)
+
+                for index, column in enumerate(
+                    target_columns,
+                    start=1,
+                ):
+                    target_name = f"T{index}"
+
+                    target_value = (
+                        selected_stock.get(
+                            target_name
+                        )
+                    )
+
+                    target_upside = (
+                        selected_stock.get(
+                            f"{target_name} "
+                            "Upside %"
+                        )
+                    )
+
+                    target_r = (
+                        selected_stock.get(
+                            f"{target_name} R"
+                        )
+                    )
+
+                    with column:
+                        st.markdown(
+                            f"#### {target_name}"
+                        )
 
                         st.metric(
-                            label,
-                            money_text(value),
-                            (
-                                f"{upside:.1f}% "
-                                "upside"
+                            "Target Price",
+                            money_text(
+                                target_value
                             ),
                         )
 
-                        reaction = (
-                            reaction_text(
-                                quality,
-                                touches,
-                            )
+                        st.metric(
+                            "Upside",
+                            percent_text(
+                                target_upside
+                            ),
                         )
 
-                        if reaction:
-                            st.caption(
-                                reaction
-                            )
-
-                    else:
-                        st.write(
-                            f"{label}: "
-                            "Not available"
+                        st.metric(
+                            "Reward / Risk",
+                            r_text(
+                                target_r
+                            ),
                         )
 
-            # -------------------------
-            # Risk / Reward
-            # -------------------------
-            st.divider()
-
-            st.subheader(
-                "Structural Risk / Reward"
-            )
-
-            rr_columns = st.columns(4)
-
-            reference_entry = (
-                selected_stock.get(
-                    "Reference Entry"
-                )
-            )
-
-            risk_reference = (
-                selected_stock.get(
-                    "Risk Reference"
-                )
-            )
-
-            reward_reference = (
-                selected_stock.get(
-                    "Reward Reference"
-                )
-            )
-
-            risk_reward = (
-                selected_stock.get(
-                    "Risk Reward"
-                )
-            )
-
-            rr_columns[0].metric(
-                "Reference Entry",
-                money_text(
-                    reference_entry
-                ),
-            )
-
-            rr_columns[1].metric(
-                "Risk Reference",
-                money_text(
-                    risk_reference
-                ),
-            )
-
-            rr_columns[2].metric(
-                "Reward Reference",
-                money_text(
-                    reward_reference
-                ),
-            )
-
-            rr_columns[3].metric(
-                "Risk / Reward",
-                r_text(
-                    risk_reward
-                ),
-            )
-
-            risk_detail_columns = (
-                st.columns(3)
-            )
-
-            risk_per_share = (
-                selected_stock.get(
-                    "Risk Per Share"
-                )
-            )
-
-            reward_per_share = (
-                selected_stock.get(
-                    "Reward Per Share"
-                )
-            )
-
-            rr_status = (
-                selected_stock.get(
-                    "Risk Reward Status",
-                    "Not available",
-                )
-            )
-
-            risk_detail_columns[0].metric(
-                "Risk Per Share",
-                money_text(
-                    risk_per_share
-                ),
-            )
-
-            risk_detail_columns[1].metric(
-                "Reward Per Share",
-                money_text(
-                    reward_per_share
-                ),
-            )
-
-            risk_detail_columns[2].metric(
-                "Structure Rating",
-                rr_status,
-            )
-
-            st.caption(
-                "This is a structural "
-                "reference using the current "
-                "close, nearest confirmed "
-                "support zone, and nearest "
-                "confirmed resistance zone."
-            )
-
-            # -------------------------
-            # T1 / T2 / T3
-            # -------------------------
-            st.divider()
-
-            st.subheader(
-                "Structural Targets"
-            )
-
-            target_columns = st.columns(3)
-
-            for index, column in enumerate(
-                target_columns,
-                start=1,
-            ):
-                target_name = f"T{index}"
-
-                target_value = (
-                    selected_stock.get(
-                        target_name
-                    )
+                st.caption(
+                    "T1, T2, and T3 use the "
+                    "three upgraded structural "
+                    "resistance zones. No target "
+                    "is invented when a valid "
+                    "zone is unavailable."
                 )
 
-                target_upside = (
-                    selected_stock.get(
-                        f"{target_name} "
-                        "Upside %"
-                    )
+                st.info(
+                    "Market Context integration is active. Technical, market, "
+                    "sector, and relative-strength inputs now work together."
                 )
 
-                target_r = (
-                    selected_stock.get(
-                        f"{target_name} R"
-                    )
-                )
-
-                with column:
-                    st.markdown(
-                        f"#### {target_name}"
-                    )
-
-                    st.metric(
-                        "Target Price",
-                        money_text(
-                            target_value
-                        ),
-                    )
-
-                    st.metric(
-                        "Upside",
-                        percent_text(
-                            target_upside
-                        ),
-                    )
-
-                    st.metric(
-                        "Reward / Risk",
-                        r_text(
-                            target_r
-                        ),
-                    )
-
-            st.caption(
-                "T1, T2, and T3 use the "
-                "three upgraded structural "
-                "resistance zones. No target "
-                "is invented when a valid "
-                "zone is unavailable."
+        elif df is not None:
+            st.warning(
+                "The scan completed, but no "
+                "qualifying stocks were found."
             )
-
-            st.info(
-                "Market Context integration is active. Technical, market, "
-                "sector, and relative-strength inputs now work together."
-            )
-
-    elif df is not None:
-        st.warning(
-            "The scan completed, but no "
-            "qualifying stocks were found."
-        )
 
 
 # -----------------------------
