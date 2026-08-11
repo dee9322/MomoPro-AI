@@ -1,0 +1,21 @@
+MomoPro AI — ZIP 46 Hotfix Changelog
+
+LIVE CHART
+- Added the missing Python time import required by the existing automatic Live Chart refresh logic.
+- Fixes: "Chart data could not be loaded: name 'time' is not defined".
+- Preserves the existing 60-second refresh/cache behavior and chart market-data path.
+
+WATCHLIST
+- Added a clearly visible "Remove ticker from this watchlist" selector near the Watchlist summary.
+- Added a Remove button that uses the existing persistent remove_symbol() storage path.
+- Removal reruns the page immediately so the deleted ticker disappears from the current Watchlist view.
+- Existing per-stock Remove control remains intact.
+
+PROTECTED / UNCHANGED
+- Scanner v2 architecture and ranking logic.
+- 220-session historical foundation.
+- Current-session scanner overlay.
+- Massive integration and API-key routing.
+- Company metadata enrichment.
+- Market Cap, Float, and Shares Outstanding fixes.
+- 500-stock scanner behavior.

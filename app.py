@@ -1,5 +1,6 @@
 from threading import RLock, Thread
 import math
+import time
 from uuid import uuid4
 
 import pandas as pd
@@ -3597,6 +3598,18 @@ if active_page_is("Watchlist"):
     st.subheader("☀️ Morning Brief")
     brief_cols = st.columns(5)
     brief_cols[0].metric("Watchlist Stocks", brief["count"])
+    if symbols:
+        remove_cols = st.columns([4, 1])
+        remove_ticker = remove_cols[0].selectbox(
+            "Remove ticker from this watchlist",
+            symbols,
+            key=f"watchlist_remove_symbol_{active_watchlist}",
+        )
+        if remove_cols[1].button("Remove", key=f"watchlist_remove_button_{active_watchlist}", use_container_width=True):
+            remove_symbol(active_watchlist, remove_ticker)
+            st.success(f"{remove_ticker} removed from {active_watchlist}.")
+            st.rerun()
+
     brief_cols[1].metric("Thesis Improved", brief["improved"])
     brief_cols[2].metric("Weakened / Invalid", brief["weakened"])
     brief_cols[3].metric("Highest Opportunity", brief["top_symbol"] or "—")
