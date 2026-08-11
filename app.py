@@ -51,6 +51,38 @@ def _scanner_metadata_state() -> dict:
         return dict(_SCANNER_METADATA_JOB)
 
 
+def _compact_number(value: object) -> object:
+    """Trader-friendly display: 3.2K / 18.4M / 2.1B / 1.3T."""
+    try:
+        if value is None or pd.isna(value):
+            return None
+        number = float(value)
+    except Exception:
+        return value
+
+    absolute = abs(number)
+    units = (
+        (1_000_000_000_000, "T"),
+        (1_000_000_000, "B"),
+        (1_000_000, "M"),
+        (1_000, "K"),
+    )
+    for divisor, suffix in units:
+        if absolute >= divisor:
+            scaled = number / divisor
+            if abs(scaled) >= 100:
+                text = f"{scaled:.0f}"
+            elif abs(scaled) >= 10:
+                text = f"{scaled:.1f}"
+            else:
+                text = f"{scaled:.2f}"
+            return text.rstrip("0").rstrip(".") + suffix
+
+    if number.is_integer():
+        return f"{int(number):,}"
+    return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+
 def _start_scanner_metadata_enrichment(
     symbols: list[str],
     *,
@@ -1234,6 +1266,12 @@ if active_page_is("Scanner"):
                 if column not in display_df.columns:
                     display_df[column] = None
             display_df = display_df.loc[:, scanner_visible_columns].copy()
+
+            # Keep raw numeric values in Scanner/Stock Report logic, but show
+            # large profile numbers in compact trader-friendly notation.
+            for column in ("Market Cap", "Float", "Shares Outstanding"):
+                if column in display_df.columns:
+                    display_df[column] = display_df[column].map(_compact_number)
 
             metadata_state = _scanner_metadata_state()
             profile_columns = [

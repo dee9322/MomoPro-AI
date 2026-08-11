@@ -355,12 +355,47 @@ def enrich_company_metadata_batch(symbols: list[str], *, fmp_api_key: str | None
     massive_floats = _massive_float_index(massive_api_key)
     results: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
+    cache_changed = False
     for ticker in tickers:
         record = cache.get(ticker)
+
+        # A record can be "fresh" while still missing Float because older
+        # MomoPro versions cached Company/Sector/Industry before the Massive
+        # bulk-float source was added. Merge the bulk reference into fresh
+        # cache rows instead of waiting for the entire metadata TTL to expire.
+        massive_row = massive_floats.get(ticker) or {}
         if isinstance(record, dict) and _fresh(record) and not force_refresh:
+            record = dict(record)
+            float_shares = _number(record.get("float_shares"))
+            shares_outstanding = _number(record.get("shares_outstanding"))
+
+            if float_shares is None:
+                float_shares = _number(massive_row.get("float_shares"))
+                if float_shares is not None:
+                    record["float_shares"] = float_shares
+                    cache_changed = True
+
+            free_float_percent = _number(massive_row.get("free_float_percent"))
+            if (
+                shares_outstanding is None
+                and float_shares is not None
+                and free_float_percent
+                and free_float_percent > 0
+            ):
+                record["shares_outstanding"] = float_shares / (free_float_percent / 100.0)
+                cache_changed = True
+
+            if massive_row and "Massive Float" not in (record.get("sources") or []):
+                record["sources"] = list(record.get("sources") or []) + ["Massive Float"]
+                cache_changed = True
+
+            cache[ticker] = record
             results[ticker] = record
         else:
             missing.append(ticker)
+
+    if cache_changed:
+        _write_cache(cache)
     if missing:
         workers = max(1, min(int(max_workers or 1), 4, len(missing)))
         with ThreadPoolExecutor(max_workers=workers) as executor:
