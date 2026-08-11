@@ -247,6 +247,8 @@ def run_scan_v2(
     ranking_map = current_ranking.set_index("Symbol").to_dict(orient="index")
     groups = {symbol: frame.sort_values("date") for symbol, frame in history[history["symbol"].isin(symbols)].groupby("symbol", sort=False)}
     results = []
+    analysis_failures = 0
+    first_analysis_error = ""
 
     total_symbols = max(1, len(symbols))
     for symbol_index, symbol in enumerate(symbols, start=1):
@@ -271,15 +273,29 @@ def run_scan_v2(
                     if expected_so_far > 0:
                         current_session_rvol = current_volume / expected_so_far
 
+                # Durable Massive history stores session dates without timezone
+                # information. Keep the synthetic current-session date equally
+                # tz-naive so the comparison cannot raise:
+                #   TypeError: Cannot compare tz-naive and tz-aware timestamps.
+                current_session_date = (
+                    pd.Timestamp.now(tz="America/New_York")
+                    .normalize()
+                    .tz_localize(None)
+                )
                 synthetic = {
-                    "timestamp": pd.Timestamp.now(tz="UTC").normalize(),
+                    "timestamp": current_session_date,
                     "open": _f(snap.get("open"), current_price),
                     "high": max(_f(snap.get("high"), current_price), current_price),
                     "low": min(_f(snap.get("low"), current_price), current_price),
                     "close": current_price,
                     "volume": current_volume if current_volume > 0 else (avg20 if avg20 > 0 else _f(symbol_df.iloc[-1].get("volume"), 0.0)),
                 }
-                if symbol_df["timestamp"].max().normalize() < synthetic["timestamp"]:
+
+                last_session_date = pd.Timestamp(symbol_df["timestamp"].max()).normalize()
+                if last_session_date.tzinfo is not None:
+                    last_session_date = last_session_date.tz_localize(None)
+
+                if last_session_date < current_session_date:
                     symbol_df = pd.concat([symbol_df, pd.DataFrame([synthetic])], ignore_index=True)
                 else:
                     for col, value in synthetic.items():
@@ -342,7 +358,10 @@ def run_scan_v2(
             row.update(risk_reward)
             row.update(targets)
             results.append(row)
-        except Exception:
+        except Exception as exc:
+            analysis_failures += 1
+            if not first_analysis_error:
+                first_analysis_error = f"{type(exc).__name__}: {exc}"
             continue
 
     preferred = ["Symbol", "Grade", "Momo Score", "Dee Fit", "Score", "Setup", "Close", "ATR %", "RVOL", "Distance EMA21 %", "Reasons"]
@@ -351,7 +370,7 @@ def run_scan_v2(
         "__Prescreen Strict Count", "__Prescreen Standard Count", "__Prescreen Expanded Count",
         "__Prescreen Request Failures", "__Usable History Count", "Momo Confidence", "Confidence Rating",
         "Trend Confidence", "Location Confidence", "Momentum Confidence", "Volume Confidence", "Opportunity Confidence", "Risk Confidence", "Structure Confidence",
-        "EMA21", "EMA50", "EMA200", "RSI", "MACD", "MACD Signal", "MACD Histogram", "__Scan As Of", "__Price Feed", "__Volume Feed",
+        "EMA21", "EMA50", "EMA200", "RSI", "MACD", "MACD Signal", "MACD Histogram", "__Scan As Of", "__Price Feed", "__Volume Feed", "__Analysis Failures", "__First Analysis Error",
         "Support 1", "Support 2", "Support 3", "Resistance 1", "Resistance 2", "Resistance 3",
         "Support 1 Quality", "Support 2 Quality", "Support 3 Quality", "Resistance 1 Quality", "Resistance 2 Quality", "Resistance 3 Quality",
         "Support 1 Touches", "Support 2 Touches", "Support 3 Touches", "Resistance 1 Touches", "Resistance 2 Touches", "Resistance 3 Touches",

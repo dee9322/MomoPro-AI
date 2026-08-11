@@ -1196,6 +1196,18 @@ if active_page_is("Scanner"):
                 "automatic refresh target: 5 minutes"
             )
 
+        if "__Analysis Failures" in df.columns:
+            failures = int(pd.to_numeric(df["__Analysis Failures"], errors="coerce").fillna(0).max())
+            if failures:
+                first_error = ""
+                if "__First Analysis Error" in df.columns:
+                    errors = df["__First Analysis Error"].dropna()
+                    first_error = str(errors.iloc[0]) if not errors.empty else ""
+                st.warning(
+                    f"Scanner diagnostics: {failures} finalist analyses were skipped."
+                    + (f" First error: {first_error}" if first_error else "")
+                )
+
         # Cached metadata is attached immediately. Missing/stale metadata is
         # fetched independently so Scanner speed is never held hostage by
         # Company/Sector/Industry/profile requests.
@@ -1237,11 +1249,16 @@ if active_page_is("Scanner"):
                 f"Shares {counts['Shares Outstanding']}/{len(display_df)}"
             )
             if metadata_state.get("running"):
-                st.caption(coverage + " • missing metadata is filling in the background.")
+                st.caption(coverage + " • metadata worker: RUNNING in background.")
             elif metadata_state.get("error"):
-                st.caption(coverage + " • background enrichment will retry automatically.")
+                st.caption(
+                    coverage
+                    + f" • metadata worker error: {metadata_state.get('error')} • will retry automatically."
+                )
+            elif metadata_state.get("done"):
+                st.caption(coverage + " • metadata worker: FINISHED.")
             else:
-                st.caption(coverage)
+                st.caption(coverage + " • metadata worker: waiting to start.")
 
             event = st.dataframe(
                 display_df,
