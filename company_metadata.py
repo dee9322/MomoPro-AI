@@ -26,6 +26,18 @@ _INCOMPLETE_TTL = timedelta(hours=6)
 _CACHE_LOCK = RLock()
 _BACKGROUND_LOCK = RLock()
 _BACKGROUND_JOBS: dict[str, dict[str, Any]] = {}
+_MASSIVE_FLOAT_STATUS: dict[str, Any] = {
+    "running": False,
+    "done": False,
+    "pages": 0,
+    "records_loaded": 0,
+    "scanner_matches": 0,
+    "target_total": 0,
+    "http_status": None,
+    "error": "",
+    "started_at": "",
+    "finished_at": "",
+}
 
 _HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 MomoProAI/0.98.4 contact: dbardwell9322@gmail.com",
@@ -198,73 +210,284 @@ def _read_massive_float_cache() -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def massive_float_status() -> dict[str, Any]:
+    """Expose safe progress/diagnostics for the Scanner UI."""
+    with _BACKGROUND_LOCK:
+        return dict(_MASSIVE_FLOAT_STATUS)
+
+
+def _set_massive_float_status(**updates: Any) -> None:
+    with _BACKGROUND_LOCK:
+        _MASSIVE_FLOAT_STATUS.update(updates)
+
+
 def _massive_float_cache_fresh(cache: dict[str, Any]) -> bool:
+    """Only a COMPLETE bulk download is eligible for the 24-hour fast path."""
     try:
+        if cache.get("complete") is not True:
+            return False
         stamp = datetime.fromisoformat(str(cache.get("cached_at") or ""))
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
-        return _utc_now() - stamp < _MASSIVE_FLOAT_TTL and isinstance(cache.get("records"), dict)
+        return (
+            _utc_now() - stamp < _MASSIVE_FLOAT_TTL
+            and isinstance(cache.get("records"), dict)
+            and bool(cache.get("records"))
+        )
     except Exception:
         return False
 
 
-def _massive_float_index(api_key: str | None) -> dict[str, dict[str, Any]]:
-    """Load Massive's bulk free-float dataset once per day.
+def _persist_massive_float_page(
+    records: dict[str, dict[str, Any]],
+    *,
+    complete: bool,
+) -> None:
+    """Persist every successful Massive page instead of waiting for the end."""
+    cache_doc = {
+        "cached_at": _utc_now().isoformat(),
+        "complete": bool(complete),
+        "records": records,
+    }
+    if cloud_available():
+        try:
+            save_document(_MASSIVE_FLOAT_BUCKET, cache_doc)
+        except Exception:
+            pass
 
-    The endpoint is included in Stocks Basic and supports up to 5,000 rows per
-    request. The free plan is limited to 5 REST calls/minute, so pagination is
-    deliberately paced instead of firing one request per Scanner symbol.
+
+def _merge_massive_float_into_company_cache(
+    page_records: dict[str, dict[str, Any]],
+    target_tickers: set[str],
+) -> int:
+    """Make Float visible to Scanner rows as soon as each Massive page arrives."""
+    if not page_records or not target_tickers:
+        return 0
+
+    cache = _read_cache()
+    changed = False
+    matched = 0
+
+    for ticker in target_tickers:
+        massive_row = page_records.get(ticker)
+        if not massive_row:
+            continue
+        matched += 1
+
+        # Only patch an existing company/profile record here. New symbols are
+        # handled later by get_company_metadata(), which prevents a float-only
+        # partial record from being mistaken for a complete fresh profile.
+        record = cache.get(ticker)
+        if not isinstance(record, dict):
+            continue
+
+        record = dict(record)
+        float_shares = _number(massive_row.get("float_shares"))
+        float_percent = _number(massive_row.get("free_float_percent"))
+        shares_outstanding = _number(record.get("shares_outstanding"))
+
+        if float_shares is not None and _number(record.get("float_shares")) is None:
+            record["float_shares"] = float_shares
+            changed = True
+
+        if (
+            shares_outstanding is None
+            and float_shares is not None
+            and float_percent is not None
+            and float_percent > 0
+        ):
+            record["shares_outstanding"] = float_shares / (float_percent / 100.0)
+            changed = True
+
+        sources = list(record.get("sources") or [])
+        if "Massive Float" not in sources:
+            sources.append("Massive Float")
+            record["sources"] = sources
+            changed = True
+
+        cache[ticker] = record
+
+    if changed:
+        _write_cache(cache)
+    return matched
+
+
+def _massive_float_index(
+    api_key: str | None,
+    *,
+    target_tickers: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load Massive's bulk free-float dataset and publish it page-by-page.
+
+    Massive documents /stocks/vX/float as a bulk endpoint with up to 5,000
+    results per request. The free API rate limit is respected by pacing pages.
     """
-    if not api_key:
-        return {}
-    cached = _read_massive_float_cache()
-    if _massive_float_cache_fresh(cached):
-        return cached.get("records") or {}
+    targets = {
+        str(symbol or "").upper().strip()
+        for symbol in (target_tickers or [])
+        if str(symbol or "").strip()
+    }
 
-    records: dict[str, dict[str, Any]] = {}
-    url = 'https://api.massive.com/stocks/vX/float'
+    if not api_key:
+        _set_massive_float_status(
+            running=False,
+            done=False,
+            target_total=len(targets),
+            error="MASSIVE_API_KEY is not available to the metadata worker.",
+        )
+        return {}
+
+    cached = _read_massive_float_cache()
+    cached_records = cached.get("records") if isinstance(cached.get("records"), dict) else {}
+
+    if _massive_float_cache_fresh(cached):
+        matches = sum(1 for ticker in targets if ticker in cached_records)
+        # Merge the cached bulk data into old company/profile rows immediately.
+        _merge_massive_float_into_company_cache(cached_records, targets)
+        _set_massive_float_status(
+            running=False,
+            done=True,
+            pages=int(cached.get("pages") or 0),
+            records_loaded=len(cached_records),
+            scanner_matches=matches,
+            target_total=len(targets),
+            http_status=200,
+            error="",
+            finished_at=_utc_now().isoformat(),
+        )
+        return cached_records
+
+    # Reuse any partial records from an interrupted build, but do not call the
+    # partial cache "fresh". A new run will complete/reconcile the bulk index.
+    records: dict[str, dict[str, Any]] = dict(cached_records)
+    _set_massive_float_status(
+        running=True,
+        done=False,
+        pages=0,
+        records_loaded=len(records),
+        scanner_matches=sum(1 for ticker in targets if ticker in records),
+        target_total=len(targets),
+        http_status=None,
+        error="",
+        started_at=_utc_now().isoformat(),
+        finished_at="",
+    )
+
+    url = "https://api.massive.com/stocks/vX/float"
     params: dict[str, Any] | None = {
-        'limit': 5000,
-        'sort': 'ticker.asc',
-        'apiKey': api_key,
+        "limit": 5000,
+        "sort": "ticker.asc",
+        "apiKey": api_key,
     }
     calls = 0
-    while url and calls < 8:
+    complete = False
+    last_error = ""
+
+    while url and calls < 10:
         if calls:
             time.sleep(_MASSIVE_FREE_CALL_INTERVAL)
+
         try:
-            response = requests.get(url, params=params, headers=_HTTP_HEADERS, timeout=(5, 25))
+            response = requests.get(
+                url,
+                params=params,
+                headers=_HTTP_HEADERS,
+                timeout=(5, 30),
+            )
+            _set_massive_float_status(http_status=int(response.status_code))
+
             if response.status_code == 429:
+                last_error = "Massive Float rate limit reached (HTTP 429); retrying after the free-tier interval."
+                _set_massive_float_status(error=last_error)
                 time.sleep(_MASSIVE_FREE_CALL_INTERVAL)
                 continue
+
+            if response.status_code in {401, 403}:
+                last_error = (
+                    f"Massive Float access rejected (HTTP {response.status_code}). "
+                    "The API key was detected, but this endpoint is not authorized for the current account/key."
+                )
+                break
+
             response.raise_for_status()
             payload = response.json()
-        except Exception:
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
             break
-        for item in payload.get('results') or []:
+
+        page_records: dict[str, dict[str, Any]] = {}
+        for item in payload.get("results") or []:
             if not isinstance(item, dict):
                 continue
-            ticker = str(item.get('ticker') or '').upper().strip()
+            ticker = str(item.get("ticker") or "").upper().strip()
             if not ticker:
                 continue
-            records[ticker] = {
-                'float_shares': _number(item.get('free_float')),
-                'free_float_percent': _number(item.get('free_float_percent')),
-                'effective_date': item.get('effective_date'),
-            }
-        next_url = payload.get('next_url')
-        url = str(next_url) if next_url else ''
-        params = {'apiKey': api_key} if url else None
-        calls += 1
 
-    if records:
-        cache_doc = {'cached_at': _utc_now().isoformat(), 'records': records}
+            float_shares = _number(item.get("free_float"))
+            float_percent = _number(item.get("free_float_percent"))
+            page_records[ticker] = {
+                "float_shares": float_shares,
+                "free_float_percent": float_percent,
+                "effective_date": item.get("effective_date"),
+            }
+
+        if page_records:
+            records.update(page_records)
+
+            # This is the key repair: publish the page into the ordinary company
+            # metadata cache NOW, so the 5-second Scanner fragment can display
+            # Float before the entire market-wide download is finished.
+            _merge_massive_float_into_company_cache(page_records, targets)
+
+        calls += 1
+        matches = sum(1 for ticker in targets if ticker in records)
+        _persist_massive_float_page(records, complete=False)
+        _set_massive_float_status(
+            pages=calls,
+            records_loaded=len(records),
+            scanner_matches=matches,
+            target_total=len(targets),
+            error="",
+        )
+
+        next_url = payload.get("next_url")
+        if next_url:
+            url = str(next_url)
+            # Massive next_url is followed directly; only reattach the API key.
+            params = {"apiKey": api_key}
+        else:
+            url = ""
+            complete = True
+
+    if complete and records:
+        # Save a complete 24-hour bulk cache only after pagination really ended.
+        cache_doc = {
+            "cached_at": _utc_now().isoformat(),
+            "complete": True,
+            "pages": calls,
+            "records": records,
+        }
         if cloud_available():
             try:
                 save_document(_MASSIVE_FLOAT_BUCKET, cache_doc)
             except Exception:
                 pass
-    return records or (cached.get('records') or {})
+
+    final_matches = sum(1 for ticker in targets if ticker in records)
+    if not records and not last_error:
+        last_error = "Massive Float returned zero records."
+
+    _set_massive_float_status(
+        running=False,
+        done=bool(complete and records),
+        pages=calls,
+        records_loaded=len(records),
+        scanner_matches=final_matches,
+        target_total=len(targets),
+        error=last_error,
+        finished_at=_utc_now().isoformat(),
+    )
+    return records
 
 
 def _public_market_payloads(symbol: str) -> list[Any]:
@@ -352,7 +575,7 @@ def get_company_metadata(symbol: str, *, fmp_api_key: str | None = None, alpha_v
 def enrich_company_metadata_batch(symbols: list[str], *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, massive_api_key: str | None = None, force_refresh: bool = False, max_workers: int = 4) -> dict[str, dict[str, Any]]:
     tickers = list(dict.fromkeys(str(symbol or "").upper().strip() for symbol in symbols if str(symbol or "").strip()))
     cache = _read_cache()
-    massive_floats = _massive_float_index(massive_api_key)
+    massive_floats = _massive_float_index(massive_api_key, target_tickers=tickers)
     results: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
     cache_changed = False

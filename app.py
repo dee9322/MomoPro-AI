@@ -31,6 +31,7 @@ from symbol_context import analyze_symbol
 from company_metadata import (
     attach_cached_metadata,
     enrich_company_metadata_batch,
+    massive_float_status,
 )
 
 # Scanner company-metadata background worker.
@@ -1297,6 +1298,33 @@ if active_page_is("Scanner"):
                 st.caption(coverage + " • metadata worker: FINISHED.")
             else:
                 st.caption(coverage + " • metadata worker: waiting to start.")
+
+            float_state = massive_float_status()
+            if float_state.get("running"):
+                st.caption(
+                    "Float source: Massive bulk reference • "
+                    f"pages {int(float_state.get('pages') or 0)} • "
+                    f"{int(float_state.get('records_loaded') or 0):,} market records loaded • "
+                    f"{int(float_state.get('scanner_matches') or 0)}/{len(display_df)} Scanner candidates matched"
+                    + (
+                        f" • HTTP {float_state.get('http_status')}"
+                        if float_state.get("http_status")
+                        else ""
+                    )
+                )
+            elif float_state.get("error"):
+                st.warning(
+                    "Float source diagnostic: "
+                    + str(float_state.get("error"))
+                    + f" • records loaded: {int(float_state.get('records_loaded') or 0):,}"
+                    + f" • Scanner matches: {int(float_state.get('scanner_matches') or 0)}/{len(display_df)}"
+                )
+            elif float_state.get("done"):
+                st.caption(
+                    "Float source: Massive bulk reference FINISHED • "
+                    f"{int(float_state.get('records_loaded') or 0):,} market records • "
+                    f"{int(float_state.get('scanner_matches') or 0)}/{len(display_df)} Scanner candidates matched"
+                )
 
             event = st.dataframe(
                 display_df,
