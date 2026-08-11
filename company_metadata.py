@@ -312,6 +312,12 @@ def attach_cached_metadata(frame: pd.DataFrame) -> pd.DataFrame:
             "Exchange": item.get("exchange"), "Country": item.get("country"), "Market Cap": _number(item.get("market_cap")),
             "Float": _number(item.get("float_shares")), "Shares Outstanding": _number(item.get("shares_outstanding")),
         }
+        if values.get("Market Cap") is None:
+            shares = values.get("Shares Outstanding")
+            close = _number(enriched.at[index, "Close"]) if "Close" in enriched.columns else None
+            if shares and close:
+                values["Market Cap"] = shares * close
+
         for column, value in values.items():
             if value is not None and value != "":
                 enriched.at[index, column] = value

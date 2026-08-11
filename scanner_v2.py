@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -194,6 +195,23 @@ def _live_adjusted_ranking(ranking: pd.DataFrame, live_snapshots: dict[str, dict
     return ranked.head(limit).copy()
 
 
+def _session_progress_fraction(asof: Any) -> float | None:
+    """Regular-session fraction represented by a current volume observation."""
+    if not asof:
+        return None
+    try:
+        stamp = pd.Timestamp(asof)
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize("UTC")
+        eastern = stamp.tz_convert(ZoneInfo("America/New_York"))
+        minutes = (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
+        if minutes <= 0:
+            return None
+        return max(0.05, min(1.0, minutes / 390.0))
+    except Exception:
+        return None
+
+
 def run_scan_v2(
     history: pd.DataFrame | None = None,
     progress_callback=None,
@@ -241,18 +259,25 @@ def run_scan_v2(
             symbol_df = raw.rename(columns={"date": "timestamp"}).copy()
             symbol_df["timestamp"] = pd.to_datetime(symbol_df["timestamp"])
             snap = (live_snapshots or {}).get(symbol) or {}
+            current_session_rvol = None
             if snap:
                 avg20 = _f(pd.to_numeric(symbol_df["volume"], errors="coerce").tail(20).mean(), 0.0)
                 current_price = _f(snap.get("close"), _f(symbol_df.iloc[-1]["close"]))
+                current_volume = _f(snap.get("volume"), 0.0)
+                progress_fraction = _session_progress_fraction(snap.get("volume_asof") or snap.get("asof"))
+
+                if current_volume > 0 and avg20 > 0 and progress_fraction:
+                    expected_so_far = avg20 * progress_fraction
+                    if expected_so_far > 0:
+                        current_session_rvol = current_volume / expected_so_far
+
                 synthetic = {
-                    "timestamp": pd.Timestamp.now().normalize(),
+                    "timestamp": pd.Timestamp.now(tz="UTC").normalize(),
                     "open": _f(snap.get("open"), current_price),
                     "high": max(_f(snap.get("high"), current_price), current_price),
                     "low": min(_f(snap.get("low"), current_price), current_price),
                     "close": current_price,
-                    # IEX volume is intentionally not used as consolidated RVOL.
-                    # Neutral volume preserves completed-day liquidity information.
-                    "volume": avg20 if avg20 > 0 else _f(symbol_df.iloc[-1].get("volume"), 0.0),
+                    "volume": current_volume if current_volume > 0 else (avg20 if avg20 > 0 else _f(symbol_df.iloc[-1].get("volume"), 0.0)),
                 }
                 if symbol_df["timestamp"].max().normalize() < synthetic["timestamp"]:
                     symbol_df = pd.concat([symbol_df, pd.DataFrame([synthetic])], ignore_index=True)
@@ -263,8 +288,10 @@ def run_scan_v2(
             symbol_df = calculate_indicators(symbol_df)
             latest, previous = symbol_df.iloc[-1], symbol_df.iloc[-2]
             pre = ranking_map.get(symbol, {})
-            # Use consolidated completed-day RVOL rather than incomplete IEX volume.
-            if pre.get("RVOL") is not None:
+            if current_session_rvol is not None:
+                latest = latest.copy()
+                latest["rvol"] = current_session_rvol
+            elif pre.get("RVOL") is not None:
                 latest = latest.copy()
                 latest["rvol"] = _f(pre.get("RVOL"), _f(latest.get("rvol")))
             required = [latest.get("ema200"), latest.get("rsi14"), latest.get("macd_hist"), latest.get("atr_pct"), latest.get("rvol"), latest.get("prior_120_high")]
@@ -305,6 +332,9 @@ def run_scan_v2(
                 "MACD": round(_f(latest.get("macd")), 4),
                 "MACD Signal": round(_f(latest.get("macd_signal")), 4),
                 "MACD Histogram": round(_f(latest.get("macd_hist")), 4),
+                "__Scan As Of": snap.get("asof") if snap else None,
+                "__Price Feed": snap.get("price_feed") if snap else "Completed EOD",
+                "__Volume Feed": snap.get("volume_feed") if snap else "Completed EOD",
             }
             for key, value in confidence["Confidence Breakdown"].items():
                 row[f"{key} Confidence"] = value
@@ -321,7 +351,7 @@ def run_scan_v2(
         "__Prescreen Strict Count", "__Prescreen Standard Count", "__Prescreen Expanded Count",
         "__Prescreen Request Failures", "__Usable History Count", "Momo Confidence", "Confidence Rating",
         "Trend Confidence", "Location Confidence", "Momentum Confidence", "Volume Confidence", "Opportunity Confidence", "Risk Confidence", "Structure Confidence",
-        "EMA21", "EMA50", "EMA200", "RSI", "MACD", "MACD Signal", "MACD Histogram",
+        "EMA21", "EMA50", "EMA200", "RSI", "MACD", "MACD Signal", "MACD Histogram", "__Scan As Of", "__Price Feed", "__Volume Feed",
         "Support 1", "Support 2", "Support 3", "Resistance 1", "Resistance 2", "Resistance 3",
         "Support 1 Quality", "Support 2 Quality", "Support 3 Quality", "Resistance 1 Quality", "Resistance 2 Quality", "Resistance 3 Quality",
         "Support 1 Touches", "Support 2 Touches", "Support 3 Touches", "Resistance 1 Touches", "Resistance 2 Touches", "Resistance 3 Touches",

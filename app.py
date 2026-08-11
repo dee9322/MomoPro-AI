@@ -1107,8 +1107,9 @@ if active_page_is("Scanner"):
 
     # Poll only the scanner status fragment. A completed scan triggers one app
     # rerun, guarded by finished_at, so the result table updates without a loop.
-    @st.fragment(run_every=2.0)
+    @st.fragment(run_every=15.0)
     def _scanner_v2_poller():
+        ensure_scan_started(force=False)
         state = scanner_job_state("scan")
         if state.get("running"):
             stage = str(state.get("stage") or "Refreshing current candidates")
@@ -1174,6 +1175,25 @@ if active_page_is("Scanner"):
         if diagnostic_parts:
             st.caption(" • ".join(diagnostic_parts) + f" • Final candidates: {len(df):,}")
 
+        if "__Scan As Of" in df.columns:
+            live_times = df["__Scan As Of"].dropna()
+            latest_live = live_times.iloc[0] if not live_times.empty else None
+            price_feed = (
+                df["__Price Feed"].dropna().iloc[0]
+                if "__Price Feed" in df.columns and not df["__Price Feed"].dropna().empty
+                else "Unavailable"
+            )
+            volume_feed = (
+                df["__Volume Feed"].dropna().iloc[0]
+                if "__Volume Feed" in df.columns and not df["__Volume Feed"].dropna().empty
+                else "Unavailable"
+            )
+            st.caption(
+                f"Current-session overlay: {latest_live or 'Unavailable'} • "
+                f"Price: {price_feed} • Volume/RVOL: {volume_feed} • "
+                "automatic refresh target: 5 minutes"
+            )
+
         # Cached metadata is attached immediately. Missing/stale metadata is
         # fetched independently so Scanner speed is never held hostage by
         # Company/Sector/Industry/profile requests.
@@ -1205,22 +1225,20 @@ if active_page_is("Scanner"):
                 "Company", "Sector", "Industry", "Exchange", "Country",
                 "Market Cap", "Float", "Shares Outstanding",
             ]
-            available = int(display_df[profile_columns].notna().any(axis=1).sum())
-
+            counts = {column: int(display_df[column].notna().sum()) for column in profile_columns}
+            coverage = (
+                f"Company {counts['Company']}/{len(display_df)} • "
+                f"Sector {counts['Sector']}/{len(display_df)} • "
+                f"Market Cap {counts['Market Cap']}/{len(display_df)} • "
+                f"Float {counts['Float']}/{len(display_df)} • "
+                f"Shares {counts['Shares Outstanding']}/{len(display_df)}"
+            )
             if metadata_state.get("running"):
-                st.caption(
-                    f"Company/profile data: {available}/{len(display_df)} candidates available • "
-                    "missing metadata is filling in the background."
-                )
+                st.caption(coverage + " • missing metadata is filling in the background.")
             elif metadata_state.get("error"):
-                st.caption(
-                    f"Company/profile data: {available}/{len(display_df)} candidates available • "
-                    "background enrichment will retry automatically."
-                )
+                st.caption(coverage + " • background enrichment will retry automatically.")
             else:
-                st.caption(
-                    f"Company/profile data: {available}/{len(display_df)} candidates available."
-                )
+                st.caption(coverage)
 
             event = st.dataframe(
                 display_df,
@@ -5400,8 +5418,24 @@ if active_page_is("Live Chart"):
         st.info("No saved Official MomoPro Plan exists for this ticker yet. The chart will still load without plan overlays.")
 
     cache_key = f"chart::{chart_symbol}::{chart_timeframe}::{chart_candles}"
+    cache_time_key = f"{cache_key}::fetched_at"
     if refresh_chart:
         st.session_state.pop(cache_key, None)
+        st.session_state.pop(cache_time_key, None)
+
+    fetched_at = float(st.session_state.get(cache_time_key) or 0.0)
+    if fetched_at and time.time() - fetched_at >= 60:
+        st.session_state.pop(cache_key, None)
+
+    @st.fragment(run_every=60.0)
+    def _live_chart_refresh_tick():
+        last_fetch = float(st.session_state.get(cache_time_key) or 0.0)
+        if last_fetch and time.time() - last_fetch >= 55:
+            st.session_state.pop(cache_key, None)
+            st.session_state.pop(cache_time_key, None)
+            st.rerun(scope="app")
+
+    _live_chart_refresh_tick()
     frame = st.session_state.get(cache_key)
     if chart_symbol and frame is None:
         with st.spinner(f"Loading {chart_symbol} {chart_timeframe} chart..."):
@@ -5411,6 +5445,7 @@ if active_page_is("Live Chart"):
                     chart_symbol, chart_timeframe, chart_candles,
                 )
                 st.session_state[cache_key] = frame
+                st.session_state[cache_time_key] = time.time()
             except Exception as error:
                 st.error(f"Chart data could not be loaded: {error}")
                 frame = pd.DataFrame()
@@ -5434,7 +5469,7 @@ if active_page_is("Live Chart"):
                 "modeBarButtonsToRemove": ["lasso2d", "select2d"],
             },
         )
-        st.caption(f"Latest available candle: {latest.get('timestamp') or 'Unavailable'} · Alpaca IEX feed")
+        st.caption(f"Latest available candle: {latest.get('timestamp') or 'Unavailable'} · Alpaca IEX current-session feed · auto-refreshes every 60 seconds")
 
     st.divider()
     st.subheader("TradingView Bridge")

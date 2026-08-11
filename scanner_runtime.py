@@ -39,6 +39,7 @@ SCAN_NAME = "latest_scan.parquet"
 MANIFEST_NAME = "scanner_manifest.json"
 STORAGE_BUCKET = "scanner-data"
 HISTORY_FOLDER = "history-days"
+LIVE_SCAN_TTL_MINUTES = 5
 
 
 def _now() -> str:
@@ -595,15 +596,52 @@ def _scan_worker(
     if not skip_incremental:
         history = _incremental_history_update(ctx, history)
 
-    _update_job(key, stage="Building strategy-aware current-session pool", progress=0.15)
-    from scanner_v2 import rank_universe
-    broad_symbols, broad_rank, broad_diag = rank_universe(history, 1500)
-    _update_job(key, stage=f"Refreshing current prices for {len(broad_symbols)} strategy-relevant stocks", progress=0.25)
-    live_snapshots = _fetch_alpaca_live_snapshots(ctx, broad_symbols)
+    _update_job(key, stage="Ranking stored history before the live overlay", progress=0.12)
+    from scanner_v2 import rank_universe, _live_adjusted_ranking, SCAN_LIMIT
+    _historical_pool, broad_rank, broad_diag = rank_universe(history, 1500)
+
+    # Historical ranking is context only. Refresh every strategy-eligible stock
+    # with the current IEX price so today's move can promote a symbol that was
+    # not in yesterday's historical top 1,500.
+    eligible_symbols = broad_rank["Symbol"].astype(str).tolist()
+    _update_job(
+        key,
+        stage=f"Refreshing current prices across {len(eligible_symbols):,} eligible stocks",
+        progress=0.20,
+    )
+    iex_snapshots = _fetch_alpaca_live_snapshots(ctx, eligible_symbols, feed="iex")
+
+    current_rank = _live_adjusted_ranking(
+        broad_rank,
+        iex_snapshots,
+        eligible_symbols,
+        SCAN_LIMIT,
+    )
+    current_symbols = current_rank["Symbol"].astype(str).tolist()
+
+    # Add broader consolidated session context for the actual finalists. The
+    # delayed SIP feed is about 15 minutes delayed on free Alpaca accounts, but
+    # it gives much better OHLC/volume coverage than IEX alone.
+    _update_job(
+        key,
+        stage=f"Refreshing consolidated session data for {len(current_symbols):,} finalists",
+        progress=0.32,
+    )
+    delayed_snapshots = _fetch_alpaca_live_snapshots(
+        ctx,
+        current_symbols,
+        feed="delayed_sip",
+    )
+    live_snapshots = _merge_current_snapshots(
+        iex_snapshots,
+        delayed_snapshots,
+        current_symbols,
+    )
+
     results = run_scan_v2(
         history=history,
         live_snapshots=live_snapshots,
-        candidate_pool=broad_symbols,
+        candidate_pool=current_symbols,
         ranking_override=broad_rank,
         diagnostics_override=broad_diag,
         progress_callback=lambda stage, pct: _update_job(key, stage=stage, progress=pct),
@@ -631,7 +669,7 @@ def ensure_scan_started(*, force: bool = False) -> dict[str, Any]:
         future = existing.get("future")
         if isinstance(future, Future) and not future.done():
             return job_state("scan", uid)
-        if not force and latest_scan_is_fresh(uid, ttl_minutes=30):
+        if not force and latest_scan_is_fresh(uid, ttl_minutes=LIVE_SCAN_TTL_MINUTES):
             return {"running": False, "fresh": True, "done": True}
         future = _EXECUTOR.submit(_scan_worker, ctx)
         _JOBS[key] = {"future": future, "running": True, "stage": "Starting current market scan", "progress": 0.01, "started_at": _now()}
@@ -690,60 +728,130 @@ def scanner_status_text() -> str:
         last_saved = manifest.get("last_saved_session") or bootstrap.get("last_saved_session")
         suffix = f" · last saved {last_saved}" if last_saved else ""
         return f"Building market history ({sessions}/{MINIMUM_READY_SESSIONS} durable sessions){suffix}"
-    if latest_scan_is_fresh(uid, ttl_minutes=30):
+    if latest_scan_is_fresh(uid, ttl_minutes=LIVE_SCAN_TTL_MINUTES):
         return "Current scanner candidates are fresh"
     return "Scanner candidates will refresh automatically"
 
 
-def _fetch_alpaca_live_snapshots(ctx: dict[str, str], symbols: list[str]) -> dict[str, dict[str, Any]]:
-    """Fetch lightweight current-session snapshots for a bounded strategy pool.
-
-    Massive Basic is end-of-day. Alpaca's free IEX snapshot is used only as a
-    current-price overlay; consolidated historical volume remains the source for
-    liquidity/RVOL so incomplete IEX volume cannot eliminate quieter setups.
-    """
+def _fetch_alpaca_live_snapshots(
+    ctx: dict[str, str],
+    symbols: list[str],
+    *,
+    feed: str = "iex",
+) -> dict[str, dict[str, Any]]:
+    """Fetch current-session snapshots in bounded Alpaca batches."""
     key = ctx.get("alpaca_key") or ""
     secret = ctx.get("alpaca_secret") or ""
     if not key or not secret or not symbols:
         return {}
+
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
     out: dict[str, dict[str, Any]] = {}
     batch_size = 250
+
     for offset in range(0, len(symbols), batch_size):
         batch = symbols[offset: offset + batch_size]
         try:
             response = requests.get(
                 "https://data.alpaca.markets/v2/stocks/snapshots",
                 headers=headers,
-                params={"symbols": ",".join(batch), "feed": "iex"},
+                params={"symbols": ",".join(batch), "feed": feed},
                 timeout=(5, 20),
             )
             if response.status_code == 429:
-                time.sleep(1.5)
+                time.sleep(1.25)
                 continue
+            if response.status_code in {401, 403} and feed == "delayed_sip":
+                LOGGER.info("Alpaca delayed SIP unavailable (%s); using IEX-only fallback.", response.status_code)
+                return {}
             response.raise_for_status()
             payload = response.json()
-            snapshots = payload.get("snapshots") if isinstance(payload, dict) and isinstance(payload.get("snapshots"), dict) else payload
+            snapshots = (
+                payload.get("snapshots")
+                if isinstance(payload, dict) and isinstance(payload.get("snapshots"), dict)
+                else payload
+            )
             if not isinstance(snapshots, dict):
                 continue
+
             for symbol, snap in snapshots.items():
                 if not isinstance(snap, dict):
                     continue
                 daily = snap.get("dailyBar") or snap.get("daily_bar") or {}
+                minute = snap.get("minuteBar") or snap.get("minute_bar") or {}
                 latest = snap.get("latestTrade") or snap.get("latest_trade") or {}
-                close = daily.get("c") if isinstance(daily, dict) else None
-                if close is None and isinstance(latest, dict):
-                    close = latest.get("p")
+
+                trade_price = latest.get("p") if isinstance(latest, dict) else None
+                minute_close = minute.get("c") if isinstance(minute, dict) else None
+                daily_close = daily.get("c") if isinstance(daily, dict) else None
+                close = trade_price if trade_price is not None else (minute_close if minute_close is not None else daily_close)
                 if close is None:
                     continue
+
+                asof = None
+                for candidate in (
+                    latest.get("t") if isinstance(latest, dict) else None,
+                    minute.get("t") if isinstance(minute, dict) else None,
+                    daily.get("t") if isinstance(daily, dict) else None,
+                ):
+                    if candidate:
+                        asof = candidate
+                        break
+
                 out[str(symbol).upper()] = {
                     "open": daily.get("o") if isinstance(daily, dict) else close,
                     "high": daily.get("h") if isinstance(daily, dict) else close,
                     "low": daily.get("l") if isinstance(daily, dict) else close,
                     "close": close,
-                    "iex_volume": daily.get("v") if isinstance(daily, dict) else None,
+                    "volume": daily.get("v") if isinstance(daily, dict) else None,
+                    "asof": asof,
+                    "feed": feed,
                 }
         except Exception as exc:
-            LOGGER.debug("Alpaca live snapshot batch failed: %s", exc)
+            LOGGER.debug("Alpaca %s snapshot batch failed: %s", feed, exc)
             continue
     return out
+
+
+def _merge_current_snapshots(
+    iex: dict[str, dict[str, Any]],
+    delayed_sip: dict[str, dict[str, Any]],
+    symbols: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Real-time IEX price + delayed consolidated SIP OHLC/volume."""
+    merged: dict[str, dict[str, Any]] = {}
+    for symbol in symbols:
+        ticker = str(symbol).upper()
+        live = dict(iex.get(ticker) or {})
+        delayed = dict(delayed_sip.get(ticker) or {})
+        current_price = live.get("close")
+        if current_price is None:
+            current_price = delayed.get("close")
+        if current_price is None:
+            continue
+
+        context = delayed if delayed else live
+        open_price = context.get("open")
+        high = context.get("high")
+        low = context.get("low")
+        try:
+            high = max(float(high), float(current_price)) if high is not None else float(current_price)
+        except Exception:
+            high = current_price
+        try:
+            low = min(float(low), float(current_price)) if low is not None else float(current_price)
+        except Exception:
+            low = current_price
+
+        merged[ticker] = {
+            "open": open_price if open_price is not None else current_price,
+            "high": high,
+            "low": low,
+            "close": current_price,
+            "volume": delayed.get("volume") if delayed else None,
+            "asof": live.get("asof") or delayed.get("asof"),
+            "volume_asof": delayed.get("asof") if delayed else None,
+            "price_feed": "Alpaca IEX real-time" if live else "Alpaca delayed SIP",
+            "volume_feed": "Alpaca delayed SIP (~15m)" if delayed and delayed.get("volume") is not None else "Completed-day baseline",
+        }
+    return merged
