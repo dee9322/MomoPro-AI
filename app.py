@@ -18,7 +18,7 @@ from alpaca_test import (
     test_alpaca_connection,
 )
 from scanner import run_scan
-from massive_market_data import render_scanner_v2_setup
+from massive_market_data import render_scanner_v2_setup, massive_api_key
 from scanner_runtime import (
     ensure_scan_started,
     job_state as scanner_job_state,
@@ -31,7 +31,6 @@ from symbol_context import analyze_symbol
 from company_metadata import (
     attach_cached_metadata,
     enrich_company_metadata_batch,
-    massive_float_status,
 )
 
 # Scanner company-metadata background worker.
@@ -1249,7 +1248,7 @@ if active_page_is("Scanner"):
             scanner_symbols,
             fmp_api_key=_secret("FMP_API_KEY"),
             alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
-            massive_api_key=_secret("MASSIVE_API_KEY"),
+            massive_api_key=massive_api_key(),
             max_workers=4,
         )
 
@@ -1298,33 +1297,6 @@ if active_page_is("Scanner"):
                 st.caption(coverage + " • metadata worker: FINISHED.")
             else:
                 st.caption(coverage + " • metadata worker: waiting to start.")
-
-            float_state = massive_float_status()
-            if float_state.get("running"):
-                st.caption(
-                    "Float source: Massive bulk reference • "
-                    f"pages {int(float_state.get('pages') or 0)} • "
-                    f"{int(float_state.get('records_loaded') or 0):,} market records loaded • "
-                    f"{int(float_state.get('scanner_matches') or 0)}/{len(display_df)} Scanner candidates matched"
-                    + (
-                        f" • HTTP {float_state.get('http_status')}"
-                        if float_state.get("http_status")
-                        else ""
-                    )
-                )
-            elif float_state.get("error"):
-                st.warning(
-                    "Float source diagnostic: "
-                    + str(float_state.get("error"))
-                    + f" • records loaded: {int(float_state.get('records_loaded') or 0):,}"
-                    + f" • Scanner matches: {int(float_state.get('scanner_matches') or 0)}/{len(display_df)}"
-                )
-            elif float_state.get("done"):
-                st.caption(
-                    "Float source: Massive bulk reference FINISHED • "
-                    f"{int(float_state.get('records_loaded') or 0):,} market records • "
-                    f"{int(float_state.get('scanner_matches') or 0)}/{len(display_df)} Scanner candidates matched"
-                )
 
             event = st.dataframe(
                 display_df,
