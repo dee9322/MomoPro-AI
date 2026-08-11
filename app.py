@@ -56,6 +56,7 @@ def _start_scanner_metadata_enrichment(
     *,
     fmp_api_key: str | None = None,
     alpha_vantage_api_key: str | None = None,
+    massive_api_key: str | None = None,
     max_workers: int = 4,
 ) -> dict:
     tickers = list(dict.fromkeys(
@@ -84,6 +85,7 @@ def _start_scanner_metadata_enrichment(
                 tickers,
                 fmp_api_key=fmp_api_key,
                 alpha_vantage_api_key=alpha_vantage_api_key,
+                massive_api_key=massive_api_key,
                 max_workers=max_workers,
             )
         except Exception as exc:
@@ -1202,6 +1204,7 @@ if active_page_is("Scanner"):
             scanner_symbols,
             fmp_api_key=_secret("FMP_API_KEY"),
             alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+            massive_api_key=_secret("MASSIVE_API_KEY"),
             max_workers=4,
         )
 

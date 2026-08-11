@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -17,6 +18,9 @@ from sec_intelligence import get_company_profile
 
 _CACHE_PATH = Path(__file__).with_name("company_metadata_cache.json")
 _METADATA_BUCKET = "company_metadata_cache"
+_MASSIVE_FLOAT_BUCKET = "massive_float_reference_cache"
+_MASSIVE_FLOAT_TTL = timedelta(hours=24)
+_MASSIVE_FREE_CALL_INTERVAL = 12.5
 _COMPLETE_TTL = timedelta(days=30)
 _INCOMPLETE_TTL = timedelta(hours=6)
 _CACHE_LOCK = RLock()
@@ -185,6 +189,84 @@ def _sec_shares_outstanding(cik: str) -> float | None:
     return candidates[0][1]
 
 
+def _read_massive_float_cache() -> dict[str, Any]:
+    local: dict[str, Any] = {}
+    try:
+        value = load_document(_MASSIVE_FLOAT_BUCKET, local) if cloud_available() else local
+    except Exception:
+        value = local
+    return value if isinstance(value, dict) else {}
+
+
+def _massive_float_cache_fresh(cache: dict[str, Any]) -> bool:
+    try:
+        stamp = datetime.fromisoformat(str(cache.get("cached_at") or ""))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return _utc_now() - stamp < _MASSIVE_FLOAT_TTL and isinstance(cache.get("records"), dict)
+    except Exception:
+        return False
+
+
+def _massive_float_index(api_key: str | None) -> dict[str, dict[str, Any]]:
+    """Load Massive's bulk free-float dataset once per day.
+
+    The endpoint is included in Stocks Basic and supports up to 5,000 rows per
+    request. The free plan is limited to 5 REST calls/minute, so pagination is
+    deliberately paced instead of firing one request per Scanner symbol.
+    """
+    if not api_key:
+        return {}
+    cached = _read_massive_float_cache()
+    if _massive_float_cache_fresh(cached):
+        return cached.get("records") or {}
+
+    records: dict[str, dict[str, Any]] = {}
+    url = 'https://api.massive.com/stocks/vX/float'
+    params: dict[str, Any] | None = {
+        'limit': 5000,
+        'sort': 'ticker.asc',
+        'apiKey': api_key,
+    }
+    calls = 0
+    while url and calls < 8:
+        if calls:
+            time.sleep(_MASSIVE_FREE_CALL_INTERVAL)
+        try:
+            response = requests.get(url, params=params, headers=_HTTP_HEADERS, timeout=(5, 25))
+            if response.status_code == 429:
+                time.sleep(_MASSIVE_FREE_CALL_INTERVAL)
+                continue
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            break
+        for item in payload.get('results') or []:
+            if not isinstance(item, dict):
+                continue
+            ticker = str(item.get('ticker') or '').upper().strip()
+            if not ticker:
+                continue
+            records[ticker] = {
+                'float_shares': _number(item.get('free_float')),
+                'free_float_percent': _number(item.get('free_float_percent')),
+                'effective_date': item.get('effective_date'),
+            }
+        next_url = payload.get('next_url')
+        url = str(next_url) if next_url else ''
+        params = {'apiKey': api_key} if url else None
+        calls += 1
+
+    if records:
+        cache_doc = {'cached_at': _utc_now().isoformat(), 'records': records}
+        if cloud_available():
+            try:
+                save_document(_MASSIVE_FLOAT_BUCKET, cache_doc)
+            except Exception:
+                pass
+    return records or (cached.get('records') or {})
+
+
 def _public_market_payloads(symbol: str) -> list[Any]:
     ticker = symbol.upper()
     # These public endpoints are fallbacks. Failure of any endpoint is isolated.
@@ -204,7 +286,7 @@ def _paid_provider_payloads(symbol: str, fmp_api_key: str | None, alpha_vantage_
     return payloads
 
 
-def get_company_metadata(symbol: str, *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, force_refresh: bool = False, _persist: bool = True) -> dict[str, Any]:
+def get_company_metadata(symbol: str, *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, massive_api_key: str | None = None, massive_float_data: dict[str, Any] | None = None, force_refresh: bool = False, _persist: bool = True) -> dict[str, Any]:
     ticker = str(symbol or "").upper().strip()
     if not ticker:
         return {"symbol": "", "status": "Unavailable"}
@@ -223,15 +305,23 @@ def get_company_metadata(symbol: str, *, fmp_api_key: str | None = None, alpha_v
     exchange = _provider_value(payloads, "fullExchangeName", "exchange", "Exchange") or sec.get("exchange") or ""
     country = _provider_value(payloads, "Country", "country") or ("United States" if sec.get("cik") else "")
 
+    massive_float = massive_float_data or {}
+    float_shares = _first_number(
+        massive_float.get("float_shares"),
+        float_data.get("float_shares"),
+        _provider_value(payloads, "floatShares", "SharesFloat", "publicFloat", "shareFloat"),
+    )
     outstanding = _first_number(
         float_data.get("shares_outstanding"),
         _provider_value(payloads, "sharesOutstanding", "SharesOutstanding", "shareOutstanding", "totalSharesOutstanding"),
         _sec_shares_outstanding(sec.get("cik")),
     )
-    float_shares = _first_number(
-        float_data.get("float_shares"),
-        _provider_value(payloads, "floatShares", "SharesFloat", "publicFloat", "shareFloat"),
-    )
+    # Massive's Float endpoint supplies both free-float shares and free-float
+    # percent. When a direct outstanding-share figure is unavailable, these two
+    # values let us derive total shares without another per-symbol API call.
+    free_float_percent = _number(massive_float.get("free_float_percent"))
+    if outstanding is None and float_shares is not None and free_float_percent and free_float_percent > 0:
+        outstanding = float_shares / (free_float_percent / 100.0)
     market_cap = _first_number(
         _provider_value(payloads, "marketCap", "MarketCapitalization", "marketCapitalization", "MarketCap"),
     )
@@ -249,7 +339,7 @@ def get_company_metadata(symbol: str, *, fmp_api_key: str | None = None, alpha_v
         "shares_outstanding": outstanding,
         "sic": sec.get("sic") or "",
         "cik": sec.get("cik") or "",
-        "sources": ["SEC", "FMP/Alpha Vantage" if (fmp_api_key or alpha_vantage_api_key) else None, "Yahoo/Nasdaq fallback"],
+        "sources": ["SEC", "Massive Float" if massive_float else None, "FMP/Alpha Vantage" if (fmp_api_key or alpha_vantage_api_key) else None, "Yahoo/Nasdaq fallback"],
         "cached_at": _utc_now().isoformat(),
     }
     record["sources"] = [source for source in record["sources"] if source]
@@ -259,9 +349,10 @@ def get_company_metadata(symbol: str, *, fmp_api_key: str | None = None, alpha_v
     return record
 
 
-def enrich_company_metadata_batch(symbols: list[str], *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, force_refresh: bool = False, max_workers: int = 4) -> dict[str, dict[str, Any]]:
+def enrich_company_metadata_batch(symbols: list[str], *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, massive_api_key: str | None = None, force_refresh: bool = False, max_workers: int = 4) -> dict[str, dict[str, Any]]:
     tickers = list(dict.fromkeys(str(symbol or "").upper().strip() for symbol in symbols if str(symbol or "").strip()))
     cache = _read_cache()
+    massive_floats = _massive_float_index(massive_api_key)
     results: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
     for ticker in tickers:
@@ -273,7 +364,7 @@ def enrich_company_metadata_batch(symbols: list[str], *, fmp_api_key: str | None
     if missing:
         workers = max(1, min(int(max_workers or 1), 4, len(missing)))
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            jobs = {executor.submit(get_company_metadata, ticker, fmp_api_key=fmp_api_key, alpha_vantage_api_key=alpha_vantage_api_key, force_refresh=force_refresh, _persist=False): ticker for ticker in missing}
+            jobs = {executor.submit(get_company_metadata, ticker, fmp_api_key=fmp_api_key, alpha_vantage_api_key=alpha_vantage_api_key, massive_api_key=massive_api_key, massive_float_data=massive_floats.get(ticker) or {}, force_refresh=force_refresh, _persist=False): ticker for ticker in missing}
             for future in as_completed(jobs):
                 ticker = jobs[future]
                 try:
@@ -324,10 +415,10 @@ def attach_cached_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
-def enrich_company_metadata(frame: pd.DataFrame, *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, max_workers: int = 2) -> pd.DataFrame:
+def enrich_company_metadata(frame: pd.DataFrame, *, fmp_api_key: str | None = None, alpha_vantage_api_key: str | None = None, massive_api_key: str | None = None, max_workers: int = 2) -> pd.DataFrame:
     if frame is None or frame.empty or "Symbol" not in frame.columns:
         return frame
-    enrich_company_metadata_batch(frame["Symbol"].astype(str).tolist(), fmp_api_key=fmp_api_key, alpha_vantage_api_key=alpha_vantage_api_key, max_workers=max_workers)
+    enrich_company_metadata_batch(frame["Symbol"].astype(str).tolist(), fmp_api_key=fmp_api_key, alpha_vantage_api_key=alpha_vantage_api_key, massive_api_key=massive_api_key, max_workers=max_workers)
     return attach_cached_metadata(frame)
 
 
@@ -341,6 +432,7 @@ def start_background_metadata_enrichment(
     *,
     fmp_api_key: str | None = None,
     alpha_vantage_api_key: str | None = None,
+    massive_api_key: str | None = None,
     max_workers: int = 4,
     job_key: str = "scanner",
 ) -> dict[str, Any]:
@@ -373,6 +465,7 @@ def start_background_metadata_enrichment(
                 tickers,
                 fmp_api_key=fmp_api_key,
                 alpha_vantage_api_key=alpha_vantage_api_key,
+                massive_api_key=massive_api_key,
                 max_workers=max_workers,
             )
         except Exception as exc:
