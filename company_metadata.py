@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any, Iterable
 
 import pandas as pd
@@ -20,6 +20,9 @@ _METADATA_BUCKET = "company_metadata_cache"
 _COMPLETE_TTL = timedelta(days=30)
 _INCOMPLETE_TTL = timedelta(hours=6)
 _CACHE_LOCK = RLock()
+_BACKGROUND_LOCK = RLock()
+_BACKGROUND_JOBS: dict[str, dict[str, Any]] = {}
+
 _HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 MomoProAI/0.98.4 contact: dbardwell9322@gmail.com",
     "Accept": "application/json,text/plain,*/*",
@@ -320,3 +323,64 @@ def enrich_company_metadata(frame: pd.DataFrame, *, fmp_api_key: str | None = No
         return frame
     enrich_company_metadata_batch(frame["Symbol"].astype(str).tolist(), fmp_api_key=fmp_api_key, alpha_vantage_api_key=alpha_vantage_api_key, max_workers=max_workers)
     return attach_cached_metadata(frame)
+
+
+def metadata_background_state(job_key: str = "scanner") -> dict[str, Any]:
+    with _BACKGROUND_LOCK:
+        return dict(_BACKGROUND_JOBS.get(job_key) or {})
+
+
+def start_background_metadata_enrichment(
+    symbols: list[str],
+    *,
+    fmp_api_key: str | None = None,
+    alpha_vantage_api_key: str | None = None,
+    max_workers: int = 4,
+    job_key: str = "scanner",
+) -> dict[str, Any]:
+    """Fill missing/stale company metadata without blocking Streamlit."""
+    tickers = list(dict.fromkeys(
+        str(symbol or "").upper().strip()
+        for symbol in symbols
+        if str(symbol or "").strip()
+    ))
+    if not tickers:
+        return {"running": False, "done": True, "total": 0}
+
+    with _BACKGROUND_LOCK:
+        current = _BACKGROUND_JOBS.get(job_key) or {}
+        if current.get("running"):
+            return dict(current)
+        _BACKGROUND_JOBS[job_key] = {
+            "running": True,
+            "done": False,
+            "total": len(tickers),
+            "error": "",
+            "started_at": _utc_now().isoformat(),
+            "finished_at": "",
+        }
+
+    def _worker() -> None:
+        error = ""
+        try:
+            enrich_company_metadata_batch(
+                tickers,
+                fmp_api_key=fmp_api_key,
+                alpha_vantage_api_key=alpha_vantage_api_key,
+                max_workers=max_workers,
+            )
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            with _BACKGROUND_LOCK:
+                state = _BACKGROUND_JOBS.get(job_key) or {}
+                state.update({
+                    "running": False,
+                    "done": not bool(error),
+                    "error": error,
+                    "finished_at": _utc_now().isoformat(),
+                })
+                _BACKGROUND_JOBS[job_key] = state
+
+    Thread(target=_worker, name=f"momopro-{job_key}-metadata", daemon=True).start()
+    return metadata_background_state(job_key)

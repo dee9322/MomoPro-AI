@@ -27,6 +27,11 @@ from scanner_runtime import (
 )
 from confidence import calculate_integrated_confidence
 from symbol_context import analyze_symbol
+from company_metadata import (
+    attach_cached_metadata,
+    metadata_background_state,
+    start_background_metadata_enrichment,
+)
 from market_context import get_market_context
 from relative_strength import get_relative_strength
 from news_intelligence import (
@@ -1076,10 +1081,6 @@ if active_page_is("Scanner"):
             "Stock Report."
         )
 
-        # Scanner v2 carries internal diagnostics on each candidate row so the
-        # engine can be audited, but those fields should never clutter the
-        # trader-facing Scanner table. Show the diagnostics once, then render
-        # only the columns that are useful for making a trading decision.
         diagnostic_fields = {
             "Universe": "__Universe Count",
             "Strategy eligible": "__Prescreen Eligible Count",
@@ -1100,56 +1101,70 @@ if active_page_is("Scanner"):
         if diagnostic_parts:
             st.caption(" • ".join(diagnostic_parts) + f" • Final candidates: {len(df):,}")
 
-        scanner_visible_columns = [
-            "Symbol",
-            "Grade",
-            "Momo Score",
-            "Dee Fit",
-            "Score",
-            "Setup",
-            "Close",
-            "ATR %",
-            "RVOL",
-            "Distance EMA21 %",
-            "Reasons",
-            "Company",
-            "Sector",
-            "Industry",
-            "Exchange",
-            "Country",
-            "Market Cap",
-            "Float",
-            "Shares Outstanding",
-        ]
-        scanner_visible_columns = [
-            column for column in scanner_visible_columns
-            if column in df.columns
-        ]
-        display_df = df.loc[:, scanner_visible_columns].copy()
-
-        table_event = st.dataframe(
-            display_df,
-            width="stretch",
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="scanner_table",
+        # Cached metadata is attached immediately. Missing/stale metadata is
+        # fetched independently so Scanner speed is never held hostage by
+        # Company/Sector/Industry/profile requests.
+        scanner_symbols = df["Symbol"].astype(str).tolist()
+        start_background_metadata_enrichment(
+            scanner_symbols,
+            fmp_api_key=_secret("FMP_API_KEY"),
+            alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
+            max_workers=4,
+            job_key="scanner",
         )
 
-        selected_rows = (
-            table_event.selection.rows
-        )
+        scanner_visible_columns = [
+            "Symbol", "Grade", "Momo Score", "Dee Fit", "Score", "Setup",
+            "Close", "ATR %", "RVOL", "Distance EMA21 %", "Reasons",
+            "Company", "Sector", "Industry", "Exchange", "Country",
+            "Market Cap", "Float", "Shares Outstanding",
+        ]
 
-        if selected_rows:
-            selected_index = (
-                selected_rows[0]
-            )
+        @st.fragment(run_every=5)
+        def _scanner_candidate_table():
+            display_df = attach_cached_metadata(df)
+            for column in scanner_visible_columns:
+                if column not in display_df.columns:
+                    display_df[column] = None
+            display_df = display_df.loc[:, scanner_visible_columns].copy()
 
-            selected_row = df.iloc[
-                selected_index
+            metadata_state = metadata_background_state("scanner")
+            profile_columns = [
+                "Company", "Sector", "Industry", "Exchange", "Country",
+                "Market Cap", "Float", "Shares Outstanding",
             ]
+            available = int(display_df[profile_columns].notna().any(axis=1).sum())
 
-            open_stock_workspace(selected_row["Symbol"], rerun=False)
+            if metadata_state.get("running"):
+                st.caption(
+                    f"Company/profile data: {available}/{len(display_df)} candidates available • "
+                    "missing metadata is filling in the background."
+                )
+            elif metadata_state.get("error"):
+                st.caption(
+                    f"Company/profile data: {available}/{len(display_df)} candidates available • "
+                    "background enrichment will retry automatically."
+                )
+            else:
+                st.caption(
+                    f"Company/profile data: {available}/{len(display_df)} candidates available."
+                )
+
+            event = st.dataframe(
+                display_df,
+                width="stretch",
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="scanner_table",
+            )
+            rows = event.selection.rows
+            if rows:
+                selected_index = rows[0]
+                if 0 <= selected_index < len(display_df):
+                    open_stock_workspace(display_df.iloc[selected_index]["Symbol"], rerun=True)
+
+        _scanner_candidate_table()
 
         selected_symbol = (
             st.session_state
