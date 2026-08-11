@@ -1,3 +1,4 @@
+from threading import RLock, Thread
 import math
 from uuid import uuid4
 
@@ -29,9 +30,81 @@ from confidence import calculate_integrated_confidence
 from symbol_context import analyze_symbol
 from company_metadata import (
     attach_cached_metadata,
-    metadata_background_state,
-    start_background_metadata_enrichment,
+    enrich_company_metadata_batch,
 )
+
+# Scanner company-metadata background worker.
+# Kept in app.py intentionally so deployment does not depend on a matching
+# company_metadata.py revision.
+_SCANNER_METADATA_LOCK = RLock()
+_SCANNER_METADATA_JOB = {
+    "running": False,
+    "done": False,
+    "error": "",
+    "total": 0,
+    "finished_at": "",
+}
+
+
+def _scanner_metadata_state() -> dict:
+    with _SCANNER_METADATA_LOCK:
+        return dict(_SCANNER_METADATA_JOB)
+
+
+def _start_scanner_metadata_enrichment(
+    symbols: list[str],
+    *,
+    fmp_api_key: str | None = None,
+    alpha_vantage_api_key: str | None = None,
+    max_workers: int = 4,
+) -> dict:
+    tickers = list(dict.fromkeys(
+        str(symbol or "").upper().strip()
+        for symbol in symbols
+        if str(symbol or "").strip()
+    ))
+    if not tickers:
+        return {"running": False, "done": True, "total": 0, "error": ""}
+
+    with _SCANNER_METADATA_LOCK:
+        if _SCANNER_METADATA_JOB.get("running"):
+            return dict(_SCANNER_METADATA_JOB)
+        _SCANNER_METADATA_JOB.update({
+            "running": True,
+            "done": False,
+            "error": "",
+            "total": len(tickers),
+            "finished_at": "",
+        })
+
+    def _worker() -> None:
+        error = ""
+        try:
+            enrich_company_metadata_batch(
+                tickers,
+                fmp_api_key=fmp_api_key,
+                alpha_vantage_api_key=alpha_vantage_api_key,
+                max_workers=max_workers,
+            )
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            with _SCANNER_METADATA_LOCK:
+                _SCANNER_METADATA_JOB.update({
+                    "running": False,
+                    "done": not bool(error),
+                    "error": error,
+                    "finished_at": str(time.time()),
+                })
+
+    Thread(
+        target=_worker,
+        name="momopro-scanner-company-metadata",
+        daemon=True,
+    ).start()
+    return _scanner_metadata_state()
+
+
 from market_context import get_market_context
 from relative_strength import get_relative_strength
 from news_intelligence import (
@@ -1105,12 +1178,11 @@ if active_page_is("Scanner"):
         # fetched independently so Scanner speed is never held hostage by
         # Company/Sector/Industry/profile requests.
         scanner_symbols = df["Symbol"].astype(str).tolist()
-        start_background_metadata_enrichment(
+        _start_scanner_metadata_enrichment(
             scanner_symbols,
             fmp_api_key=_secret("FMP_API_KEY"),
             alpha_vantage_api_key=_secret("ALPHA_VANTAGE_API_KEY"),
             max_workers=4,
-            job_key="scanner",
         )
 
         scanner_visible_columns = [
@@ -1128,7 +1200,7 @@ if active_page_is("Scanner"):
                     display_df[column] = None
             display_df = display_df.loc[:, scanner_visible_columns].copy()
 
-            metadata_state = metadata_background_state("scanner")
+            metadata_state = _scanner_metadata_state()
             profile_columns = [
                 "Company", "Sector", "Industry", "Exchange", "Country",
                 "Market Cap", "Float", "Shares Outstanding",
