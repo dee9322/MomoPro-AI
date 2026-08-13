@@ -385,7 +385,7 @@ def render_scanner_v2_setup() -> None:
         st.success("Massive API key detected by MomoPro.")
         st.caption(f"Credential source: {key_source} (value hidden)")
         cols = st.columns(4)
-        cols[0].metric("Durable sessions", f"{sessions}/{MINIMUM_READY_SESSIONS}")
+        cols[0].metric("Durable sessions", f"{sessions} saved ({MINIMUM_READY_SESSIONS} min)")
         cols[1].metric("Status", "Ready" if ready else ("Building in background" if state.get("running") else "Preparing"))
         cols[2].metric("Latest saved day", str(manifest.get("last_saved_session") or manifest.get("latest") or state.get("last_saved_session") or "—"))
         cols[3].metric("Symbols / latest day", f"{int(manifest.get('symbols') or 0):,}")

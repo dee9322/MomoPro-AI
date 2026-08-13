@@ -6,7 +6,8 @@ import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -531,17 +532,31 @@ def ensure_bootstrap_started() -> dict[str, Any]:
 
 
 def _latest_completed_date() -> date:
-    # Massive Basic is used for completed EOD history. The live current-session
-    # overlay comes from Alpaca, so yesterday is the safe incremental endpoint.
-    cursor = datetime.now(timezone.utc).date() - timedelta(days=1)
+    """Latest U.S. regular session that should be durable in EOD history.
+
+    Use New York market time rather than UTC. Before the regular session has
+    safely closed, yesterday is the newest completed day; after 4:15 p.m. ET,
+    today can be persisted. Weekends roll back to Friday.
+    """
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    cursor = now_et.date()
+    if now_et.weekday() >= 5 or now_et.time() < dt_time(16, 15):
+        cursor -= timedelta(days=1)
     while cursor.weekday() >= 5:
         cursor -= timedelta(days=1)
     return cursor
 
 
 def _incremental_history_update(ctx: dict[str, str], history: pd.DataFrame) -> pd.DataFrame:
+    """Append every missing completed session without blocking live scanning.
+
+    A failed/empty EOD request must never prevent the current Alpaca overlay
+    from running. Every successful day is checkpointed immediately to local +
+    cloud compact history so Streamlit restarts cannot lose the update.
+    """
     if history.empty:
         return history
+
     existing = set(history["date"])
     latest = max(existing)
     target = _latest_completed_date()
@@ -556,26 +571,42 @@ def _incremental_history_update(ctx: dict[str, str], history: pd.DataFrame) -> p
 
     key = f"scan:{ctx['user_id']}"
     last_call = 0.0
-    for idx, session_date in enumerate(missing[:5], 1):
+    successes = 0
+    for idx, session_date in enumerate(missing, 1):
         elapsed = time.monotonic() - last_call
         if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
             time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)
-        _update_job(key, stage=f"Updating completed market history ({idx}/{min(5, len(missing))})", progress=0.08)
+        _update_job(
+            key,
+            stage=f"Updating completed market history ({idx}/{len(missing)})",
+            progress=min(0.10, 0.04 + (0.06 * idx / max(1, len(missing)))),
+        )
         try:
             day = fetch_market_day(session_date, api_key=ctx["massive_key"])
             last_call = time.monotonic()
-            if not day.empty:
-                history = _normalise_history(pd.concat([history, day], ignore_index=True))
+            if day.empty:
+                LOGGER.info("Massive returned no completed data for %s; live scan will continue.", session_date)
+                continue
+            history = _normalise_history(pd.concat([history, day], ignore_index=True))
+            existing.add(session_date)
+            successes += 1
+
+            # Persist each successful completed session immediately.
+            history_path, _, _ = _paths(ctx["user_id"])
+            history.to_parquet(history_path, index=False, compression="zstd")
+            manifest = _manifest_from_history(history)
+            manifest["last_saved_session"] = max(existing).isoformat()
+            _save_manifest_explicit(ctx, manifest, cloud=True)
+            _cloud_upload(ctx, HISTORY_NAME, history_path)
+            LOGGER.info("Scanner incremental history saved %s", session_date)
         except Exception as exc:
             last_call = time.monotonic()
             LOGGER.warning("Scanner incremental history update failed %s: %s", session_date, exc)
-            break
+            # Do not break: a provider miss must not strand the current scan.
+            continue
 
-    history_path, _, _ = _paths(ctx["user_id"])
-    history.to_parquet(history_path, index=False, compression="zstd")
-    manifest = _manifest_from_history(history)
-    _save_manifest_explicit(ctx, manifest, cloud=True)
-    _cloud_upload(ctx, HISTORY_NAME, history_path)
+    if successes == 0:
+        _update_job(key, stage="Completed-day update unavailable; continuing with live current-session data", progress=0.10)
     return history
 
 
