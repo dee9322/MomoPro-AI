@@ -1,7 +1,7 @@
-MomoPro AI — ZIP 49 completed-history rollover repair
+MomoPro AI — ZIP 50 Streamlit startup/runtime stability hotfix
 
 BASE:
-MomoPro-AI-main (49).zip
+MomoPro-AI-main (50).zip
 
 REPLACE IN ORDER:
 1. scanner_runtime.py
@@ -13,65 +13,53 @@ None
 DELETE:
 None
 
-CHANGELOG
+ROOT CAUSE FOUND
+ZIP 50 introduced a second heavy background worker for completed-history
+maintenance while the full Scanner v2 analysis could run at the same time.
 
-1. COMPLETED-DAY HISTORY CATCH-UP
-- Detects whether durable history is actually behind the latest completed U.S. session.
-- Uses New York market time and a 4:15 PM ET completion buffer.
-- Uses Alpaca's market calendar when available, so weekends/market holidays are not treated as missing sessions.
-- Fetches every missing completed market day from Massive in chronological order.
+At the same time, _history_rollover_state() was loading the ENTIRE 220+ session
+history parquet on Streamlit reruns simply to determine whether the history date
+was stale.
 
-2. PERSIST EACH DAY IMMEDIATELY
-Every successful missing session is now persisted before the updater moves on:
-- individual local day shard
-- Supabase day shard upload attempt
-- compact local history parquet
-- compact Supabase history upload attempt
-- scanner manifest
-- completed_dates
-- last_saved_session
+That combination can create several large copies of the multi-million-row
+history in memory at once:
+- Streamlit UI/history freshness check
+- Scanner v2 analysis
+- EOD history reconciliation/compaction
+- pandas concat copies
+- whole compact parquet bytes during cloud upload
 
-A cloud upload problem no longer throws away a successfully downloaded local EOD session.
+The app working first and then eventually dropping to Streamlit's white
+"Oh no. Error running app" page is consistent with the worker being killed
+under memory/resource pressure rather than a Python syntax error.
 
-3. RESTART RECOVERY
-- If a prior process saved a day shard but stopped before rebuilding compact history, the next run reconciles that shard automatically.
-- The historical database can therefore recover from partial Streamlit sleeps/redeploys.
+FIXES
+1. EOD freshness checks now use the tiny scanner_manifest.json only.
+   They no longer read the full historical parquet on every rerun.
 
-4. AUTOMATIC UPDATE
-- Scanner page automatically starts catch-up only when history is actually behind.
-- Once history reaches the latest completed session, it stops launching unnecessary maintenance workers.
-- If new EOD history is added, the saved heavy scan is marked stale so the next normal scanner poll recalculates against the updated technical history.
+2. Heavy Scanner v2 analysis and heavy EOD history maintenance are serialized
+   with one process lock so they cannot double-load the full market history.
 
-5. VISIBLE DIAGNOSTICS
-Scanner v2 Market Database now shows:
-- current saved historical date
-- target completed date
-- session currently being fetched
-- progress
-- exact last provider/persistence error if catch-up fails
+3. The 20-second CURRENT PRICE overlay remains independent and keeps running.
+   Current displayed prices do not have to wait for EOD maintenance.
 
-This removes the previous silent-failure problem where the UI could stay on an old date with no explanation.
+4. Each new completed day is still saved immediately as:
+   - local day shard
+   - cloud/Supabase day shard
+   - local compact history
+   - manifest / completed_dates / last_saved_session
 
-PROTECTED / UNCHANGED
-- 20-second current-price overlay
-- 500-stock Scanner v2 logic
-- Momo Score
-- Dee Fit
-- setup logic
-- ATR / RSI / MACD / EMA logic
-- Float
-- Market Cap
-- Shares Outstanding
-- metadata
-- Watchlist
-- Live Chart
+5. The full compact history parquet is no longer uploaded after EVERY missing
+   day. It is uploaded once after catch-up finishes. This avoids repeatedly
+   creating a huge in-memory bytes copy.
 
-DO NOT reset or delete the existing Scanner history.
+6. No Scanner scoring, ranking, metadata, Float, Market Cap, Shares Outstanding,
+   Watchlist, Live Chart, or current-price logic was changed.
 
-EXPECTED AFTER MARKET CLOSE ON 2026-08-17:
-Historical data target = 2026-08-17.
-If Massive has the completed Aug 17 grouped daily data available, history should catch up through 2026-08-17.
-If Aug 17 is not yet available from Massive, the UI will explicitly show the provider result while still catching up Aug 12, Aug 13 and Aug 14.
+IMPORTANT
+Do NOT reset Scanner history.
+Do NOT change API keys.
+No SQL changes.
 
 COMMIT:
-Make Scanner completed-history rollover durable automatic and observable
+Prevent Streamlit memory crash during Scanner history maintenance

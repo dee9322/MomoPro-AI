@@ -33,6 +33,7 @@ LOGGER = logging.getLogger("momopro.scanner_v2")
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="momopro-scanner-v2")
 _HISTORY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="momopro-scanner-history")
 _LOCK = threading.RLock()
+_HEAVY_WORK_LOCK = threading.Lock()
 _JOBS: dict[str, dict[str, Any]] = {}
 
 BASE_DIR = Path(os.getenv("MOMOPRO_SCANNER_CACHE", "/tmp/momopro_scanner_v2"))
@@ -679,23 +680,36 @@ def _market_sessions(
 
 
 def _history_rollover_state(ctx: dict[str, str]) -> dict[str, Any]:
-    history = _load_history_explicit(ctx)
-    target = _latest_completed_market_date()
-    if history.empty:
-        return {
-            "needs_update": False,
-            "latest": None,
-            "target": target,
-            "sessions": 0,
-        }
+    """Determine EOD freshness from the lightweight manifest only.
 
-    dates = sorted(set(history["date"]))
-    latest = dates[-1] if dates else None
+    Previous ZIP 50 logic reloaded the full Scanner history on every Streamlit
+    rerun simply to answer "are we behind?". With 220+ sessions and ~14k
+    symbols/day that caused large repeated allocations and could exhaust the
+    Streamlit worker after the app had been open for a while.
+    """
+    manifest = _restore_manifest(ctx)
+    target = _latest_completed_market_date()
+
+    latest_raw = (
+        manifest.get("last_saved_session")
+        or manifest.get("latest")
+    )
+    latest = None
+    if latest_raw:
+        try:
+            latest = date.fromisoformat(str(latest_raw)[:10])
+        except Exception:
+            latest = None
+
+    sessions = int(manifest.get("sessions") or 0)
+    ready = bool(manifest.get("ready"))
+
     return {
-        "needs_update": bool(latest and latest < target),
+        "needs_update": bool(ready and latest and latest < target),
         "latest": latest,
         "target": target,
-        "sessions": len(dates),
+        "sessions": sessions,
+        "ready": ready,
     }
 
 
@@ -769,14 +783,17 @@ def _persist_completed_session(
     manifest = _manifest_from_history(merged)
     manifest["completed_dates"] = [d.isoformat() for d in sorted(completed_dates)]
     manifest["last_saved_session"] = max(completed_dates).isoformat()
-    manifest["history_cloud_synced"] = bool(_cloud_upload(ctx, HISTORY_NAME, history_path))
+    # The individual day shard is already durable in cloud storage. Avoid
+    # reading/uploading the entire multi-million-row compact parquet after each
+    # day because that creates a large extra in-memory bytes object.
+    manifest["history_cloud_synced"] = False
     manifest["last_day_cloud_synced"] = bool(cloud_day_ok)
     _save_manifest_explicit(ctx, manifest, cloud=True)
 
     return merged, manifest
 
 
-def _history_maintenance_worker(ctx: dict[str, str]) -> dict[str, Any]:
+def _history_maintenance_worker_unlocked(ctx: dict[str, str]) -> dict[str, Any]:
     """Catch EOD history up independently from the current-price Scanner."""
     key = f"history:{ctx['user_id']}"
     manifest = _restore_manifest(ctx)
@@ -940,6 +957,28 @@ def _history_maintenance_worker(ctx: dict[str, str]) -> dict[str, Any]:
     }
 
 
+
+def _history_maintenance_worker(ctx: dict[str, str]) -> dict[str, Any]:
+    """Run EOD maintenance without competing with the heavy Scanner analysis."""
+    with _HEAVY_WORK_LOCK:
+        result = _history_maintenance_worker_unlocked(ctx)
+
+        # Upload the compact history only ONCE after the catch-up worker has
+        # finished. Day shards already protect every successful session.
+        try:
+            if int(result.get("updated") or 0) > 0:
+                history_path, _, _ = _paths(ctx["user_id"])
+                if history_path.exists():
+                    synced = _cloud_upload(ctx, HISTORY_NAME, history_path)
+                    manifest = _restore_manifest(ctx)
+                    if manifest:
+                        manifest["history_cloud_synced"] = bool(synced)
+                        _save_manifest_explicit(ctx, manifest, cloud=True)
+        except Exception as exc:
+            LOGGER.warning("Final compact history upload skipped: %s", exc)
+        return result
+
+
 def ensure_history_maintenance_started(*, force: bool = False) -> dict[str, Any]:
     """Start EOD maintenance only when history is actually behind."""
     ctx = _context()
@@ -995,7 +1034,7 @@ def ensure_history_maintenance_started(*, force: bool = False) -> dict[str, Any]
 
 
 
-def _scan_worker(
+def _scan_worker_unlocked(
     ctx: dict[str, str],
     *,
     history_override: pd.DataFrame | None = None,
@@ -1071,6 +1110,26 @@ def _scan_worker(
     _update_job(key, stage="Current candidates ready", progress=1.0, done=True, running=False, rows=int(len(results)), finished_at=_now(), error="")
     LOGGER.info("Scanner scan complete rows=%s", len(results))
     return {"rows": int(len(results)), "path": str(scan_path)}
+
+
+
+def _scan_worker(
+    ctx: dict[str, str],
+    *,
+    history_override: pd.DataFrame | None = None,
+    skip_incremental: bool = False,
+) -> dict[str, Any]:
+    """Heavy V2 analysis is serialized with EOD compaction to protect RAM.
+
+    The lightweight current-price overlay does not use this lock, so displayed
+    prices can continue refreshing even while history maintenance is waiting.
+    """
+    with _HEAVY_WORK_LOCK:
+        return _scan_worker_unlocked(
+            ctx,
+            history_override=history_override,
+            skip_incremental=skip_incremental,
+        )
 
 
 def ensure_scan_started(*, force: bool = False) -> dict[str, Any]:

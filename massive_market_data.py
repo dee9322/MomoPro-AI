@@ -406,6 +406,7 @@ def render_scanner_v2_setup() -> None:
                     st.progress(max(0.0, min(1.0, float(progress))))
                 if history_state.get("stage"):
                     st.caption(str(history_state.get("stage")))
+                st.caption("Heavy history maintenance and heavy Scanner analysis run one at a time for Streamlit stability; live quote refresh remains independent.")
                 if history_state.get("current_date"):
                     st.caption(f"Working on session: {history_state.get('current_date')}")
             elif history_state.get("error"):
