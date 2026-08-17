@@ -1112,6 +1112,10 @@ if active_page_is("Market Context"):
 # Scanner
 # -----------------------------
 if active_page_is("Scanner"):
+    try:
+        ensure_history_maintenance_started(force=False)
+    except Exception:
+        pass
     st.header("Scanner")
     st.caption(f"Scanner: {scanner_status_text()}")
     st.caption(
@@ -1255,14 +1259,17 @@ if active_page_is("Scanner"):
 
         scanner_visible_columns = [
             "Symbol", "Grade", "Momo Score", "Dee Fit", "Score", "Setup",
-            "Close", "ATR %", "RVOL", "Distance EMA21 %", "Reasons",
+            "Current Price", "ATR %", "RVOL", "Distance EMA21 %", "Reasons",
             "Company", "Sector", "Industry", "Exchange", "Country",
             "Market Cap", "Float", "Shares Outstanding",
         ]
 
-        @st.fragment(run_every=5)
+        @st.fragment(run_every=20)
         def _scanner_candidate_table():
-            display_df = attach_cached_metadata(df)
+            live_df, live_status = refresh_current_prices_for_scan(df, max_age_seconds=20)
+            display_df = attach_cached_metadata(live_df)
+            if "Close" in display_df.columns:
+                display_df["Current Price"] = display_df["Close"]
             for column in scanner_visible_columns:
                 if column not in display_df.columns:
                     display_df[column] = None
@@ -1273,6 +1280,18 @@ if active_page_is("Scanner"):
             for column in ("Market Cap", "Float", "Shares Outstanding"):
                 if column in display_df.columns:
                     display_df[column] = display_df[column].map(_compact_number)
+
+            if live_status.get("updated"):
+                st.caption(
+                    f"Current prices: {live_status.get('updated')}/{len(display_df)} refreshed"
+                    + (f" • as of {live_status.get('asof')}" if live_status.get("asof") else "")
+                    + f" • {live_status.get('source') or 'Alpaca IEX'}"
+                )
+            else:
+                st.warning(
+                    "Current quote overlay unavailable — displayed prices may be stale. "
+                    "MomoPro will retry automatically."
+                )
 
             metadata_state = _scanner_metadata_state()
             profile_columns = [

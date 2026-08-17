@@ -1,25 +1,52 @@
-MomoPro AI - ZIP 47 Daily Scanner Refresh Fix
+MomoPro AI — ZIP 48 V2 intelligence + V1 freshness
 
-FIXED
-- Completed-session updater now determines the latest finished U.S. market day using America/New_York time instead of UTC.
-- Before 4:15 PM ET it targets the previous completed weekday; after 4:15 PM ET it can persist the current completed session.
-- Missing completed sessions are attempted sequentially instead of being abandoned after the first provider failure.
-- Each successfully recovered EOD session is checkpointed immediately to the compact local history, manifest, and Supabase Storage.
-- An unavailable/empty Massive EOD response no longer prevents the current Alpaca live scan from continuing.
-- Scanner continues to use Alpaca latest-trade data for the current price even when the durable EOD history is temporarily behind.
-- Durable-session display no longer misleadingly renders values such as 221/220; it now shows the saved count and the 220-session minimum.
+BASE:
+MomoPro-AI-main (48).zip
 
-PROTECTED / UNCHANGED
-- Scanner v2 ranking architecture
-- 500-stock final scan size
-- 220-session minimum historical requirement
-- Massive API key routing
-- Current-session Alpaca IEX price overlay
-- Delayed SIP OHLC/volume overlay
-- Company/Sector/Industry/Exchange/Country metadata
-- Market Cap/Float/Shares Outstanding fixes
-- Watchlist fixes
-- Live Chart fixes
+REPLACE IN ORDER:
+1. scanner_runtime.py
+2. massive_market_data.py
+3. app.py
 
-COMMIT MESSAGE
-Fix daily Scanner history rollover and preserve live refresh
+No SQL changes.
+No API-key changes.
+Do NOT reset Scanner history.
+
+WHAT CHANGED
+
+1) REAL SCANNER FEEL
+- The expensive 500-stock MomoPro analysis is still cached/rebuilt on its normal cadence.
+- The visible price column is no longer frozen to that analysis snapshot.
+- The Scanner table now overlays fresh Alpaca IEX prices every ~20 seconds while the page is open.
+- Reopening the Scanner therefore refreshes current prices instead of merely showing a saved 5-minute-old scan.
+- Trader-facing column is now "Current Price" instead of "Close".
+
+2) V2 INTELLIGENCE PRESERVED
+- Broad market universe and historical Massive database stay intact.
+- Strategy ranking, EMA/ATR/RSI/MACD, Momo Score, Dee Fit, setup logic, metadata,
+  Float, Market Cap and Shares Outstanding are untouched.
+- Heavy analysis still uses the V2 engine; only the visible current-price layer is lightweight and fresh.
+
+3) FRESHNESS IS VISIBLE
+- Scanner shows how many candidate prices refreshed, latest quote timestamp and source.
+- If live quotes fail, MomoPro WARNs that displayed prices may be stale rather than silently presenting old data as current.
+
+4) RUN NEW MARKET SCAN
+- Force refresh clears the lightweight current-price cache.
+- Live/current quotes are therefore requested again immediately.
+- Current prices do not wait for the Massive EOD history updater.
+
+5) DAILY HISTORY
+- Completed-day history maintenance is started independently in the background.
+- The market-history date is relabeled "Historical data through" so it is clear that it is context, not the current quote date.
+- A stale historical database must never prevent current price display.
+
+IMPORTANT DATA NOTE
+- Alpaca IEX is real-time IEX data, not full consolidated SIP. This is the freshest
+  no-extra-cost quote source currently wired into MomoPro.
+- The Scanner will now behave like a live screener from a UX/refresh standpoint,
+  but an exact consolidated last-sale match to Webull/TradingView would require a
+  real-time SIP entitlement/provider.
+
+COMMIT:
+Give Scanner v2 live screener freshness with independent current-price overlay

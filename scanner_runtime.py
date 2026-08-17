@@ -31,6 +31,7 @@ LOGGER = logging.getLogger("momopro.scanner_v2")
 # Scanner v2 owns a dedicated executor. No whole-market work is executed by
 # automatic_loading.py or a Streamlit fragment.
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="momopro-scanner-v2")
+_HISTORY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="momopro-scanner-history")
 _LOCK = threading.RLock()
 _JOBS: dict[str, dict[str, Any]] = {}
 
@@ -41,6 +42,7 @@ MANIFEST_NAME = "scanner_manifest.json"
 STORAGE_BUCKET = "scanner-data"
 HISTORY_FOLDER = "history-days"
 LIVE_SCAN_TTL_MINUTES = 5
+LIVE_PRICE_TTL_SECONDS = 20
 
 
 def _now() -> str:
@@ -610,6 +612,118 @@ def _incremental_history_update(ctx: dict[str, str], history: pd.DataFrame) -> p
     return history
 
 
+
+def _latest_completed_market_date() -> date:
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    cursor = now_et.date()
+    if now_et.weekday() >= 5 or now_et.time() < dt_time(16, 15):
+        cursor -= timedelta(days=1)
+    while cursor.weekday() >= 5:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _history_maintenance_worker(ctx: dict[str, str]) -> None:
+    key = f"history:{ctx['user_id']}"
+    try:
+        history = _load_history_explicit(ctx)
+        if history.empty:
+            _update_job(key, running=False, done=True, error="History unavailable", stage="History unavailable")
+            return
+
+        latest = max(set(history["date"]))
+        target = _latest_completed_market_date()
+        cursor = latest + timedelta(days=1)
+        sessions = []
+        while cursor <= target:
+            if cursor.weekday() < 5:
+                sessions.append(cursor)
+            cursor += timedelta(days=1)
+
+        _update_job(
+            key,
+            running=True,
+            done=False,
+            error="",
+            stage="Checking completed sessions",
+            current_latest=latest.isoformat(),
+            target_date=target.isoformat(),
+            progress=0.0,
+        )
+
+        updated = 0
+        last_call = 0.0
+        for i, session_date in enumerate(sessions, 1):
+            elapsed = time.monotonic() - last_call
+            if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
+                time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)
+            try:
+                day = fetch_market_day(session_date, api_key=ctx["massive_key"])
+                last_call = time.monotonic()
+                if day.empty:
+                    continue
+                history = _normalise_history(pd.concat([history, day], ignore_index=True))
+                history_path, _, _ = _paths(ctx["user_id"])
+                history.to_parquet(history_path, index=False, compression="zstd")
+                manifest = _manifest_from_history(history)
+                _save_manifest_explicit(ctx, manifest, cloud=True)
+                _cloud_upload(ctx, HISTORY_NAME, history_path)
+                updated += 1
+                _update_job(
+                    key,
+                    current_latest=max(set(history["date"])).isoformat(),
+                    stage=f"Saved completed session {session_date.isoformat()}",
+                    progress=i / max(1, len(sessions)),
+                )
+            except Exception as exc:
+                LOGGER.warning("EOD session update failed %s: %s", session_date, exc)
+
+        _update_job(
+            key,
+            running=False,
+            done=True,
+            stage="Completed-history maintenance finished",
+            current_latest=max(set(history["date"])).isoformat(),
+            target_date=target.isoformat(),
+            updated_sessions=updated,
+            progress=1.0,
+            finished_at=_now(),
+        )
+    except Exception as exc:
+        _update_job(
+            key,
+            running=False,
+            done=True,
+            error=f"{type(exc).__name__}: {exc}",
+            stage="Completed-history maintenance failed",
+            finished_at=_now(),
+        )
+
+
+def ensure_history_maintenance_started(*, force: bool = False) -> dict[str, Any]:
+    ctx = _context()
+    uid = ctx["user_id"]
+    key = f"history:{uid}"
+    if not ctx.get("massive_key"):
+        return {"running": False, "error": "Massive API key not configured"}
+
+    with _LOCK:
+        existing = _JOBS.get(key) or {}
+        future = existing.get("future")
+        if isinstance(future, Future) and not future.done():
+            return job_state("history", uid)
+        future = _HISTORY_EXECUTOR.submit(_history_maintenance_worker, ctx)
+        _JOBS[key] = {
+            "future": future,
+            "running": True,
+            "done": False,
+            "stage": "Starting completed-history maintenance",
+            "progress": 0.0,
+            "started_at": _now(),
+        }
+    return job_state("history", uid)
+
+
 def _scan_worker(
     ctx: dict[str, str],
     *,
@@ -625,7 +739,10 @@ def _scan_worker(
         raise RuntimeError(f"Scanner history is not ready ({manifest.get('sessions', 0)}/{MINIMUM_READY_SESSIONS} sessions).")
 
     if not skip_incremental:
-        history = _incremental_history_update(ctx, history)
+        try:
+            ensure_history_maintenance_started(force=False)
+        except Exception as exc:
+            LOGGER.info("EOD maintenance start skipped: %s", exc)
 
     _update_job(key, stage="Ranking stored history before the live overlay", progress=0.12)
     from scanner_v2 import rank_universe, _live_adjusted_ranking, SCAN_LIMIT
@@ -842,6 +959,88 @@ def _fetch_alpaca_live_snapshots(
             LOGGER.debug("Alpaca %s snapshot batch failed: %s", feed, exc)
             continue
     return out
+
+
+
+def refresh_current_prices_for_scan(
+    frame: pd.DataFrame,
+    *,
+    max_age_seconds: int = LIVE_PRICE_TTL_SECONDS,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Overlay freshest available prices onto an already-computed Scanner table.
+
+    This is intentionally lightweight: it does NOT rerun the expensive 500-stock
+    analysis. It only refreshes the trader-facing current price and its age.
+    """
+    if frame is None or frame.empty or "Symbol" not in frame.columns:
+        return frame, {"updated": 0, "asof": None, "stale": True}
+
+    ctx = _context()
+    symbols = frame["Symbol"].astype(str).str.upper().tolist()
+    cache_key = f"liveprice:{ctx['user_id']}"
+
+    with _LOCK:
+        existing = _JOBS.get(cache_key) or {}
+        cached_frame = existing.get("frame")
+        fetched_at = float(existing.get("fetched_at") or 0.0)
+        if (
+            isinstance(cached_frame, pd.DataFrame)
+            and not cached_frame.empty
+            and time.time() - fetched_at <= max_age_seconds
+        ):
+            return cached_frame.copy(), {
+                "updated": int(existing.get("updated") or 0),
+                "asof": existing.get("asof"),
+                "stale": False,
+                "source": existing.get("source") or "Alpaca IEX",
+            }
+
+    snapshots = _fetch_alpaca_live_snapshots(ctx, symbols, feed="iex")
+    refreshed = frame.copy()
+    asof_values: list[str] = []
+    updated = 0
+
+    for idx, symbol in refreshed["Symbol"].astype(str).str.upper().items():
+        snap = snapshots.get(symbol) or {}
+        price = snap.get("close")
+        if price is None:
+            continue
+        updated += 1
+        if "Close" in refreshed.columns:
+            refreshed.at[idx, "Close"] = price
+        if "Current Price" in refreshed.columns:
+            refreshed.at[idx, "Current Price"] = price
+        asof = snap.get("asof")
+        if asof:
+            asof_values.append(str(asof))
+
+    latest_asof = max(asof_values) if asof_values else None
+    source = "Alpaca IEX real-time"
+
+    with _LOCK:
+        _JOBS[cache_key] = {
+            "frame": refreshed.copy(),
+            "fetched_at": time.time(),
+            "updated": updated,
+            "asof": latest_asof,
+            "source": source,
+        }
+
+    return refreshed, {
+        "updated": updated,
+        "asof": latest_asof,
+        "stale": updated == 0,
+        "source": source,
+    }
+
+
+def clear_current_price_cache() -> None:
+    try:
+        ctx = _context()
+        with _LOCK:
+            _JOBS.pop(f"liveprice:{ctx['user_id']}", None)
+    except Exception:
+        pass
 
 
 def _merge_current_snapshots(
