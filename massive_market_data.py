@@ -372,12 +372,15 @@ def render_scanner_v2_setup() -> None:
             st.caption("Accepted secret: MASSIVE_API_KEY = \"...\" (nested locations are also detected).")
         return
 
-    from scanner_runtime import ensure_bootstrap_started, job_state, local_manifest
+    from scanner_runtime import ensure_bootstrap_started, ensure_history_maintenance_started, job_state, local_manifest
     uid = str(current_user_id() or "anonymous")
     manifest = local_manifest(uid)
     if not manifest.get("ready"):
         ensure_bootstrap_started()
+    else:
+        ensure_history_maintenance_started(force=False)
     state = job_state("bootstrap", uid)
+    history_state = job_state("history", uid)
     sessions = int(manifest.get("sessions") or state.get("progress") or 0)
     ready = bool(manifest.get("ready") or state.get("ready"))
 
@@ -390,7 +393,32 @@ def render_scanner_v2_setup() -> None:
         cols[2].metric("Historical data through", str(manifest.get("last_saved_session") or manifest.get("latest") or state.get("last_saved_session") or "—"))
         cols[3].metric("Symbols / latest day", f"{int(manifest.get('symbols') or 0):,}")
         if ready:
-            st.success("Scanner v2 foundation is ready. Normal scans now reuse this saved history and only add missing completed sessions.")
+            st.success("Scanner v2 foundation is ready. Live prices remain independent from completed-history maintenance.")
+
+            if history_state.get("running"):
+                st.info(
+                    "Completed-history catch-up: "
+                    f"{history_state.get('current_latest') or manifest.get('latest') or '—'} "
+                    f"→ target {history_state.get('target_date') or '—'}"
+                )
+                progress = history_state.get("progress")
+                if isinstance(progress, (int, float)):
+                    st.progress(max(0.0, min(1.0, float(progress))))
+                if history_state.get("stage"):
+                    st.caption(str(history_state.get("stage")))
+                if history_state.get("current_date"):
+                    st.caption(f"Working on session: {history_state.get('current_date')}")
+            elif history_state.get("error"):
+                st.warning(
+                    "Completed-history maintenance needs another retry. "
+                    f"Last message: {history_state.get('error')}"
+                )
+            elif history_state.get("current_latest"):
+                st.caption(
+                    f"Completed-history maintenance: saved through "
+                    f"{history_state.get('current_latest')} • "
+                    f"target {history_state.get('target_date') or history_state.get('current_latest')}"
+                )
         else:
             pct = min(1.0, sessions / max(1, MINIMUM_READY_SESSIONS))
             st.progress(pct)

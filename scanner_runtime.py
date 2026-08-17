@@ -614,114 +614,385 @@ def _incremental_history_update(ctx: dict[str, str], history: pd.DataFrame) -> p
 
 
 def _latest_completed_market_date() -> date:
+    """Newest regular U.S. session that is safe to treat as completed."""
     now_et = datetime.now(ZoneInfo("America/New_York"))
     cursor = now_et.date()
+
+    # Give the official close/aggregate pipeline a small settlement buffer.
     if now_et.weekday() >= 5 or now_et.time() < dt_time(16, 15):
         cursor -= timedelta(days=1)
+
     while cursor.weekday() >= 5:
         cursor -= timedelta(days=1)
     return cursor
 
 
-def _history_maintenance_worker(ctx: dict[str, str]) -> None:
-    key = f"history:{ctx['user_id']}"
-    try:
-        history = _load_history_explicit(ctx)
-        if history.empty:
-            _update_job(key, running=False, done=True, error="History unavailable", stage="History unavailable")
-            return
+def _market_sessions(
+    ctx: dict[str, str],
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[date]:
+    """Return actual U.S. exchange sessions, preferring Alpaca's calendar."""
+    if start_date > end_date:
+        return []
 
-        latest = max(set(history["date"]))
-        target = _latest_completed_market_date()
-        cursor = latest + timedelta(days=1)
-        sessions = []
-        while cursor <= target:
-            if cursor.weekday() < 5:
-                sessions.append(cursor)
-            cursor += timedelta(days=1)
+    key = ctx.get("alpaca_key") or ""
+    secret = ctx.get("alpaca_secret") or ""
 
-        _update_job(
-            key,
-            running=True,
-            done=False,
-            error="",
-            stage="Checking completed sessions",
-            current_latest=latest.isoformat(),
-            target_date=target.isoformat(),
-            progress=0.0,
-        )
+    if key and secret:
+        try:
+            response = requests.get(
+                "https://api.alpaca.markets/v2/calendar",
+                headers={
+                    "APCA-API-KEY-ID": key,
+                    "APCA-API-SECRET-KEY": secret,
+                },
+                params={
+                    "start": start_date.isoformat(),
+                    "end": end_date.isoformat(),
+                },
+                timeout=(5, 15),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            sessions: list[date] = []
+            for item in payload if isinstance(payload, list) else []:
+                raw = item.get("date") if isinstance(item, dict) else None
+                if raw:
+                    try:
+                        sessions.append(date.fromisoformat(str(raw)))
+                    except Exception:
+                        pass
+            if sessions:
+                return sorted(set(sessions))
+        except Exception as exc:
+            LOGGER.info("Alpaca calendar unavailable; weekday fallback used: %s", exc)
 
-        updated = 0
-        last_call = 0.0
-        for i, session_date in enumerate(sessions, 1):
-            elapsed = time.monotonic() - last_call
-            if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
-                time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)
+    sessions: list[date] = []
+    cursor = start_date
+    while cursor <= end_date:
+        if cursor.weekday() < 5:
+            sessions.append(cursor)
+        cursor += timedelta(days=1)
+    return sessions
+
+
+def _history_rollover_state(ctx: dict[str, str]) -> dict[str, Any]:
+    history = _load_history_explicit(ctx)
+    target = _latest_completed_market_date()
+    if history.empty:
+        return {
+            "needs_update": False,
+            "latest": None,
+            "target": target,
+            "sessions": 0,
+        }
+
+    dates = sorted(set(history["date"]))
+    latest = dates[-1] if dates else None
+    return {
+        "needs_update": bool(latest and latest < target),
+        "latest": latest,
+        "target": target,
+        "sessions": len(dates),
+    }
+
+
+def _reconcile_history_from_shards(
+    ctx: dict[str, str],
+    history: pd.DataFrame,
+    manifest: dict[str, Any],
+) -> pd.DataFrame:
+    """Recover any day shard that was saved before a prior process stopped."""
+    if history is None:
+        history = _normalise_history(pd.DataFrame())
+
+    have = set(history["date"]) if not history.empty else set()
+    frames = [history] if not history.empty else []
+    recovered = 0
+
+    for session_date in sorted(_completed_dates(manifest)):
+        if session_date in have:
+            continue
+        path = _day_path(ctx["user_id"], session_date)
+        if not path.exists():
+            _cloud_download_day(ctx, session_date, path)
+        if path.exists():
             try:
-                day = fetch_market_day(session_date, api_key=ctx["massive_key"])
-                last_call = time.monotonic()
-                if day.empty:
-                    continue
-                history = _normalise_history(pd.concat([history, day], ignore_index=True))
-                history_path, _, _ = _paths(ctx["user_id"])
-                history.to_parquet(history_path, index=False, compression="zstd")
-                manifest = _manifest_from_history(history)
-                _save_manifest_explicit(ctx, manifest, cloud=True)
-                _cloud_upload(ctx, HISTORY_NAME, history_path)
-                updated += 1
-                _update_job(
-                    key,
-                    current_latest=max(set(history["date"])).isoformat(),
-                    stage=f"Saved completed session {session_date.isoformat()}",
-                    progress=i / max(1, len(sessions)),
-                )
+                shard = _normalise_history(pd.read_parquet(path))
+                if not shard.empty:
+                    frames.append(shard)
+                    have.add(session_date)
+                    recovered += 1
             except Exception as exc:
-                LOGGER.warning("EOD session update failed %s: %s", session_date, exc)
+                LOGGER.warning("History shard recovery failed %s: %s", session_date, exc)
 
+    if not recovered:
+        return history
+
+    merged = _normalise_history(pd.concat(frames, ignore_index=True))
+    history_path, _, _ = _paths(ctx["user_id"])
+    merged.to_parquet(history_path, index=False, compression="zstd")
+    _cloud_upload(ctx, HISTORY_NAME, history_path)
+    return merged
+
+
+def _persist_completed_session(
+    ctx: dict[str, str],
+    *,
+    history: pd.DataFrame,
+    session_date: date,
+    day: pd.DataFrame,
+    completed_dates: set[date],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Persist one successful EOD session before moving to the next."""
+    clean_day = _normalise_history(day)
+    if clean_day.empty:
+        raise RuntimeError(f"{session_date.isoformat()} returned no usable rows.")
+
+    # 1) Save the individual day locally first.
+    day_path = _day_path(ctx["user_id"], session_date)
+    clean_day.to_parquet(day_path, index=False, compression="zstd")
+
+    # Cloud day-shard upload is attempted but does not discard a valid local day.
+    cloud_day_ok = _cloud_upload_day(ctx, session_date, day_path)
+
+    # 2) Merge into the compact local history.
+    merged = _normalise_history(pd.concat([history, clean_day], ignore_index=True))
+    history_path, _, _ = _paths(ctx["user_id"])
+    merged.to_parquet(history_path, index=False, compression="zstd")
+
+    # 3) Write a manifest that explicitly carries every completed date.
+    completed_dates = set(completed_dates)
+    completed_dates.add(session_date)
+    manifest = _manifest_from_history(merged)
+    manifest["completed_dates"] = [d.isoformat() for d in sorted(completed_dates)]
+    manifest["last_saved_session"] = max(completed_dates).isoformat()
+    manifest["history_cloud_synced"] = bool(_cloud_upload(ctx, HISTORY_NAME, history_path))
+    manifest["last_day_cloud_synced"] = bool(cloud_day_ok)
+    _save_manifest_explicit(ctx, manifest, cloud=True)
+
+    return merged, manifest
+
+
+def _history_maintenance_worker(ctx: dict[str, str]) -> dict[str, Any]:
+    """Catch EOD history up independently from the current-price Scanner."""
+    key = f"history:{ctx['user_id']}"
+    manifest = _restore_manifest(ctx)
+    history = _load_history_explicit(ctx)
+    history = _reconcile_history_from_shards(ctx, history, manifest)
+
+    if history.empty:
         _update_job(
             key,
             running=False,
             done=True,
-            stage="Completed-history maintenance finished",
-            current_latest=max(set(history["date"])).isoformat(),
+            error="Scanner history is unavailable.",
+            stage="Completed-history maintenance unavailable",
+            finished_at=_now(),
+        )
+        return {"updated": 0}
+
+    existing = set(history["date"])
+    completed_dates = set(_completed_dates(manifest)) | existing
+    latest = max(existing)
+    target = _latest_completed_market_date()
+
+    sessions = [
+        d
+        for d in _market_sessions(
+            ctx,
+            start_date=latest + timedelta(days=1),
+            end_date=target,
+        )
+        if d not in existing
+    ]
+
+    _update_job(
+        key,
+        running=True,
+        done=False,
+        error="",
+        stage="Checking completed market sessions",
+        current_latest=latest.isoformat(),
+        target_date=target.isoformat(),
+        missing_sessions=len(sessions),
+        updated_sessions=0,
+        current_date="",
+        progress=0.0,
+    )
+
+    if not sessions:
+        _update_job(
+            key,
+            running=False,
+            done=True,
+            error="",
+            stage="Completed history is current",
+            current_latest=latest.isoformat(),
             target_date=target.isoformat(),
-            updated_sessions=updated,
+            missing_sessions=0,
+            updated_sessions=0,
             progress=1.0,
             finished_at=_now(),
         )
-    except Exception as exc:
+        return {
+            "updated": 0,
+            "latest": latest.isoformat(),
+            "target": target.isoformat(),
+        }
+
+    updated = 0
+    failures: list[str] = []
+    last_call = 0.0
+
+    for index, session_date in enumerate(sessions, 1):
+        elapsed = time.monotonic() - last_call
+        if last_call and elapsed < SAFE_CALL_INTERVAL_SECONDS:
+            time.sleep(SAFE_CALL_INTERVAL_SECONDS - elapsed)
+
         _update_job(
             key,
-            running=False,
-            done=True,
-            error=f"{type(exc).__name__}: {exc}",
-            stage="Completed-history maintenance failed",
-            finished_at=_now(),
+            stage=f"Fetching completed session {session_date.isoformat()} ({index}/{len(sessions)})",
+            current_date=session_date.isoformat(),
+            progress=(index - 1) / max(1, len(sessions)),
         )
+
+        try:
+            day = fetch_market_day(session_date, api_key=ctx["massive_key"])
+            last_call = time.monotonic()
+
+            if day.empty:
+                failures.append(f"{session_date.isoformat()}: Massive returned no rows")
+                _update_job(
+                    key,
+                    error=failures[-1],
+                    stage=f"No EOD rows returned for {session_date.isoformat()}",
+                )
+                continue
+
+            history, manifest = _persist_completed_session(
+                ctx,
+                history=history,
+                session_date=session_date,
+                day=day,
+                completed_dates=completed_dates,
+            )
+            completed_dates = set(_completed_dates(manifest))
+            existing = set(history["date"])
+            updated += 1
+            latest = max(existing)
+
+            _update_job(
+                key,
+                error="",
+                stage=f"Saved completed session {session_date.isoformat()}",
+                current_latest=latest.isoformat(),
+                updated_sessions=updated,
+                progress=index / max(1, len(sessions)),
+            )
+        except Exception as exc:
+            last_call = time.monotonic()
+            message = f"{session_date.isoformat()}: {type(exc).__name__}: {exc}"
+            failures.append(message)
+            LOGGER.warning("Completed-session catch-up failed: %s", message)
+            _update_job(key, error=message, stage=f"Could not save {session_date.isoformat()}")
+            continue
+
+    latest_after = max(set(history["date"]))
+    remaining = max(0, len(sessions) - updated)
+
+    # A successful EOD catch-up changes technical history. Force the heavy scan
+    # to rebuild on its next normal poll, but never block today's quote overlay.
+    if updated:
+        _, scan_path, _ = _paths(ctx["user_id"])
+        try:
+            if scan_path.exists():
+                os.utime(scan_path, (1, 1))
+        except Exception:
+            pass
+
+    final_error = " | ".join(failures[-3:])
+    _update_job(
+        key,
+        running=False,
+        done=True,
+        error=final_error,
+        stage=(
+            f"Completed history updated through {latest_after.isoformat()}"
+            if updated
+            else "Completed-history catch-up needs another retry"
+        ),
+        current_latest=latest_after.isoformat(),
+        target_date=target.isoformat(),
+        missing_sessions=remaining,
+        updated_sessions=updated,
+        progress=1.0,
+        finished_at=_now(),
+    )
+
+    return {
+        "updated": updated,
+        "latest": latest_after.isoformat(),
+        "target": target.isoformat(),
+        "failures": failures,
+    }
 
 
 def ensure_history_maintenance_started(*, force: bool = False) -> dict[str, Any]:
+    """Start EOD maintenance only when history is actually behind."""
     ctx = _context()
     uid = ctx["user_id"]
     key = f"history:{uid}"
+
     if not ctx.get("massive_key"):
-        return {"running": False, "error": "Massive API key not configured"}
+        return {
+            "running": False,
+            "done": True,
+            "error": "Massive API key not configured.",
+        }
+
+    rollover = _history_rollover_state(ctx)
+    if not rollover.get("needs_update") and not force:
+        return {
+            "running": False,
+            "done": True,
+            "fresh": True,
+            "current_latest": (
+                rollover["latest"].isoformat()
+                if rollover.get("latest")
+                else None
+            ),
+            "target_date": rollover["target"].isoformat(),
+            "sessions": rollover.get("sessions", 0),
+        }
 
     with _LOCK:
         existing = _JOBS.get(key) or {}
         future = existing.get("future")
         if isinstance(future, Future) and not future.done():
             return job_state("history", uid)
+
         future = _HISTORY_EXECUTOR.submit(_history_maintenance_worker, ctx)
         _JOBS[key] = {
             "future": future,
             "running": True,
             "done": False,
-            "stage": "Starting completed-history maintenance",
+            "error": "",
+            "stage": "Starting completed-history catch-up",
+            "current_latest": (
+                rollover["latest"].isoformat()
+                if rollover.get("latest")
+                else None
+            ),
+            "target_date": rollover["target"].isoformat(),
             "progress": 0.0,
             "started_at": _now(),
         }
+
     return job_state("history", uid)
+
 
 
 def _scan_worker(

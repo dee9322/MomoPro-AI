@@ -1,10 +1,11 @@
-MomoPro AI — ZIP 48 live-price NameError hotfix
+MomoPro AI — ZIP 49 completed-history rollover repair
 
 BASE:
-The deployed ZIP 48 V2 intelligence + V1 freshness build.
+MomoPro-AI-main (49).zip
 
-REPLACE:
-1. app.py
+REPLACE IN ORDER:
+1. scanner_runtime.py
+2. massive_market_data.py
 
 ADD:
 None
@@ -12,19 +13,65 @@ None
 DELETE:
 None
 
-CHANGELOG:
-- Fixes the Scanner crash:
-  NameError: name 'refresh_current_prices_for_scan' is not defined
-- The live-price refresh function already existed correctly in scanner_runtime.py.
-- app.py was calling it but the multiline scanner_runtime import block did not include it.
-- app.py now imports:
-  refresh_current_prices_for_scan
-  ensure_history_maintenance_started
-- No Scanner scoring logic changed.
-- No current-price logic changed.
-- No Massive/history data changed.
-- No Float/Market Cap/Shares logic changed.
-- No Watchlist or Live Chart logic changed.
+CHANGELOG
+
+1. COMPLETED-DAY HISTORY CATCH-UP
+- Detects whether durable history is actually behind the latest completed U.S. session.
+- Uses New York market time and a 4:15 PM ET completion buffer.
+- Uses Alpaca's market calendar when available, so weekends/market holidays are not treated as missing sessions.
+- Fetches every missing completed market day from Massive in chronological order.
+
+2. PERSIST EACH DAY IMMEDIATELY
+Every successful missing session is now persisted before the updater moves on:
+- individual local day shard
+- Supabase day shard upload attempt
+- compact local history parquet
+- compact Supabase history upload attempt
+- scanner manifest
+- completed_dates
+- last_saved_session
+
+A cloud upload problem no longer throws away a successfully downloaded local EOD session.
+
+3. RESTART RECOVERY
+- If a prior process saved a day shard but stopped before rebuilding compact history, the next run reconciles that shard automatically.
+- The historical database can therefore recover from partial Streamlit sleeps/redeploys.
+
+4. AUTOMATIC UPDATE
+- Scanner page automatically starts catch-up only when history is actually behind.
+- Once history reaches the latest completed session, it stops launching unnecessary maintenance workers.
+- If new EOD history is added, the saved heavy scan is marked stale so the next normal scanner poll recalculates against the updated technical history.
+
+5. VISIBLE DIAGNOSTICS
+Scanner v2 Market Database now shows:
+- current saved historical date
+- target completed date
+- session currently being fetched
+- progress
+- exact last provider/persistence error if catch-up fails
+
+This removes the previous silent-failure problem where the UI could stay on an old date with no explanation.
+
+PROTECTED / UNCHANGED
+- 20-second current-price overlay
+- 500-stock Scanner v2 logic
+- Momo Score
+- Dee Fit
+- setup logic
+- ATR / RSI / MACD / EMA logic
+- Float
+- Market Cap
+- Shares Outstanding
+- metadata
+- Watchlist
+- Live Chart
+
+DO NOT reset or delete the existing Scanner history.
+
+EXPECTED AFTER MARKET CLOSE ON 2026-08-17:
+Historical data target = 2026-08-17.
+If Massive has the completed Aug 17 grouped daily data available, history should catch up through 2026-08-17.
+If Aug 17 is not yet available from Massive, the UI will explicitly show the provider result while still catching up Aug 12, Aug 13 and Aug 14.
 
 COMMIT:
-Fix ZIP48 live Scanner helper imports
+Make Scanner completed-history rollover durable automatic and observable
