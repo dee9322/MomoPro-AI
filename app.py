@@ -22,9 +22,11 @@ from scanner import run_scan
 from massive_market_data import render_scanner_v2_setup, massive_api_key
 from scanner_runtime import (
     ensure_scan_started,
+    ensure_history_maintenance_started,
     job_state as scanner_job_state,
     load_latest_scan_results,
     local_manifest as scanner_local_manifest,
+    refresh_current_prices_for_scan,
     scanner_status_text,
 )
 from confidence import calculate_integrated_confidence
